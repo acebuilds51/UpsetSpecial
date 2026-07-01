@@ -414,8 +414,9 @@ async function boot() {
   const saved = loadSession();
   if (saved) {
     State.player = saved;
-    try { await refreshState(); } catch(e) {}
-    render();
+    render(); // render immediately from empty state (shows skeleton/empty screens instantly)
+    try { await refreshState(); renderContent(); } catch(e) { renderContent(); }
+    startBackgroundPolling();
   } else {
     renderLogin();
   }
@@ -496,6 +497,7 @@ async function doLogin() {
     try {
       await refreshState();
       renderContent();
+      startBackgroundPolling();
     } catch(e) {
       // state load failed after login -- show home anyway with a warning
       showToast('Logged in, but failed to load data. Check your connection.', 'error');
@@ -561,8 +563,7 @@ function renderBottomNav() {
 
 async function renderContent() {
   const content = document.getElementById('content');
-  content.innerHTML = '<div class="empty-state"><span class="spinner" style="border-top-color:var(--gold); border-color:rgba(255,255,255,0.08);"></span></div>';
-  try { await refreshState(); } catch(e) {}
+  // render instantly from cached state -- no spinner, no waiting on every tab switch
   switch (State.view) {
     case 'home': renderHome(content); break;
     case 'slate': renderSlate(content); break;
@@ -572,6 +573,37 @@ async function renderContent() {
     case 'admin': renderAdmin(content); break;
     default: renderHome(content);
   }
+  // then silently refresh in background -- if data changed, re-render
+  silentRefresh();
+}
+
+// runs a background refresh without blocking the UI -- only re-renders if something actually changed
+async function silentRefresh() {
+  try {
+    const before = JSON.stringify({ games: State.games, picks: State.picks, rotation: State.rotation, season: State.season });
+    await refreshState();
+    const after = JSON.stringify({ games: State.games, picks: State.picks, rotation: State.rotation, season: State.season });
+    if (before !== after) {
+      const content = document.getElementById('content');
+      if (!content) return;
+      switch (State.view) {
+        case 'home': renderHome(content); break;
+        case 'slate': renderSlate(content); break;
+        case 'standings': renderStandings(content); break;
+        case 'money': renderMoney(content); break;
+        case 'bowl': renderBowl(content); break;
+        case 'admin': renderAdmin(content); break;
+      }
+    }
+  } catch(e) { /* silent -- cached state stays on screen */ }
+}
+
+// auto-refresh every 45 seconds to keep scores/countdowns current
+function startBackgroundPolling() {
+  if (window._pollTimer) clearInterval(window._pollTimer);
+  window._pollTimer = setInterval(() => {
+    if (State.player && document.getElementById('content')) silentRefresh();
+  }, 45000);
 }
 
 function escapeHtml(s) {
@@ -602,26 +634,45 @@ function renderTeamLogo(logoUrl, teamName) {
   return `<img class="team-logo" src="${safeUrl}" alt="${safeAlt}" loading="lazy" onerror="this.outerHTML='${fallbackEscaped}'">`;
 }
 
+/* field lines decorative SVG used as a subtle background graphic on stat cards */
+function fieldLinesSvg() {
+  return `<svg viewBox="0 0 200 120" width="200" height="120" xmlns="http://www.w3.org/2000/svg" fill="none">
+    <rect width="200" height="120" rx="4" stroke="white" stroke-width="2"/>
+    <line x1="100" y1="0" x2="100" y2="120" stroke="white" stroke-width="1.5"/>
+    <line x1="60" y1="0" x2="60" y2="120" stroke="white" stroke-width="0.8"/>
+    <line x1="140" y1="0" x2="140" y2="120" stroke="white" stroke-width="0.8"/>
+    <line x1="30" y1="0" x2="30" y2="120" stroke="white" stroke-width="0.5"/>
+    <line x1="170" y1="0" x2="170" y2="120" stroke="white" stroke-width="0.5"/>
+    <ellipse cx="100" cy="60" rx="20" ry="20" stroke="white" stroke-width="1.2"/>
+    <line x1="0" y1="60" x2="200" y2="60" stroke="white" stroke-width="0.8"/>
+    <path d="M8 30 L8 90" stroke="white" stroke-width="1.5"/>
+    <path d="M192 30 L192 90" stroke="white" stroke-width="1.5"/>
+    <line x1="4" y1="48" x2="4" y2="72" stroke="white" stroke-width="2.5"/>
+    <line x1="196" y1="48" x2="196" y2="72" stroke="white" stroke-width="2.5"/>
+  </svg>`;
+}
+
 /* hand-drawn illustrated football emblem (laces, stitching, gradient leather) used as branding on the
    login screen and home header -- this is vector art, not a photo, so it never depends on network access */
 function footballEmblemSvg() {
+  const uid = Math.random().toString(36).slice(2, 7);
   return `
   <svg viewBox="0 0 120 120" width="64" height="64" xmlns="http://www.w3.org/2000/svg">
     <defs>
-      <linearGradient id="ballGrad" x1="15%" y1="10%" x2="85%" y2="90%">
+      <linearGradient id="ballGrad${uid}" x1="15%" y1="10%" x2="85%" y2="90%">
         <stop offset="0%" stop-color="#3A2A18"/>
         <stop offset="45%" stop-color="#5C4226"/>
         <stop offset="100%" stop-color="#7A5832"/>
       </linearGradient>
-      <linearGradient id="ringGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <linearGradient id="ringGrad${uid}" x1="0%" y1="0%" x2="100%" y2="100%">
         <stop offset="0%" stop-color="#F2B632"/>
         <stop offset="55%" stop-color="#FF8A3D"/>
         <stop offset="100%" stop-color="#FF4D5E"/>
       </linearGradient>
     </defs>
-    <ellipse cx="60" cy="62" rx="46" ry="46" fill="none" stroke="url(#ringGrad)" stroke-width="2.5" opacity="0.55"/>
+    <ellipse cx="60" cy="62" rx="46" ry="46" fill="none" stroke="url(#ringGrad${uid})" stroke-width="2.5" opacity="0.55"/>
     <g transform="rotate(45 60 60)">
-      <ellipse cx="60" cy="60" rx="40" ry="26" fill="url(#ballGrad)"/>
+      <ellipse cx="60" cy="60" rx="40" ry="26" fill="url(#ballGrad${uid})"/>
       <ellipse cx="60" cy="60" rx="40" ry="26" fill="none" stroke="#241808" stroke-width="1.4" opacity="0.6"/>
       <path d="M22 60 Q60 44 98 60" stroke="#241808" stroke-width="1.3" fill="none" opacity="0.55"/>
       <path d="M22 60 Q60 76 98 60" stroke="#241808" stroke-width="1.3" fill="none" opacity="0.55"/>
@@ -753,17 +804,20 @@ function renderHome(content) {
       <p class="helptext" style="margin-top:8px;">This is your display name across the league — change it whenever you want.</p>
     </div>
     <div class="section-label">Quick Look</div>
-    <div class="card" style="display:flex; gap:14px;">
-      <div style="flex:1; text-align:center;">
-        <div class="mono" style="font-size:22px; font-weight:700; color:var(--surface-3);">${games.length}</div>
+    <div class="card" style="display:flex; gap:14px; position:relative; overflow:hidden;">
+      <div style="position:absolute; right:-10px; top:50%; transform:translateY(-50%); opacity:0.04; pointer-events:none;">
+        ${fieldLinesSvg()}
+      </div>
+      <div style="flex:1; text-align:center; position:relative;">
+        <div class="mono" style="font-size:26px; font-weight:700; color:var(--text);">${games.length}</div>
         <div class="helptext">Games This Week</div>
       </div>
-      <div style="flex:1; text-align:center; border-left:1px solid var(--hairline); border-right:1px solid var(--hairline);">
-        <div class="mono" style="font-size:22px; font-weight:700; color:var(--surface-3);">${week}</div>
+      <div style="flex:1; text-align:center; border-left:1px solid var(--hairline); border-right:1px solid var(--hairline); position:relative;">
+        <div class="mono" style="font-size:26px; font-weight:700; color:var(--gold);">${week}</div>
         <div class="helptext">Current Week</div>
       </div>
-      <div style="flex:1; text-align:center;">
-        <div class="mono" style="font-size:22px; font-weight:700; color:var(--surface-3);">$${Number(State.season.entryFee || 0)}</div>
+      <div style="flex:1; text-align:center; position:relative;">
+        <div class="mono" style="font-size:26px; font-weight:700; color:var(--win);">$${Number(State.season.entryFee || 0)}</div>
         <div class="helptext">Entry Fee</div>
       </div>
     </div>
