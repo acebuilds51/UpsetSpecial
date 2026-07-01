@@ -489,8 +489,18 @@ async function doLogin() {
     const data = await api('login', { name, pin });
     State.player = data.player;
     saveSession(data.player);
-    await refreshState();
+    // render immediately so the player isn't stuck on the login screen while
+    // the full state loads -- refreshState runs in the background and the content
+    // area shows its own spinner while it completes
     render();
+    try {
+      await refreshState();
+      renderContent();
+    } catch(e) {
+      // state load failed after login -- show home anyway with a warning
+      showToast('Logged in, but failed to load data. Check your connection.', 'error');
+      renderContent();
+    }
   } catch (e) {
     btn.innerHTML = 'Log In';
   }
