@@ -351,6 +351,24 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 
 .auto-default-flag{ font-size:10px; color:var(--text-faint); font-style:italic; margin-left:6px; }
 
+/* ---- Picker game browser rows ---- */
+.picker-game-row{
+  display:flex; align-items:center; gap:10px; padding:12px 14px;
+  border-radius:var(--radius-sm); border:1px solid var(--hairline);
+  background:var(--surface); margin-bottom:8px;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease), transform 0.1s var(--ease);
+}
+.picker-game-row:not(.picker-started):hover{ border-color:var(--text-faint); background:var(--surface-2); }
+.picker-game-row:not(.picker-started):active{ transform:scale(0.99); }
+.picker-game-row.picker-selected{ border-color:var(--win); background:var(--win-soft); }
+.picker-game-row.picker-started{ opacity:0.45; }
+.picker-check{
+  width:22px; height:22px; border-radius:50%; border:2px solid var(--hairline); flex-shrink:0;
+  display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700;
+  transition: all 0.15s var(--ease); color:var(--win); background:transparent;
+}
+.picker-check-active{ background:var(--win); border-color:var(--win); color:#fff; }
+
 /* number pulse for live-updating values */
 .pulse-update{ animation: numPulse 0.6s var(--ease); }
 @keyframes numPulse{ 0%{ text-shadow: 0 0 0 transparent; } 30%{ text-shadow: 0 0 16px rgba(242,182,50,0.7); } 100%{ text-shadow: 0 0 0 transparent; } }
@@ -365,7 +383,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbwFopPwEOEllZV3gpIECbhyCaKt6-57LAFImeRjiaNOoXbttw99n4lzoMT5E7oTRWrt/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbwtBjrkvOUlsya8eXRquzJPt2Ax-KSLZwR3jyk1PI42Dir3P3924nHAG9wxiv1ygY1c/exec'
 };
 
 const State = {
@@ -434,6 +452,7 @@ async function refreshState() {
   State.bowlPicks = data.bowlPicks;
   State.bowlChampion = data.bowlChampion;
   State.bowlLedger = data.bowlLedger;
+  State.snapshotCount = data.snapshotCount || 0;
   // refresh logged-in player's own record (team name may have changed elsewhere)
   const me = State.players.find(p => p.id === State.player.id);
   if (me) {
@@ -893,48 +912,189 @@ function renderSlate(content) {
 }
 
 /* ---- Picker's submission form ---- */
+/* ---- Picker's ESPN game browser (replaces manual text entry) ---- */
+let _pickerSelectedGames = []; // array of full game objects the picker has selected
+let _pickerAllGames = [];      // full ESPN slate loaded from backend
+let _pickerLoading = false;
+let _pickerDateRange = { startDate: '', endDate: '' };
+
 function renderPickerSubmissionForm(content, week) {
-  if (_draftSlateGames.length === 0) _draftSlateGames = Array.from({length: 10}, () => ({ awayTeam: '', homeTeam: '' }));
+  _pickerSelectedGames = [];
   content.innerHTML = `
-    <div class="card">
-      <div class="card-title">You're the Picker — Week ${week}</div>
-      <p class="helptext">Enter the 10 games you want on the board. The commissioner will attach opening lines and kickoff times, then post it for everyone to pick against.</p>
+    <div class="card" style="background:var(--upset-grad); color:#1A1206;">
+      <div style="font-family:var(--font-display); font-size:18px; font-weight:700;">You're the Picker — Week ${week}</div>
+      <div style="font-size:12px; margin-top:4px; opacity:0.8;">Select exactly 10 games from this week's ESPN slate. Lines and kickoff times come with them automatically.</div>
     </div>
-    <div id="slate-form-games"></div>
-    <button class="btn btn-primary btn-block" id="submit-slate-btn" style="margin-top:6px;">Submit My 10 Games</button>
+    <div class="card" style="padding:12px 16px;">
+      <div class="flex-between" style="margin-bottom:10px;">
+        <div id="picker-count-badge" style="font-family:var(--font-display); font-size:22px; color:var(--text);">0 / 10 selected</div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <input type="date" id="picker-start-date" style="padding:7px 10px; border-radius:8px; border:1px solid var(--hairline); background:var(--surface-2); color:var(--text); font-size:12px;">
+          <span class="helptext">to</span>
+          <input type="date" id="picker-end-date" style="padding:7px 10px; border-radius:8px; border:1px solid var(--hairline); background:var(--surface-2); color:var(--text); font-size:12px;">
+          <button class="btn btn-ghost btn-sm" id="picker-load-btn">Load</button>
+        </div>
+      </div>
+      <p class="helptext">Defaults to this weekend's games. Use the date range to load a different week.</p>
+    </div>
+    <div id="picker-games-list"><div class="empty-state"><p>Loading this weekend's games from ESPN...</p></div></div>
+    <button class="btn btn-gold btn-block" id="submit-slate-btn" style="margin-top:6px;" disabled>Select 10 Games to Submit</button>
   `;
-  renderSlateFormGames();
+
+  // set default dates to this weekend
+  const today = new Date();
+  const dayOfWeek = today.getDay();
+  const daysUntilFri = dayOfWeek <= 5 ? (5 - dayOfWeek) : 6;
+  const fri = new Date(today.getTime() + daysUntilFri * 24 * 60 * 60 * 1000);
+  const sun = new Date(fri.getTime() + 2 * 24 * 60 * 60 * 1000);
+  const fmt = d => d.toISOString().split('T')[0];
+  document.getElementById('picker-start-date').value = fmt(fri);
+  document.getElementById('picker-end-date').value = fmt(sun);
+
+  document.getElementById('picker-load-btn').onclick = () => loadPickerSlate(content, week);
   document.getElementById('submit-slate-btn').onclick = submitSlate;
+
+  // auto-load immediately
+  loadPickerSlate(content, week);
 }
 
-function renderSlateFormGames() {
-  const wrap = document.getElementById('slate-form-games');
-  wrap.innerHTML = _draftSlateGames.map((g, i) => `
-    <div class="card" style="padding:12px 14px;">
-      <div class="helptext" style="margin-bottom:6px; font-weight:700;">GAME ${i + 1}</div>
-      <div class="row2">
-        <div class="field" style="margin-bottom:0;"><label>Away Team</label><input type="text" value="${escapeHtml(g.awayTeam)}" data-idx="${i}" data-field="awayTeam" placeholder="e.g. Michigan"></div>
-        <div class="field" style="margin-bottom:0;"><label>Home Team</label><input type="text" value="${escapeHtml(g.homeTeam)}" data-idx="${i}" data-field="homeTeam" placeholder="e.g. Ohio State"></div>
-      </div>
-    </div>
-  `).join('');
-  wrap.querySelectorAll('input').forEach(inp => {
-    inp.oninput = () => { _draftSlateGames[Number(inp.dataset.idx)][inp.dataset.field] = inp.value; };
+async function loadPickerSlate(content, week) {
+  const startInput = document.getElementById('picker-start-date');
+  const endInput = document.getElementById('picker-end-date');
+  const startDate = startInput ? startInput.value.replace(/-/g, '') : '';
+  const endDate = endInput ? endInput.value.replace(/-/g, '') : '';
+
+  const listEl = document.getElementById('picker-games-list');
+  listEl.innerHTML = `<div class="empty-state"><span class="spinner" style="border-top-color:var(--gold); border-color:rgba(255,255,255,0.08);"></span><p style="margin-top:12px;">Loading from ESPN...</p></div>`;
+
+  try {
+    const data = await api('getWeeklyEspnSlate', { startDate, endDate });
+    _pickerAllGames = data.games;
+    renderPickerGamesList(week);
+  } catch(e) {
+    listEl.innerHTML = `<div class="empty-state"><h3>Couldn't load ESPN games</h3><p>Check your connection and try again, or adjust the date range.</p></div>`;
+  }
+}
+
+function renderPickerGamesList(week) {
+  const listEl = document.getElementById('picker-games-list');
+  if (!listEl) return;
+
+  if (_pickerAllGames.length === 0) {
+    listEl.innerHTML = `<div class="empty-state"><h3>No games found</h3><p>Try a different date range — ESPN may not have next week's schedule posted yet.</p></div>`;
+    return;
+  }
+
+  // group by kickoff time bucket (morning, afternoon, evening, night)
+  const groups = {};
+  _pickerAllGames.forEach(g => {
+    const bucket = kickoffBucket(g.kickoff);
+    if (!groups[bucket]) groups[bucket] = [];
+    groups[bucket].push(g);
   });
+
+  const selectedIds = new Set(_pickerSelectedGames.map(g => g.espnEventId));
+
+  listEl.innerHTML = Object.entries(groups).map(([bucket, games]) => `
+    <div class="section-label">${bucket}</div>
+    ${games.map(g => {
+      const selected = selectedIds.has(g.espnEventId);
+      const hasLine = g.favorite && g.spread;
+      const kickoffStr = g.kickoff ? new Date(g.kickoff).toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'}) : 'TBD';
+      const dog = g.favorite === g.homeTeam ? g.awayTeam : g.homeTeam;
+      return `
+        <div class="picker-game-row ${selected ? 'picker-selected' : ''} ${g.started ? 'picker-started' : ''}"
+             data-espnid="${escapeHtml(g.espnEventId)}" style="cursor:${g.started ? 'default' : 'pointer'};">
+          <div style="display:flex; align-items:center; gap:10px; flex:1;">
+            <div style="display:flex; align-items:center; gap:4px; flex-shrink:0;">
+              ${renderTeamLogo(g.awayLogo, g.awayTeam)}
+              <span style="color:var(--text-faint); font-size:12px; margin:0 2px;">@</span>
+              ${renderTeamLogo(g.homeLogo, g.homeTeam)}
+            </div>
+            <div style="flex:1; min-width:0;">
+              <div style="font-weight:700; font-size:13px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                ${escapeHtml(g.awayTeam)} @ ${escapeHtml(g.homeTeam)}
+              </div>
+              <div style="font-size:11px; color:var(--text-faint); margin-top:2px;">
+                ${kickoffStr}
+                ${g.started ? '<span style="color:var(--loss); margin-left:6px;">● In Progress</span>' : ''}
+              </div>
+            </div>
+          </div>
+          <div style="text-align:right; flex-shrink:0; margin-left:8px;">
+            ${hasLine ? `
+              <div class="mono" style="font-size:13px; font-weight:700; color:${g.hasSnapshot ? 'var(--gold)' : 'var(--text-soft)'};">${escapeHtml(g.favorite)} -${fmtSpread(g.spread)}</div>
+              <div style="font-size:10px; margin-top:1px; color:${g.hasSnapshot ? 'var(--gold)' : 'var(--text-faint)'}; opacity:${g.hasSnapshot ? '0.8' : '1'};">
+                ${g.hasSnapshot ? 'Opening line' : 'No opening line yet'}
+              </div>
+            ` : `<div style="font-size:11px; color:var(--text-faint);">No line yet</div>`}
+          </div>
+          <div class="picker-check ${selected ? 'picker-check-active' : ''}">
+            ${selected ? '✓' : ''}
+          </div>
+        </div>`;
+    }).join('')}
+  `).join('');
+
+  // wire click handlers
+  listEl.querySelectorAll('.picker-game-row:not(.picker-started)').forEach(row => {
+    row.onclick = () => {
+      const espnId = row.dataset.espnid;
+      const game = _pickerAllGames.find(g => g.espnEventId === espnId);
+      if (!game) return;
+      const idx = _pickerSelectedGames.findIndex(g => g.espnEventId === espnId);
+      if (idx >= 0) {
+        _pickerSelectedGames.splice(idx, 1); // deselect
+      } else {
+        if (_pickerSelectedGames.length >= 10) {
+          showToast('You already have 10 games — deselect one first', 'error');
+          return;
+        }
+        _pickerSelectedGames.push(game);
+      }
+      updatePickerCount();
+      renderPickerGamesList(week);
+    };
+  });
+}
+
+function kickoffBucket(kickoff) {
+  if (!kickoff) return 'Time TBD';
+  const h = new Date(kickoff).getHours();
+  if (h < 12) return 'Morning Games';
+  if (h < 15) return 'Afternoon Games';
+  if (h < 18) return 'Late Afternoon Games';
+  if (h < 20) return 'Evening Games';
+  return 'Night Games';
+}
+
+function updatePickerCount() {
+  const n = _pickerSelectedGames.length;
+  const badge = document.getElementById('picker-count-badge');
+  const btn = document.getElementById('submit-slate-btn');
+  if (badge) {
+    badge.textContent = `${n} / 10 selected`;
+    badge.style.color = n === 10 ? 'var(--win)' : n > 0 ? 'var(--gold)' : 'var(--text)';
+  }
+  if (btn) {
+    btn.disabled = n !== 10;
+    btn.textContent = n === 10 ? 'Submit My 10 Games ✓' : `Select ${10 - n} More Game${10 - n === 1 ? '' : 's'}`;
+  }
 }
 
 async function submitSlate() {
   const week = currentWeek();
-  const cleaned = _draftSlateGames.map(g => ({ awayTeam: g.awayTeam.trim(), homeTeam: g.homeTeam.trim() }));
-  if (cleaned.some(g => !g.awayTeam || !g.homeTeam)) { showToast('Fill in all 10 matchups before submitting', 'error'); return; }
+  if (_pickerSelectedGames.length !== 10) { showToast('Select exactly 10 games', 'error'); return; }
   const btn = document.getElementById('submit-slate-btn');
-  btn.innerHTML = '<span class="spinner" style="border-top-color:#fff;"></span>';
+  btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
   try {
-    await api('submitSlate', { week, games: cleaned });
-    showToast('Slate submitted to the commissioner', 'success');
-    _draftSlateGames = [];
-    await renderContent();
-  } catch (e) { btn.innerHTML = 'Submit My 10 Games'; }
+    await api('submitSlate', { week, games: _pickerSelectedGames });
+    showToast('Slate submitted! The commissioner will review and post it.', 'success');
+    _pickerSelectedGames = [];
+    _pickerAllGames = [];
+    await silentRefresh();
+    renderContent();
+  } catch(e) { btn.innerHTML = 'Submit My 10 Games'; }
 }
 
 /* ---- Posted board: players make their picks ---- */
@@ -1153,10 +1313,17 @@ async function runUpsetSearch(query, week, games) {
   const resultsEl = document.getElementById('upset-search-results');
   resultsEl.innerHTML = '<div class="helptext">Searching...</div>';
   try {
-    const data = await api('searchEspnGames', { query });
-    _upsetSearchResults = data.results;
+    // always search the Monday snapshot -- never live ESPN -- so lines are always the opening line
+    const data = await api('searchSnapshotGames', { query, week });
+    _upsetSearchResults = data.results || [];
+
+    if (!data.ok && data.error) {
+      // no snapshot exists yet (board not posted, or posted before this feature was added)
+      resultsEl.innerHTML = `<div class="helptext" style="color:var(--loss);">${escapeHtml(data.error)}</div>`;
+      return;
+    }
     if (_upsetSearchResults.length === 0) {
-      resultsEl.innerHTML = '<div class="helptext">No games found. Try another team name.</div>';
+      resultsEl.innerHTML = '<div class="helptext">No games found in this week\'s line snapshot. Try another team name.</div>';
       return;
     }
     resultsEl.innerHTML = _upsetSearchResults.map((r, i) => `
@@ -1168,7 +1335,10 @@ async function runUpsetSearch(query, week, games) {
           </div>
           <div>
             <div class="matchup">${escapeHtml(r.awayTeam)} @ ${escapeHtml(r.homeTeam)}</div>
-            <div class="helptext">${r.favorite ? escapeHtml(r.favorite) + ' favored' : 'No line yet'}</div>
+            <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
+              <div class="helptext">${r.favorite ? escapeHtml(r.favorite) + ' favored' : 'No line'}</div>
+              <span style="font-size:10px; padding:1px 6px; border-radius:4px; background:rgba(242,182,50,0.15); color:var(--gold); font-weight:700; letter-spacing:0.04em;">MON LINE</span>
+            </div>
           </div>
         </div>
         <div class="line">${r.favorite ? '+' + fmtSpread(r.spread) : '—'}</div>
@@ -1177,7 +1347,7 @@ async function runUpsetSearch(query, week, games) {
     resultsEl.querySelectorAll('.search-result-row').forEach(row => {
       row.onclick = () => {
         const r = _upsetSearchResults[Number(row.dataset.idx)];
-        if (!r.favorite) { showToast('This game has no line posted yet — try another', 'error'); return; }
+        if (!r.favorite) { showToast('This game has no line — try another', 'error'); return; }
         const dog = isFavorite({ favorite: r.favorite, homeTeam: r.homeTeam }, r.homeTeam) ? r.awayTeam : r.homeTeam;
         clearAllUpsetFlags();
         _upsetSelection = { espnEventId: r.espnEventId, awayTeam: r.awayTeam, homeTeam: r.homeTeam, favorite: r.favorite, spread: r.spread, kickoff: r.kickoff, pickedTeam: dog, homeLogo: r.homeLogo, awayLogo: r.awayLogo };
@@ -1717,6 +1887,11 @@ function renderAdminWeek(el) {
       </div>
       <div class="card">
         <button class="btn btn-ghost btn-block" id="apply-defaults-btn">Apply "Favorite" Default for Missing Picks</button>
+      </div>
+      <div class="card">
+        <button class="btn btn-ghost btn-block" id="refresh-snapshot-btn">Add Missing Lines to Snapshot</button>
+        <p class="helptext" style="margin-top:8px;">Run this Tuesday or Wednesday if ESPN didn't have all lines posted on Monday. Only adds <em>new</em> games — never overwrites existing Monday lines.</p>
+        <p class="helptext" style="margin-top:6px; color:var(--gold);">This week's snapshot: <strong>${State.snapshotCount || 0} games</strong> with Monday opening lines on file.</p>
         <p class="helptext" style="margin-top:8px;">Use once the week has started — fills in the favorite for anyone who didn't submit picks, per league rule.</p>
       </div>
     ` : ''}
@@ -1779,6 +1954,15 @@ function renderAdminWeek(el) {
         await refreshState(); renderAdmin(document.getElementById('content'));
       } catch (e) { btn.innerHTML = 'Fetch Final Scores (ESPN)'; }
     };
+    document.getElementById('refresh-snapshot-btn').onclick = async () => {
+      const btn = document.getElementById('refresh-snapshot-btn');
+      btn.innerHTML = '<span class="spinner"></span>';
+      try {
+        const data = await api('adminRefreshSnapshot', { adminId: State.player.id, week });
+        showToast(`Snapshot updated — ${data.added} new games added, ${data.existing} already on file`, 'success');
+        btn.innerHTML = 'Add Missing Lines to Snapshot';
+      } catch(e) { btn.innerHTML = 'Add Missing Lines to Snapshot'; }
+    };
     document.getElementById('apply-defaults-btn').onclick = async () => {
       try {
         const data = await api('adminApplyNoPickDefaults', { adminId: State.player.id, week });
@@ -1802,7 +1986,11 @@ function renderAdminWeek(el) {
 function renderAdminGamesCard(games, posted) {
   return `
     <div class="section-label">Games &amp; Lines</div>
-    ${!posted ? `<button class="btn btn-ghost btn-block" id="fetch-espn-lines-btn" style="margin-bottom:10px;">Fetch Lines from ESPN</button>` : ''}
+    ${!posted ? `
+      <div class="card" style="background:var(--surface-2); margin-bottom:10px;">
+        <p class="helptext"><strong style="color:var(--text);">If the picker used the ESPN board</strong>, lines and kickoff times are already filled in — just review below and click Post. If a game is missing a line (picked manually or ESPN didn't have it), use the override fields and the fetch button.</p>
+        <button class="btn btn-ghost btn-block" id="fetch-espn-lines-btn" style="margin-top:10px;">Re-fetch Lines from ESPN</button>
+      </div>` : ''}
     ${games.map(g => {
       const result = computeGameResult(g);
       const kickoffLocal = g.kickoff ? toLocalDatetimeInputValue(g.kickoff) : '';
