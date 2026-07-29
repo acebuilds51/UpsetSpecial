@@ -231,6 +231,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, .team-pick:focu
 .team-pick.selected .team-logo, .team-pick.selected .team-logo-fallback{ border-color: rgba(77,124,255,0.4); }
 .team-pick .tline{ font-family: var(--font-mono); font-size:13px; font-weight:600; color:var(--text-soft); }
 .team-pick.selected .tline{ color: var(--navy-accent); }
+.team-pick.upset-pick{ background: linear-gradient(135deg, rgba(242,182,50,0.18), rgba(255,107,53,0.12)); border-color: var(--gold); cursor: default; }
+.team-pick.upset-pick .tname{ color: var(--gold); }
+.team-pick.upset-pick .tline{ color: var(--gold); }
 .team-pick .fav-badge{ font-size:9px; text-transform:uppercase; letter-spacing:0.07em; color:var(--gold); font-weight:700; margin-top:2px; }
 .vs-divider{ font-family:var(--font-mono); font-size:11px; color:var(--text-faint); font-weight:600; padding-top:14px; }
 
@@ -1337,9 +1340,13 @@ function renderGamesBoard(games, week) {
     const result = computeGameResult(g);
     const locked = isGamePickLocked(g);
     const started = isGameStarted(g);
+    const isUpsetOnThisGame = draft.isUpset && draft.pickedTeam;
+    // when upset is active on this game, show the underdog selected in gold;
+    // when no upset, show whichever team is picked in the normal navy style
     const awaySelected = draft.pickedTeam === g.awayTeam && !draft.isUpset;
     const homeSelected = draft.pickedTeam === g.homeTeam && !draft.isUpset;
-    const isUpsetOnThisGame = draft.isUpset && draft.pickedTeam;
+    const awayIsUpsetPick = draft.isUpset && draft.pickedTeam === g.awayTeam;
+    const homeIsUpsetPick = draft.isUpset && draft.pickedTeam === g.homeTeam;
 
     let resultStrip = '';
     if (result.isFinal) {
@@ -1361,7 +1368,9 @@ function renderGamesBoard(games, week) {
           ${renderCountdownBadge(g)}
         </div>
         <div class="game-matchup">
-          <div class="team-pick ${awaySelected ? 'selected' : ''} ${locked ? 'is-locked' : ''}" data-gameid="${g.gameId}" data-team="${escapeHtml(g.awayTeam)}" style="${locked ? 'opacity:0.55; cursor:default;' : ''}">
+          <div class="team-pick ${awaySelected ? 'selected' : ''} ${awayIsUpsetPick ? 'upset-pick' : ''} ${locked ? 'is-locked' : ''}"
+               data-gameid="${g.gameId}" data-team="${escapeHtml(g.awayTeam)}"
+               style="${(locked || awayIsUpsetPick) ? 'cursor:default;' : ''}${locked ? ' opacity:0.55;' : ''}">
             <div class="team-logo-row">
               ${renderTeamLogo(g.awayLogo, g.awayTeam)}
               <div><div class="tname">${escapeHtml(g.awayTeam)}</div>${favTeam === g.awayTeam ? '<div class="fav-badge">Favorite</div>' : ''}</div>
@@ -1369,7 +1378,9 @@ function renderGamesBoard(games, week) {
             <div class="tline">${favTeam === g.awayTeam ? '-' + fmtSpread(g.spread) : (favTeam ? '+' + fmtSpread(g.spread) : '—')}</div>
           </div>
           <div class="vs-divider">@</div>
-          <div class="team-pick ${homeSelected ? 'selected' : ''} ${locked ? 'is-locked' : ''}" data-gameid="${g.gameId}" data-team="${escapeHtml(g.homeTeam)}" style="${locked ? 'opacity:0.55; cursor:default;' : ''}">
+          <div class="team-pick ${homeSelected ? 'selected' : ''} ${homeIsUpsetPick ? 'upset-pick' : ''} ${locked ? 'is-locked' : ''}"
+               data-gameid="${g.gameId}" data-team="${escapeHtml(g.homeTeam)}"
+               style="${(locked || homeIsUpsetPick) ? 'cursor:default;' : ''}${locked ? ' opacity:0.55;' : ''}">
             <div class="team-logo-row">
               ${renderTeamLogo(g.homeLogo, g.homeTeam)}
               <div><div class="tname">${escapeHtml(g.homeTeam)}</div>${favTeam === g.homeTeam ? '<div class="fav-badge">Favorite</div>' : ''}</div>
@@ -1383,7 +1394,7 @@ function renderGamesBoard(games, week) {
   }).join('');
 
   wrap.querySelectorAll('.team-pick').forEach(el => {
-    if (el.style.cursor === 'default') return;
+    if (el.style.cursor === 'default') return; // handles both locked games and upset-picked team
     el.onclick = () => {
       const gameId = el.dataset.gameid;
       const team = el.dataset.team;
@@ -1391,14 +1402,10 @@ function renderGamesBoard(games, week) {
       if (isGamePickLocked(game)) { showToast('This game has locked', 'error'); return; }
       if (!_draftPicks[gameId]) _draftPicks[gameId] = {};
       _draftPicks[gameId].pickedTeam = team;
-      // only clear the upset flag if they picked the favorite --
-      // if they clicked the underdog on a game that already has the upset flag, keep it
-      const teamIsFavorite = isFavorite(game, team);
-      if (teamIsFavorite) {
+      // only clear the upset flag if they picked the favorite
+      if (isFavorite(game, team)) {
         _draftPicks[gameId].isUpset = false;
       }
-      // if they picked the underdog and this game doesn't have upset set yet, leave isUpset as-is
-      // (they may be picking the underdog as their straight pick without wanting it as their upset)
       renderGamesBoard(games, week);
       updateBoardHeader();
     };
