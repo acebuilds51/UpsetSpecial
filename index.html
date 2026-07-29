@@ -1391,7 +1391,14 @@ function renderGamesBoard(games, week) {
       if (isGamePickLocked(game)) { showToast('This game has locked', 'error'); return; }
       if (!_draftPicks[gameId]) _draftPicks[gameId] = {};
       _draftPicks[gameId].pickedTeam = team;
-      _draftPicks[gameId].isUpset = false; // straight picks from the board are never the upset
+      // only clear the upset flag if they picked the favorite --
+      // if they clicked the underdog on a game that already has the upset flag, keep it
+      const teamIsFavorite = isFavorite(game, team);
+      if (teamIsFavorite) {
+        _draftPicks[gameId].isUpset = false;
+      }
+      // if they picked the underdog and this game doesn't have upset set yet, leave isUpset as-is
+      // (they may be picking the underdog as their straight pick without wanting it as their upset)
       renderGamesBoard(games, week);
       updateBoardHeader();
     };
@@ -1545,9 +1552,13 @@ function updateBoardHeader() {
 }
 
 async function submitMyPicks(week, games) {
+  // include the game where upset is flagged as a straight pick too --
+  // the upset toggle sets pickedTeam to the underdog, which also counts as
+  // the player's straight pick for that game (they still need all 10 covered)
   const picks = games.map(g => {
     const d = _draftPicks[g.gameId];
-    return (d && d.pickedTeam && !d.isUpset) ? { gameId: g.gameId, pickedTeam: d.pickedTeam, isUpset: false } : null;
+    if (!d || !d.pickedTeam) return null;
+    return { gameId: g.gameId, pickedTeam: d.pickedTeam, isUpset: false };
   }).filter(Boolean);
 
   if (picks.length !== 10) { showToast('Pick all 10 games before submitting', 'error'); return; }
