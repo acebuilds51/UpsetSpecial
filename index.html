@@ -1568,14 +1568,19 @@ function updateBoardHeader() {
 }
 
 async function submitMyPicks(week, games) {
-  // include the game where upset is flagged as a straight pick too --
-  // the upset toggle sets pickedTeam to the underdog, which also counts as
-  // the player's straight pick for that game (they still need all 10 covered)
+  // debug -- log what's in _draftPicks so we can see what's being counted
+  console.log('_draftPicks:', JSON.stringify(_draftPicks));
+  console.log('_upsetSelection:', JSON.stringify(_upsetSelection));
+  console.log('_upsetMode:', _upsetMode);
+  console.log('board game IDs:', games.map(g => g.gameId));
+
   const picks = games.map(g => {
     const d = _draftPicks[g.gameId];
     if (!d || !d.pickedTeam) return null;
     return { gameId: g.gameId, pickedTeam: d.pickedTeam, isUpset: false };
   }).filter(Boolean);
+
+  console.log('straight picks built:', picks.length, picks.map(p => p.gameId));
 
   if (picks.length !== 10) { showToast('Pick all 10 games before submitting', 'error'); return; }
 
