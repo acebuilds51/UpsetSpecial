@@ -403,8 +403,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v1.7';
-const BUILD_TIME = '2026-07-29T16:25:50Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v1.8';
+const BUILD_TIME = '2026-07-29T16:28:32Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbwPNhUh_r48nM34_TeqTJFeAwcnUyPQ9N3iNi_bzM5svgt9zr39uG5XPCIGn61ii84M/exec'
@@ -862,7 +862,7 @@ function goToView(view) {
    ============================================================ */
 function renderHome(content) {
   try {
-    const week = currentWeek();
+    const week = Number((State.season || {}).currentWeek || 1);
     const p = State.player;
     const season = State.season || {};
     const games = getGamesForWeek(week);
