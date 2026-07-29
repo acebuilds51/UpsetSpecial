@@ -383,7 +383,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbwtBjrkvOUlsya8eXRquzJPt2Ax-KSLZwR3jyk1PI42Dir3P3924nHAG9wxiv1ygY1c/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbwi9ycg1ctOryorAMAbF1mteJIS78VDt-zBVccDMyiWOoJDQebY0lPUwhOv8cSJqt_d/exec'
 };
 
 const State = {
@@ -491,12 +491,14 @@ function renderLogin() {
           <input id="login-pin" type="password" inputmode="numeric" placeholder="PIN" maxlength="6">
         </div>
         <button class="btn btn-primary btn-block" id="login-btn">Log In</button>
-        <p class="helptext" style="text-align:center; margin-top:14px;">Don't have a PIN yet? Ask your league admin to add you.</p>
+        <div class="divider"></div>
+        <button class="btn btn-gold btn-block" id="register-btn">New Player? Register Here</button>
       </div>
     </div>
   `;
   document.getElementById('login-btn').onclick = doLogin;
   document.getElementById('login-pin').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('register-btn').onclick = renderRegister;
 }
 
 async function doLogin() {
@@ -524,6 +526,112 @@ async function doLogin() {
     }
   } catch (e) {
     btn.innerHTML = 'Log In';
+  }
+}
+
+/* ============================================================
+   REGISTRATION SCREEN
+   ============================================================ */
+function renderRegister() {
+  const entryFee = State.season.entryFee || 50;
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="login-wrap" style="align-items:flex-start; padding-top:24px; overflow-y:auto;">
+      <div class="login-card" style="max-width:420px;">
+        <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px;">
+          <button class="btn btn-ghost btn-sm" id="back-to-login">← Back</button>
+          <div>
+            <div style="font-family:var(--font-display); font-size:18px; font-weight:700; color:var(--text);">Join the League</div>
+            <div style="font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:0.06em;">Upset Special League ${State.season.year || ''}</div>
+          </div>
+        </div>
+
+        <div class="card" style="background:var(--surface-2); margin-bottom:16px;">
+          <div class="card-title">How It Works</div>
+          <p class="helptext" style="line-height:1.6;">Each week a randomly selected player picks 10 college football games. Everyone picks winners against the opening line — 1 point per correct pick. You also pick one <strong style="color:var(--gold);">Upset Special</strong>: any underdog from any game that week. If your underdog wins outright, you score points equal to the line. The bigger the dog, the bigger the reward.</p>
+          <p class="helptext" style="margin-top:8px; line-height:1.6;">Season entry fee is <strong style="color:var(--win);">$${entryFee}</strong>. Your account will be activated once Jeff confirms payment.</p>
+        </div>
+
+        <div class="card" style="background:var(--surface-2); margin-bottom:16px; border:1px solid rgba(242,182,50,0.3);">
+          <div class="card-title" style="color:var(--gold);">Pay Entry Fee — $${entryFee}</div>
+          <div style="display:flex; flex-direction:column; gap:10px;">
+            <a href="https://venmo.com/JEFF-VENMO-HANDLE" target="_blank" class="btn btn-ghost btn-block" style="text-decoration:none; justify-content:flex-start; gap:10px;">
+              <span style="font-size:18px;">💸</span>
+              <span><strong>Venmo</strong><br><span class="helptext">@JEFF-VENMO-HANDLE</span></span>
+            </a>
+            <a href="https://paypal.me/JEFF-PAYPAL-HANDLE" target="_blank" class="btn btn-ghost btn-block" style="text-decoration:none; justify-content:flex-start; gap:10px;">
+              <span style="font-size:18px;">🅿️</span>
+              <span><strong>PayPal</strong><br><span class="helptext">@JEFF-PAYPAL-HANDLE</span></span>
+            </a>
+          </div>
+          <p class="helptext" style="margin-top:10px;">Include your name in the payment note so Jeff knows who it's from.</p>
+        </div>
+
+        <div class="section-label">Create Your Account</div>
+        <div class="field"><label>Full Name</label><input type="text" id="reg-name" placeholder="e.g. Tony Edmonds" autocomplete="name"></div>
+        <div class="field">
+          <label>Team Name <span style="font-weight:400; text-transform:none; letter-spacing:0;">(your creative nickname)</span></label>
+          <input type="text" id="reg-teamname" placeholder="e.g. HARBAUGH4PRESIDENT" style="text-transform:uppercase;" maxlength="30">
+        </div>
+        <div class="field"><label>Email</label><input type="email" id="reg-email" placeholder="your@email.com" autocomplete="email"></div>
+        <div class="field">
+          <label>Choose a PIN <span style="font-weight:400; text-transform:none; letter-spacing:0;">(4–6 digits)</span></label>
+          <input type="password" id="reg-pin" inputmode="numeric" placeholder="e.g. 4567" maxlength="6">
+        </div>
+        <div class="field">
+          <label>Confirm PIN</label>
+          <input type="password" id="reg-pin2" inputmode="numeric" placeholder="Re-enter PIN" maxlength="6">
+        </div>
+
+        <button class="btn btn-gold btn-block" id="reg-submit-btn" style="margin-top:4px;">Submit Registration</button>
+        <p class="helptext" style="text-align:center; margin-top:12px;">Once Jeff confirms your payment he'll activate your account and you'll be able to log in.</p>
+      </div>
+    </div>
+  `;
+  document.getElementById('back-to-login').onclick = renderLogin;
+  document.getElementById('reg-teamname').addEventListener('input', e => {
+    e.target.value = e.target.value.toUpperCase();
+  });
+  document.getElementById('reg-submit-btn').onclick = submitRegistration;
+}
+
+async function submitRegistration() {
+  const name = document.getElementById('reg-name').value.trim();
+  const teamName = document.getElementById('reg-teamname').value.trim().toUpperCase();
+  const email = document.getElementById('reg-email').value.trim();
+  const pin = document.getElementById('reg-pin').value.trim();
+  const pin2 = document.getElementById('reg-pin2').value.trim();
+
+  if (!name) { showToast('Enter your full name', 'error'); return; }
+  if (!teamName) { showToast('Enter a team name', 'error'); return; }
+  if (!email || !email.includes('@')) { showToast('Enter a valid email', 'error'); return; }
+  if (!pin || pin.length < 4) { showToast('PIN must be at least 4 digits', 'error'); return; }
+  if (pin !== pin2) { showToast('PINs don\'t match', 'error'); return; }
+
+  const btn = document.getElementById('reg-submit-btn');
+  btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+  try {
+    const data = await api('registerPlayer', { name, teamName, pin, email });
+    // show success screen
+    const app = document.getElementById('app');
+    app.innerHTML = `
+      <div class="login-wrap">
+        <div class="login-card" style="text-align:center;">
+          <div style="font-size:48px; margin-bottom:12px;">🏈</div>
+          <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:var(--text); margin-bottom:8px;">You're Registered!</div>
+          <p class="helptext" style="line-height:1.6; margin-bottom:20px;">${escapeHtml(data.message)}</p>
+          <div class="card" style="background:var(--surface-2); text-align:left; margin-bottom:16px;">
+            <div class="card-title">Your Details</div>
+            <p class="helptext"><strong style="color:var(--text);">Name:</strong> ${escapeHtml(name)}</p>
+            <p class="helptext" style="margin-top:4px;"><strong style="color:var(--text);">Team:</strong> ${escapeHtml(teamName)}</p>
+            <p class="helptext" style="margin-top:4px;"><strong style="color:var(--gold);">Remember your PIN:</strong> ${escapeHtml(pin)}</p>
+          </div>
+          <button class="btn btn-primary btn-block" onclick="renderLogin()">Back to Login</button>
+        </div>
+      </div>
+    `;
+  } catch(e) {
+    btn.innerHTML = 'Submit Registration';
   }
 }
 
@@ -567,7 +675,11 @@ function renderBottomNav() {
     { id: 'bowl', label: 'Bowl', icon: iconBowl() },
     { id: 'money', label: 'Pot', icon: iconMoney() }
   ];
-  if (State.player.isAdmin) items.push({ id: 'admin', label: 'Admin', icon: iconAdmin() });
+  if (State.player.isAdmin) {
+    const pendingCount = State.players.filter(p => !p.active && !p.isAdmin).length;
+    const badge = pendingCount > 0 ? `<span style="position:absolute; top:6px; right:4px; background:var(--loss); color:#fff; font-size:10px; font-weight:700; border-radius:10px; padding:1px 5px; line-height:1.4;">${pendingCount}</span>` : '';
+    items.push({ id: 'admin', label: 'Admin', icon: `<span style="position:relative; display:inline-block;">${iconAdmin()}${badge}</span>` });
+  }
   nav.innerHTML = items.map(it => `
     <button data-view="${it.id}" class="${State.view === it.id ? 'active' : ''}">
       ${it.icon}
@@ -2045,9 +2157,30 @@ async function adminSetSeasonField(key, value) {
 
 /* ---- Admin: Players ---- */
 function renderAdminPlayers(el) {
+  const pending = State.players.filter(p => !p.active && !p.isAdmin);
+  const active = State.players.filter(p => p.active);
+
   el.innerHTML = `
+    ${pending.length > 0 ? `
+      <div class="section-label" style="color:var(--gold);">⏳ Pending Approval (${pending.length})</div>
+      ${pending.map(p => `
+        <div class="card" style="padding:12px 14px; border:1px solid rgba(242,182,50,0.35);">
+          <div class="flex-between" style="margin-bottom:6px;">
+            <div>
+              <div style="font-weight:700; font-size:14px; color:var(--text);">${escapeHtml(p.teamName)} &mdash; ${escapeHtml(p.name)}</div>
+              <div class="helptext">${escapeHtml(p.email || 'No email')} &middot; Joined ${escapeHtml(String(p.joinedSeason || ''))}</div>
+            </div>
+          </div>
+          <div class="row2">
+            <button class="btn btn-primary btn-sm" data-approve="${p.id}">✓ Approve</button>
+            <button class="btn btn-danger btn-sm" data-reject="${p.id}">✗ Reject</button>
+          </div>
+        </div>
+      `).join('')}
+    ` : ''}
+
     <div class="card">
-      <div class="card-title">Add Player</div>
+      <div class="card-title">Add Player Manually</div>
       <div class="field"><label>Real Name</label><input type="text" id="new-player-name" placeholder="Full name"></div>
       <div class="field"><label>Team Name</label><input type="text" id="new-player-teamname" placeholder="e.g. UPSET KINGS"></div>
       <div class="row2">
@@ -2056,17 +2189,36 @@ function renderAdminPlayers(el) {
       </div>
       <button class="btn btn-primary btn-block" id="add-player-btn">Add Player</button>
     </div>
-    <div class="section-label">Roster (${State.players.length})</div>
-    ${State.players.map(p => `
+
+    <div class="section-label">Active Roster (${active.length})</div>
+    ${active.map(p => `
       <div class="card" style="padding:12px 14px; display:flex; align-items:center; gap:10px;">
         <div style="flex:1;">
           <div style="font-weight:700; font-size:14px;">${escapeHtml(p.teamName || p.name)} ${p.isAdmin ? '<span class="pill pill-assigned">Admin</span>' : ''}</div>
-          <div class="helptext">${escapeHtml(p.name)} &middot; PIN: ${escapeHtml(String(p.pin || ''))} &middot; ${p.active ? 'Active' : 'Inactive'} &middot; ${p.careerPoints || 0} career pts</div>
+          <div class="helptext">${escapeHtml(p.name)} &middot; ${escapeHtml(p.email || '')} &middot; ${p.careerPoints || 0} career pts</div>
         </div>
-        <button class="btn btn-ghost btn-sm" data-toggle-active="${p.id}">${p.active ? 'Deactivate' : 'Activate'}</button>
+        <button class="btn btn-ghost btn-sm" data-toggle-active="${p.id}">Deactivate</button>
       </div>
     `).join('')}
   `;
+
+  // pending approve/reject
+  el.querySelectorAll('[data-approve]').forEach(btn => {
+    btn.onclick = async () => {
+      await api('adminApprovePlayer', { adminId: State.player.id, id: btn.dataset.approve, approve: true });
+      showToast('Player approved and activated', 'success');
+      await refreshState(); renderAdmin(document.getElementById('content'));
+    };
+  });
+  el.querySelectorAll('[data-reject]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Remove this registration entirely?')) return;
+      await api('adminApprovePlayer', { adminId: State.player.id, id: btn.dataset.reject, approve: false });
+      showToast('Registration removed', 'success');
+      await refreshState(); renderAdmin(document.getElementById('content'));
+    };
+  });
+
   document.getElementById('add-player-btn').onclick = async () => {
     const name = document.getElementById('new-player-name').value.trim();
     const teamName = document.getElementById('new-player-teamname').value.trim() || name;
@@ -2080,8 +2232,7 @@ function renderAdminPlayers(el) {
   el.querySelectorAll('[data-toggle-active]').forEach(btn => {
     btn.onclick = async () => {
       const id = btn.dataset.toggleActive;
-      const player = getPlayerById(id);
-      await api('adminUpdatePlayer', { adminId: State.player.id, id, active: !player.active });
+      await api('adminUpdatePlayer', { adminId: State.player.id, id, active: false });
       await refreshState(); renderAdmin(document.getElementById('content'));
     };
   });
