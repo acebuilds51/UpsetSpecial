@@ -1447,7 +1447,7 @@ function renderUpsetSearchArea(week, games) {
         const game = games.find(g => g.gameId === gameId);
         if (isGamePickLocked(game)) { showToast('This game has locked', 'error'); return; }
         const wasActive = _draftPicks[gameId] && _draftPicks[gameId].isUpset;
-        clearAllUpsetFlags();
+        clearAllUpsetFlags(games.map(g => g.gameId));
         _upsetSelection = null;
         if (!wasActive) {
           if (!_draftPicks[gameId]) _draftPicks[gameId] = {};
@@ -1487,15 +1487,23 @@ function renderUpsetSearchArea(week, games) {
     if (_upsetSelection) {
       document.getElementById('clear-upset-search-btn').onclick = () => {
         _upsetSelection = null;
-        clearAllUpsetFlags();
+        clearAllUpsetFlags(games.map(g => g.gameId));
         renderPicksBoard(document.getElementById('content'), week, games);
       };
     }
   }
 }
 
-function clearAllUpsetFlags() {
-  Object.keys(_draftPicks).forEach(gid => { if (_draftPicks[gid]) _draftPicks[gid].isUpset = false; });
+function clearAllUpsetFlags(boardGameIds) {
+  Object.keys(_draftPicks).forEach(gid => {
+    if (!_draftPicks[gid]) return;
+    _draftPicks[gid].isUpset = false;
+    // if this game is not one of the 10 board games, remove it entirely --
+    // it was an external search pick and should be wiped when switching back to a board upset
+    if (boardGameIds && !boardGameIds.includes(gid)) {
+      delete _draftPicks[gid];
+    }
+  });
 }
 
 async function runUpsetSearch(query, week, games) {
@@ -1539,7 +1547,7 @@ async function runUpsetSearch(query, week, games) {
         const r = _upsetSearchResults[Number(row.dataset.idx)];
         if (!r.favorite) { showToast('This game has no line — try another', 'error'); return; }
         const dog = isFavorite({ favorite: r.favorite, homeTeam: r.homeTeam }, r.homeTeam) ? r.awayTeam : r.homeTeam;
-        clearAllUpsetFlags();
+        clearAllUpsetFlags(games.map(g => g.gameId));
         _upsetSelection = { espnEventId: r.espnEventId, awayTeam: r.awayTeam, homeTeam: r.homeTeam, favorite: r.favorite, spread: r.spread, kickoff: r.kickoff, pickedTeam: dog, homeLogo: r.homeLogo, awayLogo: r.awayLogo };
         renderPicksBoard(document.getElementById('content'), week, games);
       };
