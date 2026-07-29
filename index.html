@@ -403,8 +403,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v1.8';
-const BUILD_TIME = '2026-07-29T16:28:32Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v1.9';
+const BUILD_TIME = '2026-07-29T16:32:21Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbwPNhUh_r48nM34_TeqTJFeAwcnUyPQ9N3iNi_bzM5svgt9zr39uG5XPCIGn61ii84M/exec'
@@ -858,6 +858,15 @@ function goToView(view) {
 </script>
 <script>
 /* ============================================================
+   SLATE / PICKS VIEW (regular season)
+   ============================================================ */
+let _draftPicks = {};       // gameId -> {pickedTeam, isUpset}
+let _draftSlateGames = [];  // picker submission draft
+let _upsetMode = 'board';   // 'board' (pick from the 10) | 'search' (any game)
+let _upsetSearchResults = [];
+let _upsetSelection = null; // {espnEventId, awayTeam, homeTeam, favorite, spread, kickoff, pickedTeam} when from search
+
+/* ============================================================
    HOME SCREEN
    ============================================================ */
 function renderHome(content) {
@@ -962,15 +971,6 @@ function renderHome(content) {
     content.innerHTML = `<div class="empty-state"><p>Home screen error: ${e.message}</p></div>`;
   }
 }
-
-/* ============================================================
-   SLATE / PICKS VIEW (regular season)
-   ============================================================ */
-let _draftPicks = {};       // gameId -> {pickedTeam, isUpset}
-let _draftSlateGames = [];  // picker submission draft
-let _upsetMode = 'board';   // 'board' (pick from the 10) | 'search' (any game)
-let _upsetSearchResults = [];
-let _upsetSelection = null; // {espnEventId, awayTeam, homeTeam, favorite, spread, kickoff, pickedTeam} when from search
 
 function renderSlate(content) {
   const week = currentWeek();
