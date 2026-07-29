@@ -383,7 +383,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbwi9ycg1ctOryorAMAbF1mteJIS78VDt-zBVccDMyiWOoJDQebY0lPUwhOv8cSJqt_d/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbxRM6Xiz75sU48Ejld_oYAjkwU4KgrN3PgrKkrfwqOKlwnasSsdkNDOdQ3LOsqQV_5w/exec'
 };
 
 const State = {
@@ -1077,14 +1077,24 @@ async function loadPickerSlate(content, week) {
   const endDate = endInput ? endInput.value.replace(/-/g, '') : '';
 
   const listEl = document.getElementById('picker-games-list');
-  listEl.innerHTML = `<div class="empty-state"><span class="spinner" style="border-top-color:var(--gold); border-color:rgba(255,255,255,0.08);"></span><p style="margin-top:12px;">Loading from ESPN...</p></div>`;
+  listEl.innerHTML = `<div class="empty-state"><span class="spinner" style="border-top-color:var(--gold); border-color:rgba(255,255,255,0.08);"></span><p style="margin-top:12px;">Loading games...</p></div>`;
 
   try {
+    // try snapshot first -- if there are games in LineSnapshot for this week, show those
+    // (covers test data AND the real season after Sunday's auto-snapshot runs)
+    const snapData = await api('getPickerSlateFromSnapshot', { week });
+    if (snapData.games && snapData.games.length > 0) {
+      _pickerAllGames = snapData.games;
+      renderPickerGamesList(week);
+      return;
+    }
+    // no snapshot yet -- fall back to live ESPN
+    listEl.innerHTML = `<div class="empty-state"><span class="spinner" style="border-top-color:var(--gold); border-color:rgba(255,255,255,0.08);"></span><p style="margin-top:12px;">Loading from ESPN...</p></div>`;
     const data = await api('getWeeklyEspnSlate', { startDate, endDate });
     _pickerAllGames = data.games;
     renderPickerGamesList(week);
   } catch(e) {
-    listEl.innerHTML = `<div class="empty-state"><h3>Couldn't load ESPN games</h3><p>Check your connection and try again, or adjust the date range.</p></div>`;
+    listEl.innerHTML = `<div class="empty-state"><h3>Couldn't load games</h3><p>Check your connection and try again, or adjust the date range.</p></div>`;
   }
 }
 
