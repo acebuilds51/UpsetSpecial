@@ -406,11 +406,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v2.9';
-const BUILD_TIME = '2026-07-29T19:21:21Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v3.1';
+const BUILD_TIME = '2026-07-29T19:30:52Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbxLIyGUD8OeGPDTBVgieGaWhgKfH8idsqHLVvlnrqWBmmw1DlgJSMyxOb1fCPZ82E4K/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbwrBurwfc0gKJDxMlmOZELtJH442-iLM7Us2K6sLutSICcdaLTSUOnJvLTW3CR-uvS7/exec'
 };
 
 const State = {
@@ -2579,7 +2579,8 @@ function renderAdmin(content) {
     { id: 'players', label: 'Players' },
     { id: 'ledger', label: 'Pot' },
     { id: 'season', label: 'Season' },
-    { id: 'bowladmin', label: 'Bowl' }
+    { id: 'bowladmin', label: 'Bowl' },
+    { id: 'career', label: 'Career' }
   ];
   content.innerHTML = `
     <div class="tab-row" style="flex-wrap:wrap;">${tabs.map(t => `<button data-tab="${t.id}" class="${_adminTab === t.id ? 'active' : ''}" style="flex:1 1 30%;">${t.label}</button>`).join('')}</div>
@@ -2592,6 +2593,7 @@ function renderAdmin(content) {
   if (_adminTab === 'ledger') renderAdminLedger(tabContent);
   if (_adminTab === 'season') renderAdminSeason(tabContent);
   if (_adminTab === 'bowladmin') renderAdminBowl(tabContent);
+  if (_adminTab === 'career') renderAdminCareer(tabContent);
 }
 
 /* ---- Admin: This Week ---- */
@@ -3002,6 +3004,105 @@ function renderAdminBowl(el) {
   const phaseContent = document.getElementById('bowl-admin-phase-content');
   if (window._bowlAdminTab === 'resolve') renderAdminBowlResolve(phaseContent);
   else renderAdminBowlPhaseSetup(phaseContent, window._bowlAdminTab);
+}
+
+/* ---- Admin: Career History Mapping ---- */
+async function renderAdminCareer(el) {
+  el.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading…</p></div>';
+
+  // load career history if not cached
+  if (!State._careerHistory) {
+    try {
+      const data = await api('getCareerHistory');
+      State._careerHistory = data.history || [];
+    } catch(e) {
+      el.innerHTML = '<div class="empty-state"><p>Could not load career data.</p></div>';
+      return;
+    }
+  }
+
+  const history = State._careerHistory;
+  const unmatched = [...new Map(
+    history.filter(r => !r.matched)
+      .map(r => [r.teamName, r])
+  ).values()].sort((a, b) => a.teamName.localeCompare(b.teamName));
+
+  const activePlayers = (State.players || []).filter(p => p.active).sort((a, b) =>
+    (a.teamName || a.name).localeCompare(b.teamName || b.name)
+  );
+
+  const years = [...new Set(history.map(r => r.year))].sort((a, b) => a - b);
+
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-title">Career History — Name Mapping</div>
+      <p class="helptext" style="margin-top:4px; line-height:1.6;">
+        These historical team names don't match any current player. Use the dropdowns to link each one to the right player, then tap Save.
+        ${unmatched.length === 0 ? '<br><strong style="color:var(--win);">✓ All names are linked!</strong>' : ''}
+      </p>
+    </div>
+
+    ${unmatched.length === 0 ? '' : `
+      <div class="section-label">${unmatched.length} Unlinked Name${unmatched.length !== 1 ? 's' : ''}</div>
+      <div class="card" style="padding:0; overflow:hidden;" id="career-mapping-list">
+        ${unmatched.map(r => {
+          const yearsForName = history.filter(h => h.teamName === r.teamName && !h.matched).map(h => h.year).sort();
+          return `
+            <div style="padding:12px 14px; border-bottom:1px solid var(--hairline);" data-team="${escapeHtml(r.teamName)}">
+              <div style="font-size:13px; font-weight:700; color:var(--text); margin-bottom:2px;">${escapeHtml(r.teamName)}</div>
+              <div class="helptext" style="margin-bottom:8px;">Appears in: ${yearsForName.join(', ')}</div>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <select class="career-map-select" style="flex:1; background:var(--surface-2); border:1px solid var(--hairline); border-radius:var(--radius-sm); color:var(--text); padding:8px 10px; font-size:13px;">
+                  <option value="">— select player —</option>
+                  ${activePlayers.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.teamName || p.name)} (${escapeHtml(p.name)})</option>`).join('')}
+                </select>
+                <button class="btn btn-primary btn-sm career-map-save" style="white-space:nowrap;">Save</button>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `}
+
+    <div class="section-label" style="margin-top:12px;">All Seasons Summary</div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      ${years.map(yr => {
+        const yrRows = history.filter(r => r.year === yr);
+        const matched = yrRows.filter(r => r.matched).length;
+        const total = yrRows.length;
+        const pct = total > 0 ? Math.round(matched / total * 100) : 0;
+        return `
+          <div style="padding:10px 14px; border-bottom:1px solid var(--hairline); display:flex; justify-content:space-between; align-items:center;">
+            <div style="font-size:13px; font-weight:700; color:var(--text);">${yr}</div>
+            <div style="display:flex; align-items:center; gap:10px;">
+              <div class="helptext">${matched}/${total} linked</div>
+              <div class="mono" style="font-size:12px; color:${pct === 100 ? 'var(--win)' : pct >= 50 ? 'var(--gold)' : 'var(--loss)'};">${pct}%</div>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+
+  // wire up save buttons
+  el.querySelectorAll('.career-map-save').forEach(btn => {
+    btn.onclick = async () => {
+      const row = btn.closest('[data-team]');
+      const teamName = row.dataset.team;
+      const playerId = row.querySelector('.career-map-select').value;
+      if (!playerId) { showToast('Select a player first', 'error'); return; }
+      btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+      try {
+        await api('adminFixCareerMapping', { adminId: State.player.id, teamName, playerId });
+        State._careerHistory = null; // clear cache so it reloads
+        showToast(`Linked "${teamName}" successfully`, 'success');
+        renderAdminCareer(el);
+      } catch(e) {
+        btn.textContent = 'Save';
+        showToast('Error: ' + e.message, 'error');
+      }
+    };
+  });
 }
 
 function renderAdminBowlPhaseSetup(el, phase) {
