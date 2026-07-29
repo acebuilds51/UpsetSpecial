@@ -405,11 +405,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v1.0';
-const BUILD_TIME = '2026-07-29T13:03:34Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v1.1';
+const BUILD_TIME = '2026-07-29T14:21:39Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbzN0PNHhWBXe4IbCTLAIyphLc3M0XgZngSp9LO2qZ4nfmgaaJW5GOqwmb_D5pJAcsk/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbzI9Gec-VZrsfj1hcI1JDmTcIDgJbWR3c1FVlY4D1Mg8QXoiS--vWbF9dgpjdUVcmJR/exec'
 };
 
 const State = {
@@ -880,7 +880,20 @@ function footballEmblemSvg() {
 function currentWeek() { return Number(State.season.currentWeek || 1); }
 function getRotationForWeek(week) { return (State.rotation || []).find(r => Number(r.week) === Number(week)); }
 function getPlayerById(id) { return (State.players || []).find(p => p.id === id); }
-function getGamesForWeek(week) { return (State.games || []).filter(g => Number(g.week) === Number(week)); }
+// returns only the 10 board games for a week -- excludes external games added
+// when players submit an upset special from outside the board.
+// External games are marked with source='external' by the backend when created.
+function getGamesForWeek(week) {
+  const all = (State.games || []).filter(g => Number(g.week) === Number(week));
+  // filter out external upset games -- they are never part of the picks board
+  const boardGames = all.filter(g => g.source !== 'external');
+  if (boardGames.length <= 10) return boardGames;
+  // safety: if somehow more than 10 non-external games, take earliest 10
+  return boardGames
+    .slice()
+    .sort((a, b) => new Date(a.postedAt || 0) - new Date(b.postedAt || 0))
+    .slice(0, 10);
+}
 function isWeekPosted(week) {
   const games = getGamesForWeek(week);
   return games.length > 0 && games.every(g => g.locked === true || g.locked === 'TRUE');
@@ -1568,19 +1581,11 @@ function updateBoardHeader() {
 }
 
 async function submitMyPicks(week, games) {
-  // debug -- log what's in _draftPicks so we can see what's being counted
-  console.log('_draftPicks:', JSON.stringify(_draftPicks));
-  console.log('_upsetSelection:', JSON.stringify(_upsetSelection));
-  console.log('_upsetMode:', _upsetMode);
-  console.log('board game IDs:', games.map(g => g.gameId));
-
   const picks = games.map(g => {
     const d = _draftPicks[g.gameId];
     if (!d || !d.pickedTeam) return null;
     return { gameId: g.gameId, pickedTeam: d.pickedTeam, isUpset: false };
   }).filter(Boolean);
-
-  console.log('straight picks built:', picks.length, picks.map(p => p.gameId));
 
   if (picks.length !== 10) { showToast('Pick all 10 games before submitting', 'error'); return; }
 
