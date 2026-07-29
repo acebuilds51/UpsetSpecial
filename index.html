@@ -403,8 +403,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v1.9';
-const BUILD_TIME = '2026-07-29T16:32:21Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v2.0';
+const BUILD_TIME = '2026-07-29T16:36:52Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbwPNhUh_r48nM34_TeqTJFeAwcnUyPQ9N3iNi_bzM5svgt9zr39uG5XPCIGn61ii84M/exec'
@@ -970,6 +970,51 @@ function renderHome(content) {
     console.error('renderHome error:', e);
     content.innerHTML = `<div class="empty-state"><p>Home screen error: ${e.message}</p></div>`;
   }
+}
+
+
+/* ============================================================
+   UTILITY / HELPER FUNCTIONS
+   ============================================================ */
+function currentWeek() { return Number((State.season || {}).currentWeek || 1); }
+function fmtSpread(s) { const n = Number(s); return n % 1 === 0 ? n.toFixed(1) : String(n); }
+function getPlayerById(id) { return (State.players || []).find(p => p.id === id); }
+function getRotationForWeek(week) { return (State.rotation || []).find(r => Number(r.week) === Number(week)); }
+function isWeekPosted(week) { const r = getRotationForWeek(week); return r && r.status === 'posted'; }
+
+function getGamesForWeek(week) {
+  const all = (State.games || []).filter(g => Number(g.week) === Number(week));
+  const boardGames = all.filter(g => g.source !== 'external');
+  if (boardGames.length <= 10) return boardGames;
+  return boardGames.slice().sort((a, b) => new Date(a.postedAt||0) - new Date(b.postedAt||0)).slice(0, 10);
+}
+
+function isFavorite(game, team) { return game.favorite === team; }
+
+function isGamePickLocked(game) {
+  if (!game) return false;
+  if (game.isFinal === true || game.isFinal === 'TRUE') return true;
+  if (!game.kickoff) return false;
+  return new Date() >= new Date(new Date(game.kickoff).getTime() - 5 * 60 * 1000);
+}
+
+function isGameStarted(game) {
+  if (!game || !game.kickoff) return false;
+  return new Date() >= new Date(game.kickoff);
+}
+
+function renderCountdownBadge(game) {
+  if (game.isFinal === true || game.isFinal === 'TRUE') return '<span class="pill pill-final">Final</span>';
+  if (!game.kickoff) return '';
+  const now = new Date();
+  const ko = new Date(game.kickoff);
+  const diff = ko - now;
+  if (diff <= 0) return '<span class="pill pill-live">Live</span>';
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  if (h > 24) return `<span class="helptext">${ko.toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'})}</span>`;
+  if (h > 0) return `<span class="helptext">Kicks off in ${h}h ${m}m</span>`;
+  return `<span class="helptext" style="color:var(--loss);">Kicks off in ${m}m</span>`;
 }
 
 function renderSlate(content) {
