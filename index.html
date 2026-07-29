@@ -403,8 +403,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v2.2';
-const BUILD_TIME = '2026-07-29T16:43:36Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v2.3';
+const BUILD_TIME = '2026-07-29T16:48:19Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbwPNhUh_r48nM34_TeqTJFeAwcnUyPQ9N3iNi_bzM5svgt9zr39uG5XPCIGn61ii84M/exec'
@@ -996,12 +996,14 @@ function getMyPicksForWeek(week) {
 }
 
 function computeGameResult(game) {
-  if (!isGameFinal(game)) return null;
+  if (!game || !isGameFinal(game)) {
+    return { isFinal: false, winner: null, underdog: null, upsetOccurred: false, awayScore: '', homeScore: '' };
+  }
   const home = Number(game.finalHomeScore), away = Number(game.finalAwayScore);
   const winner = home > away ? game.homeTeam : away > home ? game.awayTeam : 'TIE';
   const underdog = game.favorite === game.homeTeam ? game.awayTeam : game.homeTeam;
   const upsetOccurred = winner === underdog;
-  return { winner, underdog, upsetOccurred };
+  return { isFinal: true, winner, underdog, upsetOccurred, awayScore: away, homeScore: home };
 }
 
 function isFavorite(game, team) { return game.favorite === team; }
@@ -1588,13 +1590,18 @@ async function submitMyPicks(week, games) {
 /* ============================================================
    STANDINGS VIEW (regular season)
    ============================================================ */
+function underdogOf(game) {
+  if (!game || !game.favorite) return game ? game.awayTeam : '';
+  return game.favorite === game.homeTeam ? game.awayTeam : game.homeTeam;
+}
+
 function computeStandingsLocally() {
   const players = State.players.filter(p => p.active);
   const finalGames = State.games.filter(isGameFinal);
   const standings = {};
   players.forEach(p => standings[p.id] = {
     playerId: p.id, name: p.name, teamName: p.teamName,
-    points: Number(p.careerPoints) || 0, correct: 0, upsetWins: 0, upsetAttempts: 0, weeklyBreakdown: {}
+    points: 0, correct: 0, upsetWins: 0, upsetAttempts: 0, weeklyBreakdown: {}
   });
 
   finalGames.forEach(g => {
