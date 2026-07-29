@@ -1294,7 +1294,7 @@ function renderPicksBoard(content, week, games) {
     });
   }
 
-  const straightCount = Object.keys(_draftPicks).filter(gid => _draftPicks[gid].pickedTeam && !_draftPicks[gid].isUpset).length;
+  const straightCount = Object.keys(_draftPicks).filter(gid => _draftPicks[gid].pickedTeam).length;
   const hasUpset = Object.keys(_draftPicks).some(gid => _draftPicks[gid].isUpset) || _upsetSelection;
 
   content.innerHTML = `
@@ -1550,7 +1550,8 @@ async function runUpsetSearch(query, week, games) {
 }
 
 function updateBoardHeader() {
-  const straightCount = Object.keys(_draftPicks).filter(gid => _draftPicks[gid].pickedTeam && !_draftPicks[gid].isUpset).length;
+  // count all games with a pick -- including the one with the upset flag
+  const straightCount = Object.keys(_draftPicks).filter(gid => _draftPicks[gid].pickedTeam).length;
   const hasUpset = Object.keys(_draftPicks).some(gid => _draftPicks[gid].isUpset) || _upsetSelection;
   const countEl = document.getElementById('picked-count-display');
   const upsetEl = document.getElementById('upset-status-display');
