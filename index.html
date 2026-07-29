@@ -313,9 +313,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, .team-pick:focu
 .login-emblem{
   display:flex; justify-content:center; margin-bottom:14px;
   filter: drop-shadow(0 6px 18px rgba(242,182,50,0.35));
-  animation: emblemFloat 4.5s ease-in-out infinite;
 }
-@keyframes emblemFloat{ 0%,100%{ transform: translateY(0) rotate(0deg); } 50%{ transform: translateY(-4px) rotate(-3deg); } }
 .login-logo .mark{ font-family:var(--font-display); font-size:12px; letter-spacing:0.2em; text-transform:uppercase; color:var(--text-faint); }
 .login-logo h1{ font-size:31px; line-height:1.05; margin-top:6px; color: var(--text); }
 .login-logo h1 .accent{ background:var(--upset-grad); -webkit-background-clip:text; background-clip:text; color:transparent; }
@@ -405,11 +403,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v1.1';
-const BUILD_TIME = '2026-07-29T14:21:39Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v1.6';
+const BUILD_TIME = '2026-07-29T16:21:06Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbzI9Gec-VZrsfj1hcI1JDmTcIDgJbWR3c1FVlY4D1Mg8QXoiS--vWbF9dgpjdUVcmJR/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbwPNhUh_r48nM34_TeqTJFeAwcnUyPQ9N3iNi_bzM5svgt9zr39uG5XPCIGn61ii84M/exec'
 };
 
 const State = {
@@ -536,7 +534,7 @@ function renderLogin() {
     <div class="login-wrap">
       <div class="login-card">
         <div class="login-logo">
-          <div class="login-emblem">${footballEmblemSvg()}</div>
+          <div class="login-emblem">${footballEmblemSvg(96)}</div>
           <div class="mark">Fantasy College Football &middot; ${VERSION}</div>
           <h1>UPSET<br><span class="accent">SPECIAL</span> LEAGUE</h1>
         </div>
@@ -731,7 +729,8 @@ function renderBottomNav() {
     { id: 'slate', label: 'This Week', icon: iconSlate() },
     { id: 'standings', label: 'Standings', icon: iconStandings() },
     { id: 'bowl', label: 'Bowl', icon: iconBowl() },
-    { id: 'money', label: 'Pot', icon: iconMoney() }
+    { id: 'money', label: 'Pot', icon: iconMoney() },
+    { id: 'rules', label: 'Rules', icon: iconRules() }
   ];
   if (State.player.isAdmin) {
     const pendingCount = State.players.filter(p => !p.active && !p.isAdmin).length;
@@ -760,6 +759,7 @@ async function renderContent() {
     case 'money': renderMoney(content); break;
     case 'bowl': renderBowl(content); break;
     case 'admin': renderAdmin(content); break;
+    case 'rules': renderRules(content); break;
     default: renderHome(content);
   }
   // then silently refresh in background -- if data changed, re-render
@@ -782,6 +782,7 @@ async function silentRefresh() {
         case 'money': renderMoney(content); break;
         case 'bowl': renderBowl(content); break;
         case 'admin': renderAdmin(content); break;
+        case 'rules': renderRules(content); break;
       }
     }
   } catch(e) { /* silent -- cached state stays on screen */ }
@@ -806,6 +807,7 @@ function iconStandings(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="c
 function iconMoney(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5c0-1.1 1.1-2 2.5-2s2.5.9 2.5 2-1.1 1.6-2.5 2-2.5.9-2.5 2 1.1 2 2.5 2 2.5-.9 2.5-2"/></svg>`; }
 function iconAdmin(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l3 5 5 1-4 4 1 6-5-3-5 3 1-6-4-4 5-1z"/></svg>`; }
 function iconBowl(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 4 0 0016 0"/><path d="M4 12V8a8 4 0 0116 0v4"/><circle cx="12" cy="6" r="1.2" fill="currentColor" stroke="none"/></svg>`; }
+function iconRules(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h16v16H4z" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>`; }
 
 /* football icon used as a fallback wherever a team has no matched ESPN logo */
 function iconFootball(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><ellipse cx="12" cy="12" rx="9" ry="6" transform="rotate(45 12 12)"/><path d="M8 8l8 8M9.5 6.5l-1 1M15.5 17.5l-1 1M6.5 9.5l1-1M17.5 14.5l1-1" stroke-width="1.3"/></svg>`; }
@@ -841,214 +843,12 @@ function fieldLinesSvg() {
   </svg>`;
 }
 
-/* hand-drawn illustrated football emblem (laces, stitching, gradient leather) used as branding on the
-   login screen and home header -- this is vector art, not a photo, so it never depends on network access */
-function footballEmblemSvg() {
-  const uid = Math.random().toString(36).slice(2, 7);
-  return `
-  <svg viewBox="0 0 120 120" width="64" height="64" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <linearGradient id="ballGrad${uid}" x1="15%" y1="10%" x2="85%" y2="90%">
-        <stop offset="0%" stop-color="#3A2A18"/>
-        <stop offset="45%" stop-color="#5C4226"/>
-        <stop offset="100%" stop-color="#7A5832"/>
-      </linearGradient>
-      <linearGradient id="ringGrad${uid}" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="#F2B632"/>
-        <stop offset="55%" stop-color="#FF8A3D"/>
-        <stop offset="100%" stop-color="#FF4D5E"/>
-      </linearGradient>
-    </defs>
-    <ellipse cx="60" cy="62" rx="46" ry="46" fill="none" stroke="url(#ringGrad${uid})" stroke-width="2.5" opacity="0.55"/>
-    <g transform="rotate(45 60 60)">
-      <ellipse cx="60" cy="60" rx="40" ry="26" fill="url(#ballGrad${uid})"/>
-      <ellipse cx="60" cy="60" rx="40" ry="26" fill="none" stroke="#241808" stroke-width="1.4" opacity="0.6"/>
-      <path d="M22 60 Q60 44 98 60" stroke="#241808" stroke-width="1.3" fill="none" opacity="0.55"/>
-      <path d="M22 60 Q60 76 98 60" stroke="#241808" stroke-width="1.3" fill="none" opacity="0.55"/>
-      <line x1="48" y1="60" x2="72" y2="60" stroke="#1A1206" stroke-width="3.2" stroke-linecap="round"/>
-      <line x1="52" y1="55" x2="52" y2="65" stroke="#1A1206" stroke-width="2" stroke-linecap="round"/>
-      <line x1="58" y1="55" x2="58" y2="65" stroke="#1A1206" stroke-width="2" stroke-linecap="round"/>
-      <line x1="64" y1="55" x2="64" y2="65" stroke="#1A1206" stroke-width="2" stroke-linecap="round"/>
-      <line x1="68" y1="55" x2="68" y2="65" stroke="#1A1206" stroke-width="2" stroke-linecap="round"/>
-    </g>
-  </svg>`;
+function footballEmblemSvg(size) {
+  const s = size || 64;
+  return `<img src="data:image/png;base64,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" width="${s}" height="${s}" style="border-radius:12px; display:block;" alt="Upset Alert">`;
 }
 
-/* ============================================================
-   SHARED HELPERS
-   ============================================================ */
-function currentWeek() { return Number(State.season.currentWeek || 1); }
-function getRotationForWeek(week) { return (State.rotation || []).find(r => Number(r.week) === Number(week)); }
-function getPlayerById(id) { return (State.players || []).find(p => p.id === id); }
-// returns only the 10 board games for a week -- excludes external games added
-// when players submit an upset special from outside the board.
-// External games are marked with source='external' by the backend when created.
-function getGamesForWeek(week) {
-  const all = (State.games || []).filter(g => Number(g.week) === Number(week));
-  // filter out external upset games -- they are never part of the picks board
-  const boardGames = all.filter(g => g.source !== 'external');
-  if (boardGames.length <= 10) return boardGames;
-  // safety: if somehow more than 10 non-external games, take earliest 10
-  return boardGames
-    .slice()
-    .sort((a, b) => new Date(a.postedAt || 0) - new Date(b.postedAt || 0))
-    .slice(0, 10);
-}
-function isWeekPosted(week) {
-  const games = getGamesForWeek(week);
-  return games.length > 0 && games.every(g => g.locked === true || g.locked === 'TRUE');
-}
-function getMyPicksForWeek(week) { return (State.picks || []).filter(p => Number(p.week) === Number(week) && p.playerId === State.player.id); }
-function isFavorite(game, team) { return String(game.favorite || '').trim() === String(team || '').trim(); }
-function underdogOf(game) { return isFavorite(game, game.homeTeam) ? game.awayTeam : game.homeTeam; }
-function fmtSpread(n) {
-  const v = Number(n);
-  if (isNaN(v)) return '—';
-  return (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1));
-}
-function isGameFinal(g) { return g.isFinal === true || g.isFinal === 'TRUE'; }
-function isGameLocked(g) { return g.locked === true || g.locked === 'TRUE'; }
-function computeGameResult(g) {
-  if (!isGameFinal(g)) return { isFinal: false };
-  const homeScore = Number(g.finalHomeScore), awayScore = Number(g.finalAwayScore);
-  const winner = homeScore > awayScore ? g.homeTeam : (awayScore > homeScore ? g.awayTeam : null);
-  return { isFinal: true, homeScore, awayScore, winner };
-}
 
-/* kickoff-based lock/reveal helpers */
-function msUntilLock(game) {
-  if (isGameFinal(game)) return -1; // a final game is always locked, regardless of kickoff data
-  if (!game.kickoff) return Infinity; // no kickoff data yet = treat as not locked
-  const lockTime = new Date(game.kickoff).getTime() - 5 * 60 * 1000;
-  return lockTime - Date.now();
-}
-function isGamePickLocked(game) { return isGameFinal(game) || msUntilLock(game) <= 0; }
-function isGameStarted(game) {
-  if (isGameFinal(game)) return true;
-  if (!game.kickoff) return false;
-  return Date.now() >= new Date(game.kickoff).getTime();
-}
-function formatCountdown(ms) {
-  if (ms <= 0) return 'Locked';
-  const totalMin = Math.floor(ms / 60000);
-  const days = Math.floor(totalMin / 1440);
-  const hours = Math.floor((totalMin % 1440) / 60);
-  const mins = totalMin % 60;
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${mins}m`;
-  return `${mins}m`;
-}
-function renderCountdownBadge(game) {
-  const ms = msUntilLock(game);
-  if (ms <= 0) return `<span class="countdown locked">Locked</span>`;
-  const urgent = ms < 30 * 60 * 1000;
-  return `<span class="countdown ${urgent ? 'urgent' : ''}">${formatCountdown(ms)} to lock</span>`;
-}
-</script>
-<script>
-/* ============================================================
-   HOME VIEW
-   ============================================================ */
-function renderHome(content) {
-  const week = currentWeek();
-  const rotation = getRotationForWeek(week);
-  const picker = rotation ? getPlayerById(rotation.playerId) : null;
-  const games = getGamesForWeek(week);
-  const posted = isWeekPosted(week);
-  const myPicks = getMyPicksForWeek(week);
-  const havePicked = myPicks.filter(p => !(p.isUpset === true || p.isUpset === 'TRUE')).length === 10
-    && myPicks.some(p => p.isUpset === true || p.isUpset === 'TRUE');
-
-  let statusCard = '';
-  if (!rotation) {
-    statusCard = `
-      <div class="card">
-        <div class="card-title">Week ${week}</div>
-        <div class="empty-state" style="padding:20px 0;">
-          <h3>No picker assigned yet</h3>
-          <p>${State.player.isAdmin ? 'Head to Admin to assign or randomly select this week\'s picker.' : 'Check back once the commissioner assigns this week\'s picker.'}</p>
-        </div>
-      </div>`;
-  } else if (!posted) {
-    const pickerName = picker ? (picker.teamName || picker.name) : '—';
-    statusCard = `
-      <div class="card">
-        <div class="card-title">Week ${week}</div>
-        <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
-          <span class="pill ${rotation.status === 'submitted' ? 'pill-submitted' : 'pill-assigned'}">${rotation.status === 'submitted' ? 'Slate Submitted' : 'Awaiting Slate'}</span>
-        </div>
-        <p class="helptext">This week's picker is <strong>${escapeHtml(pickerName)}</strong>.
-        ${rotation.status === 'submitted' ? 'Their 10 games are in — waiting on the commissioner to set lines and post.' : 'Waiting on their 10 game picks.'}</p>
-      </div>`;
-  } else {
-    const pickerName = picker ? (picker.teamName || picker.name) : '—';
-    statusCard = `
-      <div class="card">
-        <div class="card-title">Week ${week} &middot; Picker: ${escapeHtml(pickerName)}</div>
-        <span class="pill pill-posted">Slate Posted</span>
-        <div class="divider"></div>
-        ${havePicked
-          ? `<p class="helptext"><strong style="color:var(--win)">You're in.</strong> You can still update individual picks until 5 minutes before each game's kickoff.</p>
-             <button class="btn btn-ghost btn-block" style="margin-top:10px;" onclick="goToView('slate')">View / Edit Picks</button>`
-          : `<p class="helptext">The board is open. Make your 10 picks plus your Upset Special before each game locks (5 min before kickoff).</p>
-             <button class="btn btn-gold btn-block" style="margin-top:10px;" onclick="goToView('slate')">Make Your Picks</button>`}
-      </div>`;
-  }
-
-  content.innerHTML = `
-    ${statusCard}
-    <div class="section-label">Your Team</div>
-    <div class="card">
-      <div class="team-name-edit">
-        <input id="team-name-input" type="text" value="${escapeHtml(State.player.teamName || State.player.name)}" maxlength="30">
-        <button class="btn btn-ghost btn-sm" id="save-team-name-btn">Save</button>
-      </div>
-      <p class="helptext" style="margin-top:8px;">This is your display name across the league — change it whenever you want.</p>
-    </div>
-    <div class="section-label">Quick Look</div>
-    <div class="card" style="display:flex; gap:14px; position:relative; overflow:hidden;">
-      <div style="position:absolute; right:-10px; top:50%; transform:translateY(-50%); opacity:0.04; pointer-events:none;">
-        ${fieldLinesSvg()}
-      </div>
-      <div style="flex:1; text-align:center; position:relative;">
-        <div class="mono" style="font-size:26px; font-weight:700; color:var(--text);">${games.length}</div>
-        <div class="helptext">Games This Week</div>
-      </div>
-      <div style="flex:1; text-align:center; border-left:1px solid var(--hairline); border-right:1px solid var(--hairline); position:relative;">
-        <div class="mono" style="font-size:26px; font-weight:700; color:var(--gold);">${week}</div>
-        <div class="helptext">Current Week</div>
-      </div>
-      <div style="flex:1; text-align:center; position:relative;">
-        <div class="mono" style="font-size:26px; font-weight:700; color:var(--win);">$${Number(State.season.entryFee || 0)}</div>
-        <div class="helptext">Entry Fee</div>
-      </div>
-    </div>
-    <div class="section-label">How Scoring Works</div>
-    <div class="card">
-      <p class="helptext"><strong style="color:var(--text)">Straight picks:</strong> 1 point for each of your 10 correct picks against the posted opening line.</p>
-      <p class="helptext" style="margin-top:8px;"><strong style="color:var(--gold)">Upset Special:</strong> pick any underdog from <em>any</em> game that week — not just the 10 on the board — to win outright. Get it right and you score points equal to that line.</p>
-      <p class="helptext" style="margin-top:8px;">Picks lock per-game, 5 minutes before kickoff. Everyone's picks for a game stay hidden until that game kicks off.</p>
-    </div>
-    <div class="section-label">Bowl Bonanza</div>
-    <div class="card">
-      <p class="helptext">The season-ending bowl contest is a separate competition with its own pot. Head to the <strong>Bowl</strong> tab to make your picks once it's live.</p>
-      <button class="btn btn-ghost btn-block" style="margin-top:10px;" onclick="goToView('bowl')">Go to Bowl Bonanza</button>
-    </div>
-  `;
-  document.getElementById('save-team-name-btn').onclick = saveTeamName;
-}
-
-async function saveTeamName() {
-  const newName = document.getElementById('team-name-input').value.trim();
-  if (!newName) { showToast('Team name cannot be empty', 'error'); return; }
-  try {
-    await api('updateTeamName', { playerId: State.player.id, teamName: newName });
-    State.player.teamName = newName;
-    saveSession(State.player);
-    showToast('Team name updated', 'success');
-    render();
-  } catch (e) {}
-}
 
 function goToView(view) {
   State.view = view;
@@ -1057,6 +857,120 @@ function goToView(view) {
 }
 </script>
 <script>
+/* ============================================================
+   HOME SCREEN
+   ============================================================ */
+function renderHome(content) {
+  const week = currentWeek();
+  const p = State.player;
+  const games = getGamesForWeek(week);
+  const myPicks = (State.picks || []).filter(pk => pk.playerId === p.id && Number(pk.week) === week);
+  const rotation = getRotationForWeek(week);
+  const picker = rotation ? State.players.find(pl => pl.id === rotation.playerId) : null;
+  const posted = rotation && rotation.status === 'posted';
+  const appUrl = 'https://acebuilds51.github.io/UpsetSpecial';
+
+  // my pick summary for this week
+  const straightPicks = myPicks.filter(pk => !(pk.isUpset === true || pk.isUpset === 'TRUE'));
+  const upsetPick = myPicks.find(pk => pk.isUpset === true || pk.isUpset === 'TRUE');
+
+  content.innerHTML = `
+    <div class="card" style="background:var(--upset-grad); color:#1A1206; margin-bottom:4px;">
+      <div style="font-family:var(--font-display); font-size:20px; font-weight:700; line-height:1.2;">
+        ${escapeHtml(State.season.leagueName || 'Upset Special League')}
+      </div>
+      <div style="font-size:12px; margin-top:4px; opacity:0.8;">
+        ${State.season.year || ''} Season &middot; Week ${week}
+      </div>
+    </div>
+
+    <div class="section-label">Quick Look</div>
+    <div class="card" style="display:flex; gap:0; position:relative; overflow:hidden; padding:0;">
+      <div style="position:absolute; right:-10px; top:50%; transform:translateY(-50%); opacity:0.04; pointer-events:none;">
+        ${fieldLinesSvg()}
+      </div>
+      <div style="flex:1; text-align:center; padding:16px 8px; position:relative;">
+        <div class="mono" style="font-size:26px; font-weight:700; color:var(--text);">${games.length}</div>
+        <div class="helptext">Games This Week</div>
+      </div>
+      <div style="flex:1; text-align:center; padding:16px 8px; border-left:1px solid var(--hairline); border-right:1px solid var(--hairline); position:relative;">
+        <div class="mono" style="font-size:26px; font-weight:700; color:var(--gold);">${week}</div>
+        <div class="helptext">Current Week</div>
+      </div>
+      <div style="flex:1; text-align:center; padding:16px 8px; position:relative;">
+        <div class="mono" style="font-size:26px; font-weight:700; color:var(--win);">$${Number(State.season.entryFee || 100)}</div>
+        <div class="helptext">Entry Fee</div>
+      </div>
+    </div>
+
+    <div class="section-label">This Week</div>
+    <div class="card">
+      <div class="flex-between">
+        <div>
+          <div style="font-size:13px; font-weight:700; color:var(--text);">
+            ${!posted ? 'Board not posted yet' : `${games.length} games on the board`}
+          </div>
+          <div class="helptext" style="margin-top:3px;">
+            ${picker ? `Picker: ${escapeHtml(picker.teamName || picker.name)}` : 'No picker assigned yet'}
+          </div>
+        </div>
+        ${posted ? `
+          <div style="text-align:right;">
+            <div class="mono" style="font-size:18px; font-weight:700; color:${straightPicks.length === games.length ? 'var(--win)' : 'var(--gold)'};">
+              ${straightPicks.length}/${games.length}
+            </div>
+            <div class="helptext">My Picks</div>
+          </div>
+        ` : ''}
+      </div>
+      ${posted && upsetPick ? `
+        <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--hairline);">
+          <div class="helptext">Upset Special: <strong style="color:var(--gold);">${escapeHtml(upsetPick.pickedTeam)}</strong></div>
+        </div>
+      ` : ''}
+      <button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="State.view='slate'; renderContent();">
+        ${posted ? 'Make My Picks' : 'View This Week'}
+      </button>
+    </div>
+
+    <div class="section-label">Refer a Friend</div>
+    <div class="card">
+      <div style="font-size:13px; font-weight:700; color:var(--text); margin-bottom:6px;">Know someone who should join?</div>
+      <div style="background:var(--surface-2); border-radius:var(--radius-sm); padding:12px 14px; font-size:12px; color:var(--text-soft); line-height:1.6; margin-bottom:12px;" id="refer-msg-box">
+🏈 Hey! You should join our Upset Special fantasy college football league. $${Number(State.season.entryFee || 100)} entry, weekly cash prizes, and a Bowl Bonanza postseason contest. Sign up here: ${appUrl}
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-primary" style="flex:1;" id="refer-copy-btn">📋 Copy</button>
+        <button class="btn btn-gold" style="flex:1;" id="refer-share-btn">📤 Share</button>
+      </div>
+    </div>
+  `;
+
+  // copy to clipboard
+  document.getElementById('refer-copy-btn').onclick = async () => {
+    const msg = document.getElementById('refer-msg-box').innerText.trim();
+    try {
+      await navigator.clipboard.writeText(msg);
+      const btn = document.getElementById('refer-copy-btn');
+      btn.textContent = '✓ Copied!';
+      setTimeout(() => { if(btn) btn.textContent = '📋 Copy'; }, 2000);
+    } catch(e) { showToast('Copy failed — try long-pressing the message text', 'error'); }
+  };
+
+  // native share sheet (works great on mobile)
+  document.getElementById('refer-share-btn').onclick = async () => {
+    const msg = document.getElementById('refer-msg-box').innerText.trim();
+    if (navigator.share) {
+      try {
+        await navigator.share({ text: msg });
+      } catch(e) { /* user cancelled share */ }
+    } else {
+      // fallback: open SMS link
+      window.open('sms:?body=' + encodeURIComponent(msg));
+    }
+  };
+}
+
 /* ============================================================
    SLATE / PICKS VIEW (regular season)
    ============================================================ */
@@ -1763,6 +1677,196 @@ function isBowlPhasePosted(phase) {
 }
 function getMyBowlPicksForPhase(phase) { return (State.bowlPicks || []).filter(p => p.phase === phase && p.playerId === State.player.id); }
 function getMyBowlChampionPick() { return (State.bowlChampion || []).find(c => c.playerId === State.player.id); }
+
+function renderRules(content) {
+  const fee = State.season.entryFee || 100;
+  const weekly = State.season.weeklyPrize || 100;
+  const perfect = State.season.perfectWeekBonus || 100;
+  const p1 = State.season.seasonPayout1stPct || 36.5;
+  const p2 = State.season.seasonPayout2ndPct || 17;
+  const p3 = State.season.seasonPayout3rdPct || 10;
+  const bowlFee = State.season.bowlEntryFee || 25;
+
+  content.innerHTML = `
+    <div class="section-label">Regular Season</div>
+
+    <div class="card">
+      <div class="card-title">Entry & Format</div>
+      <p class="helptext" style="line-height:1.7;">
+        Each player pays a <strong style="color:var(--text);">$${fee} season entry fee</strong> to Jeff before the season begins.
+        The league runs the full college football regular season. Each week, one randomly selected player
+        acts as the <strong style="color:var(--gold);">Picker</strong> — they choose 10 games from that week's ESPN slate
+        to put on the board. Every player then picks a winner against the opening line for all 10 games.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">The Upset Special 🏈</div>
+      <p class="helptext" style="line-height:1.7;">
+        In addition to your 10 straight picks, you must also designate one <strong style="color:var(--gold);">Upset Special</strong> each week.
+        This can be <em>any underdog playing that week</em> — not just from the 10 board games.
+        If your upset underdog wins outright, you earn bonus points equal to the opening line spread.
+        The bigger the underdog, the bigger the reward. If the favorite wins, you score zero on the upset pick.
+      </p>
+      <div style="background:var(--surface-2); border-radius:var(--radius-sm); padding:10px 14px; margin-top:10px;">
+        <div class="helptext"><strong style="color:var(--text);">Example:</strong> You pick Michigan +14.5 as your Upset Special.
+        Michigan wins outright → you earn <strong style="color:var(--win);">14.5 bonus points</strong>.
+        Michigan loses → <strong style="color:var(--loss);">0 points</strong> on the upset pick.</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Scoring</div>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--hairline);">
+          <div class="helptext">Correct straight pick</div>
+          <div class="mono" style="color:var(--win); font-weight:700;">+1 pt</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--hairline);">
+          <div class="helptext">Upset Special — underdog wins outright</div>
+          <div class="mono" style="color:var(--win); font-weight:700;">+spread pts</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--hairline);">
+          <div class="helptext">Upset Special — favorite wins</div>
+          <div class="mono" style="color:var(--loss); font-weight:700;">0 pts</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0;">
+          <div class="helptext">Perfect week (10/10 correct)</div>
+          <div class="mono" style="color:var(--gold); font-weight:700;">+$${perfect} bonus</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Pick Locking</div>
+      <p class="helptext" style="line-height:1.7;">
+        Picks lock <strong style="color:var(--text);">5 minutes before each game's kickoff</strong> — not all at once.
+        You can change your picks on individual games right up until they kick off.
+        Once a game kicks off, your pick for that game is locked and visible to the rest of the league.
+        If you miss submitting before a game kicks off, the favorite is automatically assigned as your pick.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">The Picker Rotation</div>
+      <p class="helptext" style="line-height:1.7;">
+        The commissioner assigns one player as Picker each week, either manually or by random draw.
+        The app tracks who has picked before so everyone gets a turn before anyone repeats.
+        The Picker selects 10 games from Sunday's opening line snapshot — lines shown are the
+        <strong style="color:var(--gold);">opening lines only</strong>, never live updated lines.
+        All players pick against those same opening lines for the entire week.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Weekly & Season Prizes 💰</div>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--hairline);">
+          <div class="helptext">Weekly high score</div>
+          <div class="mono" style="color:var(--win); font-weight:700;">$${weekly}</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--hairline);">
+          <div class="helptext">Perfect week bonus</div>
+          <div class="mono" style="color:var(--win); font-weight:700;">$${perfect}</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--hairline);">
+          <div class="helptext">Season 1st place</div>
+          <div class="mono" style="color:var(--win); font-weight:700;">${p1}% of pot</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--hairline);">
+          <div class="helptext">Season 2nd place</div>
+          <div class="mono" style="color:var(--win); font-weight:700;">${p2}% of pot</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0;">
+          <div class="helptext">Season 3rd place</div>
+          <div class="mono" style="color:var(--win); font-weight:700;">${p3}% of pot</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label" style="margin-top:8px;">Bowl Bonanza</div>
+
+    <div class="card">
+      <div class="card-title">Entry & Format</div>
+      <p class="helptext" style="line-height:1.7;">
+        The Bowl Bonanza is a separate contest running through bowl season.
+        Entry fee is <strong style="color:var(--text);">$${bowlFee} per player</strong>, paid separately from the regular season fee.
+        All 43 players participate. The contest runs in three phases as the bowl schedule progresses.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Phase 1 — Bowl Round (41 Games)</div>
+      <p class="helptext" style="line-height:1.7;">
+        Pick a winner against the line for all 41 bowl games. Each correct pick earns
+        <strong style="color:var(--text);">1 point</strong>. You also get
+        <strong style="color:var(--gold);">2 Upset Special picks</strong> — designate any two underdogs
+        for bonus points equal to their spread if they win outright.
+        Your total correct picks in Round 1 serve as the tiebreaker for all later phases.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Phase 2 — Quarterfinals (4 Games)</div>
+      <p class="helptext" style="line-height:1.7;">
+        Pick winners for the 4 College Football Playoff quarterfinal games.
+        Each correct pick earns <strong style="color:var(--text);">3 points</strong>.
+        No upset special in this round.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Phase 3 — Semifinals (2 Games)</div>
+      <p class="helptext" style="line-height:1.7;">
+        Pick winners for the 2 semifinal games.
+        Each correct pick earns <strong style="color:var(--text);">4 points</strong>.
+        No upset special in this round.
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Champion Pick (5 Points)</div>
+      <p class="helptext" style="line-height:1.7;">
+        Before the championship game, pick the winner.
+        A correct champion pick earns <strong style="color:var(--gold);">5 points</strong>.
+        Tiebreaker is Round 1 correct picks total.
+      </p>
+    </div>
+
+    <div class="card" style="border:1px solid rgba(242,182,50,0.3);">
+      <div class="card-title" style="color:var(--gold);">Bowl Point Summary</div>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--hairline);">
+          <div class="helptext">Round 1 correct pick</div>
+          <div class="mono" style="color:var(--win); font-weight:700;">1 pt each</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--hairline);">
+          <div class="helptext">Round 1 Upset Special (×2)</div>
+          <div class="mono" style="color:var(--win); font-weight:700;">+spread pts</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--hairline);">
+          <div class="helptext">Quarterfinal correct pick</div>
+          <div class="mono" style="color:var(--win); font-weight:700;">3 pts each</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--hairline);">
+          <div class="helptext">Semifinal correct pick</div>
+          <div class="mono" style="color:var(--win); font-weight:700;">4 pts each</div>
+        </div>
+        <div style="display:flex; justify-content:space-between; padding:6px 0;">
+          <div class="helptext">Champion correct pick</div>
+          <div class="mono" style="color:var(--gold); font-weight:700;">5 pts</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:32px;">
+      <div class="card-title">Questions?</div>
+      <p class="helptext" style="line-height:1.7;">
+        Contact commissioner <strong style="color:var(--text);">Jeff Wilkerson (VOLZ)</strong> with any questions about rules, payments, or standings.
+      </p>
+    </div>
+  `;
+}
 
 function renderBowl(content) {
   const tabs = ['round1', 'quarter', 'semi', 'champion', 'standings'];
