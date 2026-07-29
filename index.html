@@ -361,6 +361,9 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 .champion-team-pick.selected{ background:var(--upset-grad); color:#1A1206; border-color:transparent; box-shadow: var(--glow-gold); }
 
 .auto-default-flag{ font-size:10px; color:var(--text-faint); font-style:italic; margin-left:6px; }
+.tab-btn{ flex:1; padding:10px 6px; background:none; border:none; border-bottom:2px solid transparent; color:var(--text-faint); font-size:13px; font-weight:600; cursor:pointer; transition:all 0.15s var(--ease); }
+.tab-btn:hover{ color:var(--text); }
+.tab-btn.active{ color:var(--gold); border-bottom-color:var(--gold); }
 
 /* version update banner */
 .version-banner{
@@ -403,11 +406,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v2.4';
-const BUILD_TIME = '2026-07-29T17:05:48Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v2.8';
+const BUILD_TIME = '2026-07-29T19:06:26Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbzLm942tn6X3WgEmB5P2_U9Foj10uhZE4aJ8j2qa2EC21S3zRaIspIk5QNYzfJ81pfU/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbxLIyGUD8OeGPDTBVgieGaWhgKfH8idsqHLVvlnrqWBmmw1DlgJSMyxOb1fCPZ82E4K/exec'
 };
 
 const State = {
@@ -1074,11 +1077,11 @@ function renderPickerSubmissionForm(content, week) {
   content.innerHTML = `
     <div class="card" style="background:var(--upset-grad); color:#1A1206;">
       <div style="font-family:var(--font-display); font-size:18px; font-weight:700;">You're the Picker — Week ${week}</div>
-      <div style="font-size:12px; margin-top:4px; opacity:0.8;">Select exactly 10 games from this week's ESPN slate. Lines and kickoff times come with them automatically.</div>
+      <div style="font-size:12px; margin-top:4px; opacity:0.8;">Select the games from this week's ESPN slate. Lines and kickoff times come with them automatically.</div>
     </div>
     <div class="card" style="padding:12px 16px;">
       <div class="flex-between" style="margin-bottom:10px;">
-        <div id="picker-count-badge" style="font-family:var(--font-display); font-size:22px; color:var(--text);">0 / 10 selected</div>
+        <div id="picker-count-badge" style="font-family:var(--font-display); font-size:22px; color:var(--text);">0 selected</div>
         <div style="display:flex; gap:8px; align-items:center;">
           <input type="date" id="picker-start-date" style="padding:7px 10px; border-radius:8px; border:1px solid var(--hairline); background:var(--surface-2); color:var(--text); font-size:12px;">
           <span class="helptext">to</span>
@@ -1206,8 +1209,9 @@ function renderPickerGamesList(week) {
       if (idx >= 0) {
         _pickerSelectedGames.splice(idx, 1); // deselect
       } else {
-        if (_pickerSelectedGames.length >= 10) {
-          showToast('You already have 10 games — deselect one first', 'error');
+        const maxGames = Math.min(_pickerAllGames.length, 10);
+        if (_pickerSelectedGames.length >= maxGames) {
+          showToast(`You already have ${maxGames} games — deselect one first`, 'error');
           return;
         }
         _pickerSelectedGames.push(game);
@@ -1230,21 +1234,23 @@ function kickoffBucket(kickoff) {
 
 function updatePickerCount() {
   const n = _pickerSelectedGames.length;
+  const max = Math.min(_pickerAllGames.length || 10, 10);
   const badge = document.getElementById('picker-count-badge');
   const btn = document.getElementById('submit-slate-btn');
   if (badge) {
-    badge.textContent = `${n} / 10 selected`;
-    badge.style.color = n === 10 ? 'var(--win)' : n > 0 ? 'var(--gold)' : 'var(--text)';
+    badge.textContent = `${n} / ${max} selected`;
+    badge.style.color = n === max ? 'var(--win)' : n > 0 ? 'var(--gold)' : 'var(--text)';
   }
   if (btn) {
-    btn.disabled = n !== 10;
-    btn.textContent = n === 10 ? 'Submit My 10 Games ✓' : `Select ${10 - n} More Game${10 - n === 1 ? '' : 's'}`;
+    btn.disabled = n !== max;
+    btn.textContent = n === max ? `Submit My ${max} Games ✓` : `Select ${max - n} More Game${max - n === 1 ? '' : 's'}`;
   }
 }
 
 async function submitSlate() {
   const week = currentWeek();
-  if (_pickerSelectedGames.length !== 10) { showToast('Select exactly 10 games', 'error'); return; }
+  const max = Math.min(_pickerAllGames.length || 10, 10);
+  if (_pickerSelectedGames.length !== max) { showToast(`Select all ${max} games`, 'error'); return; }
   const btn = document.getElementById('submit-slate-btn');
   btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
   try {
@@ -1555,7 +1561,7 @@ async function submitMyPicks(week, games) {
     return { gameId: g.gameId, pickedTeam: d.pickedTeam, isUpset: false };
   }).filter(Boolean);
 
-  if (picks.length !== 10) { showToast('Pick all 10 games before submitting', 'error'); return; }
+  if (picks.length !== games.length) { showToast(`Pick all ${games.length} games before submitting`, 'error'); return; }
 
   let upsetPick = null;
   if (_upsetMode === 'board') {
@@ -1634,22 +1640,316 @@ function computeStandingsLocally() {
 
 function renderStandings(content) {
   const standings = computeStandingsLocally();
+  const week = currentWeek();
+
+  // find all completed weeks from games data
+  const completedWeeks = [...new Set(
+    (State.games || [])
+      .filter(g => isGameFinal(g))
+      .map(g => Number(g.week))
+  )].sort((a, b) => a - b);
+
+  const activeTab = State._standingsTab || 'season';
+
   content.innerHTML = `
-    <div class="card">
-      <div class="card-title">Season Standings</div>
-      ${standings.length === 0 ? '<div class="empty-state"><p>No completed games yet this season.</p></div>' : standings.map((s, i) => `
-        <div class="standing-row ${i === 0 ? 'rank-1' : ''}">
-          <div class="standing-rank">${i + 1}</div>
-          <div style="flex:1;">
-            <div class="standing-name">${escapeHtml(s.teamName || s.name)}</div>
-            <div class="standing-meta">${escapeHtml(s.name)} &middot; ${s.correct} correct &middot; ${s.upsetWins}/${s.upsetAttempts} upset specials hit</div>
+    <div style="display:flex; gap:0; border-bottom:1px solid var(--hairline); margin-bottom:12px; overflow-x:auto;">
+      <button class="tab-btn ${activeTab === 'season' ? 'active' : ''}" data-tab="season">Season</button>
+      <button class="tab-btn ${activeTab === 'weekly' ? 'active' : ''}" data-tab="weekly">By Week</button>
+      <button class="tab-btn ${activeTab === 'mine' ? 'active' : ''}" data-tab="mine">My History</button>
+      <button class="tab-btn ${activeTab === 'career' ? 'active' : ''}" data-tab="career">Career</button>
+    </div>
+    <div id="standings-tab-content"></div>
+  `;
+
+  content.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.onclick = () => {
+      State._standingsTab = btn.dataset.tab;
+      renderStandings(content);
+    };
+  });
+
+  const tabContent = document.getElementById('standings-tab-content');
+
+  if (activeTab === 'season') {
+    renderSeasonStandings(tabContent, standings, completedWeeks);
+  } else if (activeTab === 'weekly') {
+    renderWeeklyHistory(tabContent, standings, completedWeeks);
+  } else if (activeTab === 'career') {
+    renderCareerStandings(tabContent);
+  } else {
+    renderMyHistory(tabContent, completedWeeks);
+  }
+}
+
+function renderSeasonStandings(el, standings, completedWeeks) {
+  el.innerHTML = standings.length === 0
+    ? '<div class="empty-state"><p>No completed games yet this season.</p></div>'
+    : `
+      <div class="card" style="padding:0; overflow:hidden;">
+        ${standings.map((s, i) => `
+          <div class="standing-row ${i === 0 ? 'rank-1' : ''}" style="padding:12px 16px; border-bottom:${i < standings.length-1 ? '1px solid var(--hairline)' : 'none'};">
+            <div class="standing-rank" style="color:${i === 0 ? 'var(--gold)' : i === 1 ? 'var(--text-soft)' : i === 2 ? '#cd7f32' : 'var(--text-faint)'};">${i + 1}</div>
+            <div style="flex:1;">
+              <div class="standing-name">${escapeHtml(s.teamName || s.name)}</div>
+              <div class="standing-meta">${escapeHtml(s.name)} &middot; ${s.correct} correct &middot; ${s.upsetWins}/${s.upsetAttempts} upsets hit</div>
+            </div>
+            <div style="text-align:right;">
+              <div class="standing-points ${i === 0 ? 'pulse-update' : ''}">${s.points % 1 === 0 ? s.points : s.points.toFixed(1)}</div>
+              ${completedWeeks.length > 0 ? `<div class="helptext" style="font-size:10px; margin-top:2px;">${completedWeeks.map(w => {
+                const pts = s.weeklyBreakdown[w] || 0;
+                return `<span title="Week ${w}" style="margin-left:4px; color:${pts >= 8 ? 'var(--win)' : pts >= 5 ? 'var(--gold)' : 'var(--text-faint)'};">${pts % 1 === 0 ? pts : pts.toFixed(1)}</span>`;
+              }).join('')}</div>` : ''}
+            </div>
           </div>
-          <div class="standing-points ${i === 0 ? 'pulse-update' : ''}">${s.points % 1 === 0 ? s.points : s.points.toFixed(1)}</div>
+        `).join('')}
+      </div>
+      <p class="helptext" style="text-align:center; margin-top:8px;">1 pt per correct pick &middot; Upset Special pays the spread if underdog wins outright</p>
+    `;
+}
+
+function renderWeeklyHistory(el, standings, completedWeeks) {
+  if (completedWeeks.length === 0) {
+    el.innerHTML = '<div class="empty-state"><p>No completed weeks yet.</p></div>';
+    return;
+  }
+
+  const selectedWeek = State._historyWeek || completedWeeks[completedWeeks.length - 1];
+
+  // compute week winner and stats
+  const weekStandings = standings
+    .map(s => ({ ...s, weekPoints: s.weeklyBreakdown[selectedWeek] || 0 }))
+    .filter(s => s.weekPoints > 0 || true)
+    .sort((a, b) => b.weekPoints - a.weekPoints);
+
+  const weekGames = (State.games || []).filter(g => Number(g.week) === selectedWeek && isGameFinal(g));
+  const weekPicks = (State.picks || []).filter(p => Number(p.week) === selectedWeek);
+
+  el.innerHTML = `
+    <div class="card" style="padding:10px 14px;">
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        ${completedWeeks.map(w => `
+          <button class="btn btn-sm ${w === selectedWeek ? 'btn-primary' : 'btn-ghost'}" data-week="${w}">Week ${w}</button>
+        `).join('')}
+      </div>
+    </div>
+
+    ${weekGames.length > 0 ? `
+      <div class="section-label">Week ${selectedWeek} Results</div>
+      <div class="card" style="padding:0; overflow:hidden;">
+        ${weekGames.map(g => {
+          const result = computeGameResult(g);
+          const dog = underdogOf(g);
+          return `
+            <div style="padding:10px 14px; border-bottom:1px solid var(--hairline); display:flex; justify-content:space-between; align-items:center;">
+              <div>
+                <div style="font-size:13px; font-weight:700; color:var(--text);">${escapeHtml(g.awayTeam)} @ ${escapeHtml(g.homeTeam)}</div>
+                <div class="helptext">${escapeHtml(g.favorite)} -${fmtSpread(g.spread)} &middot; Dog: ${escapeHtml(dog)}</div>
+              </div>
+              <div style="text-align:right;">
+                <div class="mono" style="font-size:14px; font-weight:700; color:${result.winner === dog ? 'var(--gold)' : 'var(--text)'};">
+                  ${result.awayScore} – ${result.homeScore}
+                </div>
+                <div class="helptext" style="color:${result.winner === dog ? 'var(--gold)' : 'var(--text-faint)'};">
+                  ${result.winner === dog ? '🚨 UPSET' : escapeHtml(result.winner) + ' wins'}
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    ` : ''}
+
+    <div class="section-label">Week ${selectedWeek} Scores</div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      ${weekStandings.slice(0, 10).map((s, i) => `
+        <div style="padding:10px 14px; border-bottom:1px solid var(--hairline); display:flex; align-items:center; gap:10px;">
+          <div style="width:20px; text-align:center; color:var(--text-faint); font-weight:700;">${i + 1}</div>
+          <div style="flex:1;">
+            <div style="font-size:13px; font-weight:700; color:var(--text);">${escapeHtml(s.teamName || s.name)}</div>
+          </div>
+          <div class="mono" style="font-weight:700; color:${i === 0 ? 'var(--gold)' : 'var(--text)'};">${s.weekPoints % 1 === 0 ? s.weekPoints : s.weekPoints.toFixed(1)}</div>
         </div>
       `).join('')}
     </div>
-    <p class="helptext" style="text-align:center;">1 pt per correct pick &middot; Upset Special pays out at the underdog's line if it wins outright.</p>
   `;
+
+  el.querySelectorAll('[data-week]').forEach(btn => {
+    btn.onclick = () => { State._historyWeek = Number(btn.dataset.week); renderWeeklyHistory(el, standings, completedWeeks); };
+  });
+}
+
+function renderMyHistory(el, completedWeeks) {
+  const myId = State.player.id;
+  if (completedWeeks.length === 0) {
+    el.innerHTML = '<div class="empty-state"><p>No completed weeks yet.</p></div>';
+    return;
+  }
+
+  const selectedWeek = State._myHistoryWeek || completedWeeks[completedWeeks.length - 1];
+  const weekGames = (State.games || []).filter(g => Number(g.week) === selectedWeek && g.source !== 'external');
+  const myPicks = (State.picks || []).filter(p => p.playerId === myId && Number(p.week) === selectedWeek);
+  const myUpset = myPicks.find(p => p.isUpset === true || p.isUpset === 'TRUE');
+
+  let weekPts = 0, correct = 0;
+  const rows = weekGames.map(g => {
+    const result = computeGameResult(g);
+    const myPick = myPicks.find(p => p.gameId === g.gameId);
+    const dog = underdogOf(g);
+    const isUpsetPick = myUpset && myUpset.gameId === g.gameId;
+    let pts = 0, status = '—';
+    if (result.isFinal && myPick) {
+      if (isUpsetPick) {
+        if (result.winner === dog) { pts = Number(g.spread); status = `+${fmtSpread(g.spread)} 🚨`; }
+        else { pts = 0; status = 'Upset miss'; }
+      } else {
+        if (result.winner === myPick.pickedTeam) { pts = 1; correct++; status = '+1'; }
+        else { status = 'Miss'; }
+      }
+    }
+    weekPts += pts;
+    return { g, result, myPick, isUpsetPick, pts, status, dog };
+  });
+
+  el.innerHTML = `
+    <div class="card" style="padding:10px 14px;">
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        ${completedWeeks.map(w => `
+          <button class="btn btn-sm ${w === selectedWeek ? 'btn-primary' : 'btn-ghost'}" data-week="${w}">Week ${w}</button>
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="card" style="display:flex; gap:0; padding:0; overflow:hidden;">
+      <div style="flex:1; text-align:center; padding:14px 8px; border-right:1px solid var(--hairline);">
+        <div class="mono" style="font-size:24px; font-weight:700; color:var(--gold);">${weekPts % 1 === 0 ? weekPts : weekPts.toFixed(1)}</div>
+        <div class="helptext">Points</div>
+      </div>
+      <div style="flex:1; text-align:center; padding:14px 8px; border-right:1px solid var(--hairline);">
+        <div class="mono" style="font-size:24px; font-weight:700; color:var(--text);">${correct}/${weekGames.length}</div>
+        <div class="helptext">Correct</div>
+      </div>
+      <div style="flex:1; text-align:center; padding:14px 8px;">
+        <div class="mono" style="font-size:24px; font-weight:700; color:${myUpset ? 'var(--gold)' : 'var(--text-faint)'};">${myUpset ? '✓' : '—'}</div>
+        <div class="helptext">Upset Pick</div>
+      </div>
+    </div>
+
+    <div class="section-label">Week ${selectedWeek} — My Picks</div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      ${rows.length === 0 ? '<div style="padding:16px; text-align:center;" class="helptext">No picks on record for this week.</div>' :
+        rows.map(({ g, result, myPick, isUpsetPick, pts, status, dog }) => `
+          <div style="padding:10px 14px; border-bottom:1px solid var(--hairline); display:flex; align-items:center; gap:10px;">
+            <div style="flex:1;">
+              <div style="font-size:12px; font-weight:700; color:var(--text);">${escapeHtml(g.awayTeam)} @ ${escapeHtml(g.homeTeam)}</div>
+              <div class="helptext" style="margin-top:2px;">
+                My pick: <strong style="color:${isUpsetPick ? 'var(--gold)' : 'var(--text)'};">${myPick ? escapeHtml(myPick.pickedTeam) : 'No pick'}</strong>
+                ${isUpsetPick ? ' 🚨 Upset Special' : ''}
+              </div>
+              ${result.isFinal ? `<div class="helptext" style="margin-top:2px; color:var(--text-faint);">Final: ${result.awayScore}–${result.homeScore} &middot; Winner: ${escapeHtml(result.winner)}</div>` : ''}
+            </div>
+            <div class="mono" style="font-weight:700; color:${pts > 0 ? 'var(--win)' : status === 'Miss' || status === 'Upset miss' ? 'var(--loss)' : 'var(--text-faint)'}; font-size:14px; flex-shrink:0;">${status}</div>
+          </div>
+        `).join('')}
+    </div>
+  `;
+
+  el.querySelectorAll('[data-week]').forEach(btn => {
+    btn.onclick = () => { State._myHistoryWeek = Number(btn.dataset.week); renderMyHistory(el, completedWeeks); };
+  });
+}
+
+async function renderCareerStandings(el) {
+  el.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading career data…</p></div>';
+
+  // fetch from backend if not cached
+  if (!State._careerHistory) {
+    try {
+      const data = await api('getCareerHistory');
+      State._careerHistory = data.history || [];
+    } catch(e) {
+      el.innerHTML = '<div class="empty-state"><p>Could not load career data.</p></div>';
+      return;
+    }
+  }
+
+  const history = State._careerHistory;
+  if (!history.length) {
+    el.innerHTML = '<div class="empty-state"><p>No career history loaded yet.</p></div>';
+    return;
+  }
+
+  // Get all years present
+  const years = [...new Set(history.map(r => r.year))].sort((a, b) => a - b);
+  const selectedYear = State._careerYear || 'all';
+
+  // Aggregate by player identity: use playerId if matched, else teamName as key
+  const totals = {};
+  history.forEach(r => {
+    if (selectedYear !== 'all' && r.year !== selectedYear) return;
+    const key = r.playerId || r.teamName;
+    if (!totals[key]) {
+      totals[key] = {
+        key, name: r.name, teamName: r.teamName,
+        playerId: r.playerId, matched: r.matched,
+        total: 0, seasons: {}
+      };
+    }
+    totals[key].total += r.points;
+    totals[key].seasons[r.year] = r.points;
+  });
+
+  const rows = Object.values(totals).sort((a, b) => b.total - a.total);
+  const myKey = State.player.id || State.player.teamName;
+
+  el.innerHTML = `
+    <div class="card" style="padding:10px 14px;">
+      <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+        <button class="btn btn-sm ${selectedYear === 'all' ? 'btn-primary' : 'btn-ghost'}" data-year="all">All Time</button>
+        ${years.map(y => `<button class="btn btn-sm ${selectedYear === y ? 'btn-primary' : 'btn-ghost'}" data-year="${y}">${y}</button>`).join('')}
+      </div>
+    </div>
+
+    <div class="section-label">${selectedYear === 'all' ? 'All-Time Leaderboard' : selectedYear + ' Season'}</div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      ${rows.length === 0 ? '<div style="padding:16px;" class="helptext">No data for this year.</div>' :
+        rows.map((r, i) => {
+          const isMe = r.playerId === State.player.id;
+          const pts = r.total % 1 === 0 ? r.total : r.total.toFixed(1);
+          // mini sparkline: points per year as colored dots
+          const spark = years.map(y => {
+            const p = r.seasons[y] || 0;
+            const color = p >= 100 ? 'var(--win)' : p >= 60 ? 'var(--gold)' : p > 0 ? 'var(--text-faint)' : 'transparent';
+            return `<span title="${y}: ${p || '—'}" style="display:inline-block; width:6px; height:6px; border-radius:50%; background:${color}; margin:0 1px;"></span>`;
+          }).join('');
+
+          return `
+            <div style="padding:10px 14px; border-bottom:1px solid var(--hairline); display:flex; align-items:center; gap:10px; ${isMe ? 'background:rgba(255,186,0,0.06);' : ''}">
+              <div style="width:24px; text-align:center; font-weight:700; color:${i === 0 ? 'var(--gold)' : i === 1 ? 'var(--text-soft)' : i === 2 ? '#cd7f32' : 'var(--text-faint)'}; font-size:13px;">${i + 1}</div>
+              <div style="flex:1; min-width:0;">
+                <div style="font-size:13px; font-weight:700; color:${isMe ? 'var(--gold)' : 'var(--text)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                  ${escapeHtml(r.teamName)}${isMe ? ' ★' : ''}
+                </div>
+                <div class="helptext" style="margin-top:3px;">${escapeHtml(r.name)}${!r.matched ? ' <span style="color:var(--text-faint); font-style:italic;">(unlinked)</span>' : ''}</div>
+                ${selectedYear === 'all' ? `<div style="margin-top:4px;">${spark}</div>` : ''}
+              </div>
+              <div style="text-align:right; flex-shrink:0;">
+                <div class="mono" style="font-size:16px; font-weight:700; color:${isMe ? 'var(--gold)' : i === 0 ? 'var(--gold)' : 'var(--text)'};">${pts}</div>
+                ${selectedYear === 'all' ? `<div class="helptext">${Object.keys(r.seasons).length} season${Object.keys(r.seasons).length !== 1 ? 's' : ''}</div>` : ''}
+              </div>
+            </div>
+          `;
+        }).join('')}
+    </div>
+
+    ${!history.every(r => r.matched) ? `<p class="helptext" style="text-align:center; margin-top:8px; font-style:italic;">Some historical team names haven't been linked to current players yet. Jeff can map them from the Admin panel.</p>` : ''}
+  `;
+
+  el.querySelectorAll('[data-year]').forEach(btn => {
+    btn.onclick = () => {
+      State._careerYear = btn.dataset.year === 'all' ? 'all' : Number(btn.dataset.year);
+      renderCareerStandings(el);
+    };
+  });
 }
 
 /* ============================================================
@@ -2270,6 +2570,11 @@ function renderAdminWeek(el) {
         <p class="helptext" style="margin-top:6px; color:var(--gold);">This week's snapshot: <strong>${State.snapshotCount || 0} games</strong> with Monday opening lines on file.</p>
         <p class="helptext" style="margin-top:8px;">Use once the week has started — fills in the favorite for anyone who didn't submit picks, per league rule.</p>
       </div>
+      <div class="card" style="border:1px solid rgba(255,77,94,0.3);">
+        <div class="card-title" style="color:var(--loss);">⚠️ Clear Week ${week} Data</div>
+        <p class="helptext" style="line-height:1.6;">Wipes all games, picks, and snapshot rows for Week ${week}. Use after a test week to start fresh. <strong style="color:var(--text);">Cannot be undone.</strong></p>
+        <button class="btn btn-danger btn-block" id="clear-week-btn" style="margin-top:10px;">Clear All Week ${week} Data</button>
+      </div>
     ` : ''}
   `;
 
@@ -2338,6 +2643,17 @@ function renderAdminWeek(el) {
         showToast(`Snapshot updated — ${data.added} new games added, ${data.existing} already on file`, 'success');
         btn.innerHTML = 'Add Missing Lines to Snapshot';
       } catch(e) { btn.innerHTML = 'Add Missing Lines to Snapshot'; }
+    };
+    document.getElementById('clear-week-btn').onclick = async () => {
+      if (!confirm(`⚠️ This will permanently delete all games, picks, and snapshot data for Week ${week}. Are you sure?`)) return;
+      const btn = document.getElementById('clear-week-btn');
+      btn.innerHTML = '<span class="spinner"></span>';
+      try {
+        await api('adminClearWeek', { adminId: State.player.id, week });
+        showToast(`Week ${week} data cleared`, 'success');
+        await refreshState();
+        renderAdmin(document.getElementById('content'));
+      } catch(e) { btn.innerHTML = `Clear All Week ${week} Data`; }
     };
     document.getElementById('apply-defaults-btn').onclick = async () => {
       try {
