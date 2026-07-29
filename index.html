@@ -3,7 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
-<meta name="theme-color" content="#0A0E16">
+<meta name="theme-color" content="#161B27">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>Upset Special League</title>
 <style>
 /* ============================================================
@@ -210,14 +213,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, .team-pick:focu
 
 .team-logo-row{ display:flex; align-items:center; gap:9px; }
 .team-logo{
-  width:28px; height:28px; border-radius:50%; flex-shrink:0; object-fit:contain;
-  background: var(--surface-3); padding:3px; border:1px solid var(--hairline);
+  width:24px; height:24px; border-radius:50%; flex-shrink:0; object-fit:contain;
+  background: var(--surface-3); padding:2px; border:1px solid var(--hairline);
 }
 .team-logo-fallback{
-  width:28px; height:28px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center;
+  width:24px; height:24px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center;
   background: var(--surface-3); border:1px solid var(--hairline); color: var(--text-faint);
 }
-.team-logo-fallback svg{ width:15px; height:15px; }
+.team-logo-fallback svg{ width:13px; height:13px; }
 .team-pick.selected .team-logo, .team-pick.selected .team-logo-fallback{ border-color: rgba(77,124,255,0.4); }
 .team-pick .tline{ font-family: var(--font-mono); font-size:13px; font-weight:600; color:var(--text-soft); }
 .team-pick.selected .tline{ color: var(--navy-accent); }
@@ -351,6 +354,16 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 
 .auto-default-flag{ font-size:10px; color:var(--text-faint); font-style:italic; margin-left:6px; }
 
+/* version update banner */
+.version-banner{
+  position:fixed; top:0; left:0; right:0; z-index:200;
+  background: var(--upset-grad); color:#1A1206;
+  padding:10px 16px; display:flex; align-items:center; justify-content:space-between;
+  font-size:13px; font-weight:700; box-shadow: var(--shadow-lg);
+  animation: rise 0.3s var(--ease) both;
+}
+.version-banner button{ background:#1A1206; color:#fff; border:none; border-radius:7px; padding:6px 14px; font-weight:700; font-size:12px; cursor:pointer; }
+
 /* ---- Picker game browser rows ---- */
 .picker-game-row{
   display:flex; align-items:center; gap:10px; padding:12px 14px;
@@ -382,8 +395,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
+const VERSION = 'v1.0';
+const BUILD_TIME = '2026-07-29T12:33:01Z'; // auto-identifies this exact build -- never edit manually
+
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbxRM6Xiz75sU48Ejld_oYAjkwU4KgrN3PgrKkrfwqOKlwnasSsdkNDOdQ3LOsqQV_5w/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbxLeUeWHzGCEGQbdkmBpVq_9PeevLGnVXuVIGiR8itqZCDTBwk6XTX2woW3lojSwp8u/exec'
 };
 
 const State = {
@@ -429,15 +445,47 @@ function loadSession() { try { return JSON.parse(localStorage.getItem('usl_playe
 function clearSession() { try { localStorage.removeItem('usl_player'); } catch(e) {} }
 
 async function boot() {
+  // check version first -- show update banner if player is running an old version
+  checkAppVersion();
+
   const saved = loadSession();
   if (saved) {
     State.player = saved;
-    render(); // render immediately from empty state (shows skeleton/empty screens instantly)
+    render();
     try { await refreshState(); renderContent(); } catch(e) { renderContent(); }
     startBackgroundPolling();
   } else {
     renderLogin();
   }
+}
+
+async function checkAppVersion() {
+  try {
+    // fetch this page's own source from the server -- if the BUILD_TIME in the
+    // live file differs from what's running, a newer version has been pushed.
+    // uses cache:reload to always get the server's current version, not a cached copy.
+    const resp = await fetch(window.location.href, { cache: 'reload' });
+    const html = await resp.text();
+    const match = html.match(/BUILD_TIME = '([^']+)'/);
+    if (match && match[1] && match[1] !== BUILD_TIME) {
+      showVersionBanner(match[1]);
+    }
+  } catch(e) { /* version check failure is non-fatal */ }
+}
+
+function showVersionBanner(newVersion) {
+  // remove any existing banner first
+  const existing = document.getElementById('version-banner');
+  if (existing) existing.remove();
+
+  const banner = document.createElement('div');
+  banner.id = 'version-banner';
+  banner.className = 'version-banner';
+  banner.innerHTML = `
+    <span>🏈 A new version of the app is available</span>
+    <button onclick="window.location.reload(true)">Update Now</button>
+  `;
+  document.body.prepend(banner);
 }
 
 async function refreshState() {
@@ -479,7 +527,7 @@ function renderLogin() {
       <div class="login-card">
         <div class="login-logo">
           <div class="login-emblem">${footballEmblemSvg()}</div>
-          <div class="mark">Fantasy College Football</div>
+          <div class="mark">Fantasy College Football &middot; ${VERSION}</div>
           <h1>UPSET<br><span class="accent">SPECIAL</span> LEAGUE</h1>
         </div>
         <div class="field">
@@ -651,7 +699,7 @@ function render() {
     <div class="topbar">
       <div class="brand">
         <div class="brand-name"><span class="topbar-emblem">${footballEmblemSvg()}</span>UPSET <span class="accent">SPECIAL</span></div>
-        <div class="brand-sub">${escapeHtml(State.season.leagueName || 'League')} &middot; ${State.season.year || ''}</div>
+        <div class="brand-sub">${escapeHtml(State.season.leagueName || 'League')} &middot; ${State.season.year || ''} &middot; ${VERSION}</div>
       </div>
       <div class="who">
         <div class="name">${escapeHtml(p.teamName || p.name)}${p.isAdmin ? ' <span style="opacity:0.6">(Admin)</span>' : ''}</div>
@@ -1127,26 +1175,24 @@ function renderPickerGamesList(week) {
       return `
         <div class="picker-game-row ${selected ? 'picker-selected' : ''} ${g.started ? 'picker-started' : ''}"
              data-espnid="${escapeHtml(g.espnEventId)}" style="cursor:${g.started ? 'default' : 'pointer'};">
-          <div style="display:flex; align-items:center; gap:10px; flex:1;">
-            <div style="display:flex; align-items:center; gap:4px; flex-shrink:0;">
+          <div style="display:flex; align-items:center; gap:10px; flex:1; min-width:0;">
+            <div style="display:flex; flex-direction:column; align-items:center; gap:2px; flex-shrink:0;">
               ${renderTeamLogo(g.awayLogo, g.awayTeam)}
-              <span style="color:var(--text-faint); font-size:12px; margin:0 2px;">@</span>
               ${renderTeamLogo(g.homeLogo, g.homeTeam)}
             </div>
             <div style="flex:1; min-width:0;">
-              <div style="font-weight:700; font-size:13px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-                ${escapeHtml(g.awayTeam)} @ ${escapeHtml(g.homeTeam)}
+              <div style="font-weight:700; font-size:13px; color:var(--text); line-height:1.4;">
+                ${escapeHtml(g.awayTeam)} <span style="color:var(--text-faint); font-weight:400;">@</span> ${escapeHtml(g.homeTeam)}
               </div>
               <div style="font-size:11px; color:var(--text-faint); margin-top:2px;">
-                ${kickoffStr}
-                ${g.started ? '<span style="color:var(--loss); margin-left:6px;">● In Progress</span>' : ''}
+                ${kickoffStr}${g.started ? ' <span style="color:var(--loss);">● In Progress</span>' : ''}
               </div>
             </div>
           </div>
-          <div style="text-align:right; flex-shrink:0; margin-left:8px;">
+          <div style="text-align:right; flex-shrink:0; margin-left:8px; max-width:140px;">
             ${hasLine ? `
-              <div class="mono" style="font-size:13px; font-weight:700; color:${g.hasSnapshot ? 'var(--gold)' : 'var(--text-soft)'};">${escapeHtml(g.favorite)} -${fmtSpread(g.spread)}</div>
-              <div style="font-size:10px; margin-top:1px; color:${g.hasSnapshot ? 'var(--gold)' : 'var(--text-faint)'}; opacity:${g.hasSnapshot ? '0.8' : '1'};">
+              <div class="mono" style="font-size:12px; font-weight:700; color:${g.hasSnapshot ? 'var(--gold)' : 'var(--text-soft)'}; white-space:nowrap;">${escapeHtml(g.favorite)} -${fmtSpread(g.spread)}</div>
+              <div style="font-size:10px; margin-top:1px; color:${g.hasSnapshot ? 'var(--gold)' : 'var(--text-faint)'}; opacity:0.8;">
                 ${g.hasSnapshot ? 'Opening line' : 'No opening line yet'}
               </div>
             ` : `<div style="font-size:11px; color:var(--text-faint);">No line yet</div>`}
