@@ -107,8 +107,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, .team-pick:focu
   display:flex; align-items:center; justify-content:space-between;
 }
 .topbar .brand{ display:flex; flex-direction:column; gap:2px; }
-.topbar-emblem{ display:inline-flex; vertical-align:middle; margin-right:6px; width:20px; height:20px; }
-.topbar-emblem svg{ width:20px; height:20px; }
+.topbar-emblem{ display:inline-flex; vertical-align:middle; margin-right:8px; width:32px; height:32px; flex-shrink:0; }
+.topbar-emblem img{ width:32px; height:32px; border-radius:6px; display:block; }
 .topbar .brand-name{
   font-family: var(--font-display);
   font-size: 19px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
@@ -403,8 +403,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v1.6';
-const BUILD_TIME = '2026-07-29T16:21:06Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v1.7';
+const BUILD_TIME = '2026-07-29T16:25:50Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbwPNhUh_r48nM34_TeqTJFeAwcnUyPQ9N3iNi_bzM5svgt9zr39uG5XPCIGn61ii84M/exec'
@@ -861,114 +861,106 @@ function goToView(view) {
    HOME SCREEN
    ============================================================ */
 function renderHome(content) {
-  const week = currentWeek();
-  const p = State.player;
-  const games = getGamesForWeek(week);
-  const myPicks = (State.picks || []).filter(pk => pk.playerId === p.id && Number(pk.week) === week);
-  const rotation = getRotationForWeek(week);
-  const picker = rotation ? State.players.find(pl => pl.id === rotation.playerId) : null;
-  const posted = rotation && rotation.status === 'posted';
-  const appUrl = 'https://acebuilds51.github.io/UpsetSpecial';
+  try {
+    const week = currentWeek();
+    const p = State.player;
+    const season = State.season || {};
+    const games = getGamesForWeek(week);
+    const myPicks = (State.picks || []).filter(pk => pk.playerId === p.id && Number(pk.week) === week);
+    const rotation = getRotationForWeek(week);
+    const picker = rotation ? (State.players || []).find(pl => pl.id === rotation.playerId) : null;
+    const posted = rotation && rotation.status === 'posted';
+    const appUrl = 'https://acebuilds51.github.io/UpsetSpecial';
+    const straightPicks = myPicks.filter(pk => !(pk.isUpset === true || pk.isUpset === 'TRUE'));
+    const upsetPick = myPicks.find(pk => pk.isUpset === true || pk.isUpset === 'TRUE');
+    const entryFee = Number(season.entryFee || 100);
 
-  // my pick summary for this week
-  const straightPicks = myPicks.filter(pk => !(pk.isUpset === true || pk.isUpset === 'TRUE'));
-  const upsetPick = myPicks.find(pk => pk.isUpset === true || pk.isUpset === 'TRUE');
-
-  content.innerHTML = `
-    <div class="card" style="background:var(--upset-grad); color:#1A1206; margin-bottom:4px;">
-      <div style="font-family:var(--font-display); font-size:20px; font-weight:700; line-height:1.2;">
-        ${escapeHtml(State.season.leagueName || 'Upset Special League')}
-      </div>
-      <div style="font-size:12px; margin-top:4px; opacity:0.8;">
-        ${State.season.year || ''} Season &middot; Week ${week}
-      </div>
-    </div>
-
-    <div class="section-label">Quick Look</div>
-    <div class="card" style="display:flex; gap:0; position:relative; overflow:hidden; padding:0;">
-      <div style="position:absolute; right:-10px; top:50%; transform:translateY(-50%); opacity:0.04; pointer-events:none;">
-        ${fieldLinesSvg()}
-      </div>
-      <div style="flex:1; text-align:center; padding:16px 8px; position:relative;">
-        <div class="mono" style="font-size:26px; font-weight:700; color:var(--text);">${games.length}</div>
-        <div class="helptext">Games This Week</div>
-      </div>
-      <div style="flex:1; text-align:center; padding:16px 8px; border-left:1px solid var(--hairline); border-right:1px solid var(--hairline); position:relative;">
-        <div class="mono" style="font-size:26px; font-weight:700; color:var(--gold);">${week}</div>
-        <div class="helptext">Current Week</div>
-      </div>
-      <div style="flex:1; text-align:center; padding:16px 8px; position:relative;">
-        <div class="mono" style="font-size:26px; font-weight:700; color:var(--win);">$${Number(State.season.entryFee || 100)}</div>
-        <div class="helptext">Entry Fee</div>
-      </div>
-    </div>
-
-    <div class="section-label">This Week</div>
-    <div class="card">
-      <div class="flex-between">
-        <div>
-          <div style="font-size:13px; font-weight:700; color:var(--text);">
-            ${!posted ? 'Board not posted yet' : `${games.length} games on the board`}
-          </div>
-          <div class="helptext" style="margin-top:3px;">
-            ${picker ? `Picker: ${escapeHtml(picker.teamName || picker.name)}` : 'No picker assigned yet'}
-          </div>
+    content.innerHTML = `
+      <div class="card" style="background:var(--upset-grad); color:#1A1206; margin-bottom:4px;">
+        <div style="font-family:var(--font-display); font-size:20px; font-weight:700; line-height:1.2;">
+          ${escapeHtml(season.leagueName || 'Upset Special League')}
         </div>
-        ${posted ? `
-          <div style="text-align:right;">
-            <div class="mono" style="font-size:18px; font-weight:700; color:${straightPicks.length === games.length ? 'var(--win)' : 'var(--gold)'};">
-              ${straightPicks.length}/${games.length}
+        <div style="font-size:12px; margin-top:4px; opacity:0.8;">
+          ${season.year || ''} Season &middot; Week ${week}
+        </div>
+      </div>
+
+      <div class="section-label">Quick Look</div>
+      <div class="card" style="display:flex; gap:0; padding:0; overflow:hidden;">
+        <div style="flex:1; text-align:center; padding:16px 8px;">
+          <div class="mono" style="font-size:26px; font-weight:700; color:var(--text);">${games.length}</div>
+          <div class="helptext">Games</div>
+        </div>
+        <div style="flex:1; text-align:center; padding:16px 8px; border-left:1px solid var(--hairline); border-right:1px solid var(--hairline);">
+          <div class="mono" style="font-size:26px; font-weight:700; color:var(--gold);">${week}</div>
+          <div class="helptext">Week</div>
+        </div>
+        <div style="flex:1; text-align:center; padding:16px 8px;">
+          <div class="mono" style="font-size:26px; font-weight:700; color:var(--win);">$${entryFee}</div>
+          <div class="helptext">Entry Fee</div>
+        </div>
+      </div>
+
+      <div class="section-label">This Week</div>
+      <div class="card">
+        <div class="flex-between">
+          <div>
+            <div style="font-size:13px; font-weight:700; color:var(--text);">
+              ${!posted ? 'Board not posted yet' : games.length + ' games on the board'}
             </div>
-            <div class="helptext">My Picks</div>
+            <div class="helptext" style="margin-top:3px;">
+              ${picker ? 'Picker: ' + escapeHtml(picker.teamName || picker.name) : 'No picker assigned yet'}
+            </div>
           </div>
-        ` : ''}
-      </div>
-      ${posted && upsetPick ? `
-        <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--hairline);">
-          <div class="helptext">Upset Special: <strong style="color:var(--gold);">${escapeHtml(upsetPick.pickedTeam)}</strong></div>
+          ${posted ? `<div style="text-align:right;">
+            <div class="mono" style="font-size:18px; font-weight:700; color:${straightPicks.length >= games.length ? 'var(--win)' : 'var(--gold)'};">${straightPicks.length}/${games.length}</div>
+            <div class="helptext">My Picks</div>
+          </div>` : ''}
         </div>
-      ` : ''}
-      <button class="btn btn-primary btn-block" style="margin-top:12px;" onclick="State.view='slate'; renderContent();">
-        ${posted ? 'Make My Picks' : 'View This Week'}
-      </button>
-    </div>
-
-    <div class="section-label">Refer a Friend</div>
-    <div class="card">
-      <div style="font-size:13px; font-weight:700; color:var(--text); margin-bottom:6px;">Know someone who should join?</div>
-      <div style="background:var(--surface-2); border-radius:var(--radius-sm); padding:12px 14px; font-size:12px; color:var(--text-soft); line-height:1.6; margin-bottom:12px;" id="refer-msg-box">
-🏈 Hey! You should join our Upset Special fantasy college football league. $${Number(State.season.entryFee || 100)} entry, weekly cash prizes, and a Bowl Bonanza postseason contest. Sign up here: ${appUrl}
+        ${upsetPick ? `<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--hairline);">
+          <div class="helptext">Upset Special: <strong style="color:var(--gold);">${escapeHtml(upsetPick.pickedTeam)}</strong></div>
+        </div>` : ''}
+        <button class="btn btn-primary btn-block" style="margin-top:12px;" id="go-to-slate-btn">
+          ${posted ? 'Make My Picks' : 'View This Week'}
+        </button>
       </div>
-      <div style="display:flex; gap:8px;">
-        <button class="btn btn-primary" style="flex:1;" id="refer-copy-btn">📋 Copy</button>
-        <button class="btn btn-gold" style="flex:1;" id="refer-share-btn">📤 Share</button>
+
+      <div class="section-label">Refer a Friend</div>
+      <div class="card">
+        <div style="font-size:13px; font-weight:700; color:var(--text); margin-bottom:6px;">Know someone who should join?</div>
+        <div style="background:var(--surface-2); border-radius:var(--radius-sm); padding:12px 14px; font-size:12px; color:var(--text-soft); line-height:1.6; margin-bottom:12px;" id="refer-msg-box">🏈 Hey! You should join our Upset Special fantasy college football league. $${entryFee} entry, weekly cash prizes, and a Bowl Bonanza postseason contest. Sign up here: ${appUrl}</div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-primary" style="flex:1;" id="refer-copy-btn">📋 Copy</button>
+          <button class="btn btn-gold" style="flex:1;" id="refer-share-btn">📤 Share</button>
+        </div>
       </div>
-    </div>
-  `;
+    `;
 
-  // copy to clipboard
-  document.getElementById('refer-copy-btn').onclick = async () => {
-    const msg = document.getElementById('refer-msg-box').innerText.trim();
-    try {
-      await navigator.clipboard.writeText(msg);
-      const btn = document.getElementById('refer-copy-btn');
-      btn.textContent = '✓ Copied!';
-      setTimeout(() => { if(btn) btn.textContent = '📋 Copy'; }, 2000);
-    } catch(e) { showToast('Copy failed — try long-pressing the message text', 'error'); }
-  };
+    document.getElementById('go-to-slate-btn').onclick = () => { State.view = 'slate'; renderContent(); };
 
-  // native share sheet (works great on mobile)
-  document.getElementById('refer-share-btn').onclick = async () => {
-    const msg = document.getElementById('refer-msg-box').innerText.trim();
-    if (navigator.share) {
+    document.getElementById('refer-copy-btn').onclick = async () => {
+      const msg = document.getElementById('refer-msg-box').innerText.trim();
       try {
-        await navigator.share({ text: msg });
-      } catch(e) { /* user cancelled share */ }
-    } else {
-      // fallback: open SMS link
-      window.open('sms:?body=' + encodeURIComponent(msg));
-    }
-  };
+        await navigator.clipboard.writeText(msg);
+        const btn = document.getElementById('refer-copy-btn');
+        btn.textContent = '✓ Copied!';
+        setTimeout(() => { if (btn) btn.textContent = '📋 Copy'; }, 2000);
+      } catch(e) { showToast('Copy failed — try long-pressing the message text', 'error'); }
+    };
+
+    document.getElementById('refer-share-btn').onclick = async () => {
+      const msg = document.getElementById('refer-msg-box').innerText.trim();
+      if (navigator.share) {
+        try { await navigator.share({ text: msg }); } catch(e) {}
+      } else {
+        window.open('sms:?body=' + encodeURIComponent(msg));
+      }
+    };
+
+  } catch(e) {
+    console.error('renderHome error:', e);
+    content.innerHTML = `<div class="empty-state"><p>Home screen error: ${e.message}</p></div>`;
+  }
 }
 
 /* ============================================================
