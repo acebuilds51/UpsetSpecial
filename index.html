@@ -406,8 +406,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v2.8';
-const BUILD_TIME = '2026-07-29T19:06:26Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v2.9';
+const BUILD_TIME = '2026-07-29T19:21:21Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbxLIyGUD8OeGPDTBVgieGaWhgKfH8idsqHLVvlnrqWBmmw1DlgJSMyxOb1fCPZ82E4K/exec'
@@ -1861,7 +1861,6 @@ function renderMyHistory(el, completedWeeks) {
 async function renderCareerStandings(el) {
   el.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading career data…</p></div>';
 
-  // fetch from backend if not cached
   if (!State._careerHistory) {
     try {
       const data = await api('getCareerHistory');
@@ -1878,11 +1877,51 @@ async function renderCareerStandings(el) {
     return;
   }
 
-  // Get all years present
   const years = [...new Set(history.map(r => r.year))].sort((a, b) => a - b);
   const selectedYear = State._careerYear || 'all';
 
-  // Aggregate by player identity: use playerId if matched, else teamName as key
+  // --- compute season podiums (1st/2nd/3rd per year) ---
+  // key: playerId or teamName -> array of finish positions
+  const podiums = {}; // key -> {gold:0, silver:0, bronze:0}
+  years.forEach(yr => {
+    const yrRows = history.filter(r => r.year === yr);
+    const yrSorted = [...yrRows].sort((a, b) => b.points - a.points);
+    yrSorted.forEach((r, idx) => {
+      const key = r.playerId || r.teamName;
+      if (!podiums[key]) podiums[key] = { gold: 0, silver: 0, bronze: 0 };
+      if (idx === 0) podiums[key].gold++;
+      else if (idx === 1) podiums[key].silver++;
+      else if (idx === 2) podiums[key].bronze++;
+    });
+  });
+
+  // --- compute perfect weeks from current season's picks/games ---
+  // A perfect week = player picked all games correctly in a week
+  const perfectWeeks = {}; // playerId -> count
+  const completedWeeks = [...new Set(
+    (State.games || []).filter(g => isGameFinal(g)).map(g => Number(g.week))
+  )];
+  completedWeeks.forEach(wk => {
+    const wkGames = getGamesForWeek(wk).filter(g => isGameFinal(g));
+    if (!wkGames.length) return;
+    (State.players || []).forEach(p => {
+      const myPicks = (State.picks || []).filter(pk => pk.playerId === p.id && Number(pk.week) === wk);
+      const straight = myPicks.filter(pk => !(pk.isUpset === true || pk.isUpset === 'TRUE'));
+      let allCorrect = straight.length === wkGames.length;
+      if (allCorrect) {
+        wkGames.forEach(g => {
+          const result = computeGameResult(g);
+          const pick = straight.find(pk => pk.gameId === g.gameId);
+          if (!pick || result.winner !== pick.pickedTeam) allCorrect = false;
+        });
+      }
+      if (allCorrect) {
+        perfectWeeks[p.id] = (perfectWeeks[p.id] || 0) + 1;
+      }
+    });
+  });
+
+  // --- aggregate career totals ---
   const totals = {};
   history.forEach(r => {
     if (selectedYear !== 'all' && r.year !== selectedYear) return;
@@ -1891,15 +1930,25 @@ async function renderCareerStandings(el) {
       totals[key] = {
         key, name: r.name, teamName: r.teamName,
         playerId: r.playerId, matched: r.matched,
-        total: 0, seasons: {}
+        total: 0, seasons: {}, seasonCount: 0
       };
     }
     totals[key].total += r.points;
     totals[key].seasons[r.year] = r.points;
+    totals[key].seasonCount++;
   });
 
   const rows = Object.values(totals).sort((a, b) => b.total - a.total);
-  const myKey = State.player.id || State.player.teamName;
+
+  const fmtPts = p => p % 1 === 0 ? String(p) : p.toFixed(1);
+  const podiumBadge = (p) => {
+    if (!p) return '';
+    const parts = [];
+    if (p.gold)   parts.push(`<span style="font-size:11px;" title="${p.gold}x 1st place">🥇×${p.gold}</span>`);
+    if (p.silver) parts.push(`<span style="font-size:11px;" title="${p.silver}x 2nd place">🥈×${p.silver}</span>`);
+    if (p.bronze) parts.push(`<span style="font-size:11px;" title="${p.bronze}x 3rd place">🥉×${p.bronze}</span>`);
+    return parts.length ? `<span style="display:inline-flex; gap:4px; margin-left:4px;">${parts.join('')}</span>` : '';
+  };
 
   el.innerHTML = `
     <div class="card" style="padding:10px 14px;">
@@ -1914,34 +1963,54 @@ async function renderCareerStandings(el) {
       ${rows.length === 0 ? '<div style="padding:16px;" class="helptext">No data for this year.</div>' :
         rows.map((r, i) => {
           const isMe = r.playerId === State.player.id;
-          const pts = r.total % 1 === 0 ? r.total : r.total.toFixed(1);
-          // mini sparkline: points per year as colored dots
+          const avg = r.seasonCount > 0 ? (r.total / r.seasonCount) : 0;
+          const pod = podiums[r.key];
+          const perfCount = perfectWeeks[r.playerId] || 0;
+
+          // sparkline dots (all-time view only)
           const spark = years.map(y => {
             const p = r.seasons[y] || 0;
-            const color = p >= 100 ? 'var(--win)' : p >= 60 ? 'var(--gold)' : p > 0 ? 'var(--text-faint)' : 'transparent';
-            return `<span title="${y}: ${p || '—'}" style="display:inline-block; width:6px; height:6px; border-radius:50%; background:${color}; margin:0 1px;"></span>`;
+            const color = p >= 120 ? 'var(--win)' : p >= 80 ? 'var(--gold)' : p > 0 ? 'var(--text-faint)' : 'rgba(255,255,255,0.08)';
+            const border = p === 0 ? '1px solid rgba(255,255,255,0.1)' : 'none';
+            return `<span title="${y}: ${p ? fmtPts(p) : '—'}" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:${color}; border:${border}; margin:0 1px;"></span>`;
           }).join('');
 
+          const rankColor = i === 0 ? 'var(--gold)' : i === 1 ? '#C0C0C0' : i === 2 ? '#cd7f32' : 'var(--text-faint)';
+          const rankLabel = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}`;
+
           return `
-            <div style="padding:10px 14px; border-bottom:1px solid var(--hairline); display:flex; align-items:center; gap:10px; ${isMe ? 'background:rgba(255,186,0,0.06);' : ''}">
-              <div style="width:24px; text-align:center; font-weight:700; color:${i === 0 ? 'var(--gold)' : i === 1 ? 'var(--text-soft)' : i === 2 ? '#cd7f32' : 'var(--text-faint)'}; font-size:13px;">${i + 1}</div>
-              <div style="flex:1; min-width:0;">
-                <div style="font-size:13px; font-weight:700; color:${isMe ? 'var(--gold)' : 'var(--text)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-                  ${escapeHtml(r.teamName)}${isMe ? ' ★' : ''}
+            <div style="padding:12px 14px; border-bottom:1px solid var(--hairline); ${isMe ? 'background:rgba(255,186,0,0.06);' : ''}">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <div style="width:28px; text-align:center; font-size:${i < 3 ? '18px' : '13px'}; font-weight:700; color:${rankColor}; flex-shrink:0;">${rankLabel}</div>
+                <div style="flex:1; min-width:0;">
+                  <div style="font-size:13px; font-weight:700; color:${isMe ? 'var(--gold)' : 'var(--text)'}; display:flex; align-items:center; flex-wrap:wrap; gap:4px;">
+                    <span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(r.teamName)}${isMe ? ' ★' : ''}</span>
+                    ${selectedYear === 'all' ? podiumBadge(pod) : ''}
+                    ${perfCount > 0 ? `<span style="font-size:11px;" title="${perfCount} perfect week${perfCount > 1 ? 's' : ''} this season">💯×${perfCount}</span>` : ''}
+                    ${!r.matched ? '<span style="color:var(--text-faint); font-size:10px; font-style:italic;">(unlinked)</span>' : ''}
+                  </div>
+                  <div class="helptext" style="margin-top:2px;">${escapeHtml(r.name)}</div>
+                  ${selectedYear === 'all' ? `
+                    <div style="display:flex; align-items:center; gap:8px; margin-top:5px;">
+                      <span class="helptext">Avg: <strong style="color:var(--text);">${fmtPts(avg)}</strong>/season</span>
+                      <span class="helptext">${r.seasonCount} season${r.seasonCount !== 1 ? 's' : ''}</span>
+                    </div>
+                    <div style="margin-top:5px;">${spark}</div>
+                  ` : `
+                    <div class="helptext" style="margin-top:2px;">${selectedYear} season</div>
+                  `}
                 </div>
-                <div class="helptext" style="margin-top:3px;">${escapeHtml(r.name)}${!r.matched ? ' <span style="color:var(--text-faint); font-style:italic;">(unlinked)</span>' : ''}</div>
-                ${selectedYear === 'all' ? `<div style="margin-top:4px;">${spark}</div>` : ''}
-              </div>
-              <div style="text-align:right; flex-shrink:0;">
-                <div class="mono" style="font-size:16px; font-weight:700; color:${isMe ? 'var(--gold)' : i === 0 ? 'var(--gold)' : 'var(--text)'};">${pts}</div>
-                ${selectedYear === 'all' ? `<div class="helptext">${Object.keys(r.seasons).length} season${Object.keys(r.seasons).length !== 1 ? 's' : ''}</div>` : ''}
+                <div style="text-align:right; flex-shrink:0;">
+                  <div class="mono" style="font-size:18px; font-weight:700; color:${isMe ? 'var(--gold)' : i === 0 ? 'var(--gold)' : 'var(--text)'};">${fmtPts(r.total)}</div>
+                  ${selectedYear === 'all' ? `<div class="helptext" style="font-size:10px;">pts total</div>` : ''}
+                </div>
               </div>
             </div>
           `;
         }).join('')}
     </div>
 
-    ${!history.every(r => r.matched) ? `<p class="helptext" style="text-align:center; margin-top:8px; font-style:italic;">Some historical team names haven't been linked to current players yet. Jeff can map them from the Admin panel.</p>` : ''}
+    ${!history.every(r => r.matched) ? '<p class="helptext" style="text-align:center; margin-top:8px; font-style:italic;">Some historical names aren\'t linked to current players yet.</p>' : ''}
   `;
 
   el.querySelectorAll('[data-year]').forEach(btn => {
