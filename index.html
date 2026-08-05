@@ -406,11 +406,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v3.1';
-const BUILD_TIME = '2026-07-29T19:30:52Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v3.3';
+const BUILD_TIME = '2026-08-05T08:53:35Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbwrBurwfc0gKJDxMlmOZELtJH442-iLM7Us2K6sLutSICcdaLTSUOnJvLTW3CR-uvS7/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbxTLOTuRJfQAWZg2D53yU3j3E4UiY6KGHwNHec0-wi5cVfsOKQ5ariKOyktL0ivutSr/exec'
 };
 
 const State = {
@@ -1023,6 +1023,24 @@ function isGameStarted(game) {
   return new Date() >= new Date(game.kickoff);
 }
 
+// Upset Special locks 5 minutes before the EARLIEST kickoff of the week.
+// Once the first game of the week kicks off, everyone can see all upset picks.
+function isUpsetSpecialLocked(games) {
+  if (!games || games.length === 0) return false;
+  const kickoffs = games
+    .filter(g => g.kickoff)
+    .map(g => new Date(g.kickoff).getTime());
+  if (kickoffs.length === 0) return false;
+  const earliest = Math.min(...kickoffs);
+  return Date.now() >= earliest - 5 * 60 * 1000;
+}
+
+// Returns true if the earliest game of the week has kicked off (picks visible for upset)
+function isUpsetPicksRevealed(games) {
+  if (!games || games.length === 0) return false;
+  return games.some(g => isGameStarted(g));
+}
+
 function renderCountdownBadge(game) {
   if (isGameFinal(game)) return '<span class="pill pill-final">Final</span>';
   if (!game.kickoff) return '';
@@ -1289,7 +1307,7 @@ function renderPicksBoard(content, week, games) {
       <div class="flex-between">
         <div>
           <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:rgba(255,255,255,0.6);">Week ${week} Board</div>
-          <div id="picked-count-display" style="font-family:var(--font-display); font-size:18px; margin-top:2px;">${straightCount} / 10 picked</div>
+          <div id="picked-count-display" style="font-family:var(--font-display); font-size:18px; margin-top:2px;">${straightCount} / ${games.length} picked</div>
         </div>
         <div style="text-align:right;">
           <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:rgba(255,255,255,0.6);">Upset Special</div>
@@ -1299,17 +1317,39 @@ function renderPicksBoard(content, week, games) {
     </div>
     <div id="games-board"></div>
     <div class="section-label">Upset Special</div>
-    <div class="card">
-      <div class="tab-row">
-        <button data-upsetmode="board" class="${_upsetMode === 'board' ? 'active' : ''}">From This Week's 10</button>
-        <button data-upsetmode="search" class="${_upsetMode === 'search' ? 'active' : ''}">Search Any Game</button>
+    ${isUpsetSpecialLocked(games) ? `
+      <div class="card">
+        <div style="font-size:13px; font-weight:700; color:var(--gold); margin-bottom:4px;">🔒 Upset Special Locked</div>
+        <p class="helptext" style="line-height:1.6;">The Upset Special locks 5 minutes before the first game of the week. ${hasUpset ? `Your pick: <strong style="color:var(--gold);">${Object.keys(_draftPicks).find(gid => _draftPicks[gid].isUpset) ? _draftPicks[Object.keys(_draftPicks).find(gid => _draftPicks[gid].isUpset)].pickedTeam : (_upsetSelection ? _upsetSelection.pickedTeam : '—')}</strong>` : '<span style="color:var(--loss);">No Upset Special submitted — you will receive 0 upset points this week.</span>'}</p>
+        ${isUpsetPicksRevealed(games) ? `
+          <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--hairline);">
+            <div class="helptext" style="font-weight:700; margin-bottom:6px;">All Upset Picks Revealed:</div>
+            ${(State.picks || []).filter(p => p.isUpset === true || p.isUpset === 'TRUE').map(p => {
+              const pl = getPlayerById(p.playerId);
+              const isDefault = p.isAutoDefault === true || p.isAutoDefault === 'TRUE';
+              return `<div style="display:flex; justify-content:space-between; font-size:12px; padding:3px 0;">
+                <span>${escapeHtml(pl ? (pl.teamName || pl.name) : '—')}</span>
+                <span class="mono" style="color:var(--gold);">${escapeHtml(p.pickedTeam)} ⭐${isDefault ? ' *' : ''}</span>
+              </div>`;
+            }).join('')}
+          </div>
+        ` : '<p class="helptext" style="margin-top:8px; font-style:italic;">All upset picks will be revealed once the first game kicks off.</p>'}
       </div>
-      <div id="upset-search-area"></div>
-    </div>
-    <button class="btn btn-gold btn-block" id="submit-picks-btn" style="margin-top:6px;">
-      ${existingPicks.length > 0 ? 'Update My Picks' : 'Submit My Picks'}
-    </button>
-    <p class="helptext" style="text-align:center; margin-top:10px;">Each game locks individually, 5 minutes before its kickoff. Picks for a game stay hidden from other players until that game kicks off.</p>
+    ` : `
+      <div class="card">
+        <div class="tab-row">
+          <button data-upsetmode="board" class="${_upsetMode === 'board' ? 'active' : ''}">From This Week's 10</button>
+          <button data-upsetmode="search" class="${_upsetMode === 'search' ? 'active' : ''}">Search Any Game</button>
+        </div>
+        <div id="upset-search-area"></div>
+      </div>
+    `}
+    ${isUpsetPicksRevealed(games) && games.every(g => isGameStarted(g)) ? '' : `
+      <button class="btn btn-gold btn-block" id="submit-picks-btn" style="margin-top:6px;">
+        ${existingPicks.length > 0 ? 'Update My Picks' : 'Submit My Picks'}
+      </button>
+    `}
+    <p class="helptext" style="text-align:center; margin-top:10px;">Upset Special locks 5 mins before the first game. Straight picks lock per-game. Picks stay hidden until each game kicks off.</p>
   `;
   renderGamesBoard(games, week);
   renderUpsetSearchArea(week, games);
