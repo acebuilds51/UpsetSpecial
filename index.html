@@ -406,11 +406,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v3.4';
-const BUILD_TIME = '2026-08-10T20:47:58Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v3.8';
+const BUILD_TIME = '2026-08-10T21:31:58Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbyMG5fVLAkFEjWDKe7Jn8ykDsOMYUhVBhRC6rsPhxlxO9O2zzwcCaHL_9y92vBBczAb/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbxV91lt4eQSLke0Y4nqXH64seICBa5mpA-QenFmCzbGPeuNluXbnZ9nf3iTlJJBlDvS/exec'
 };
 
 const State = {
@@ -614,13 +614,13 @@ function renderRegister() {
         <div class="card" style="background:var(--surface-2); margin-bottom:16px; border:1px solid rgba(242,182,50,0.3);">
           <div class="card-title" style="color:var(--gold);">Pay Entry Fee — $${entryFee}</div>
           <div style="display:flex; flex-direction:column; gap:10px;">
-            <a href="https://venmo.com/JEFF-VENMO-HANDLE" target="_blank" class="btn btn-ghost btn-block" style="text-decoration:none; justify-content:flex-start; gap:10px;">
+            <a href="https://venmo.com/Jeff-Wilkerson-16" target="_blank" class="btn btn-ghost btn-block" style="text-decoration:none; justify-content:flex-start; gap:10px;">
               <span style="font-size:18px;">💸</span>
-              <span><strong>Venmo</strong><br><span class="helptext">@JEFF-VENMO-HANDLE</span></span>
+              <span><strong>Venmo</strong><br><span class="helptext">@Jeff-Wilkerson-16</span></span>
             </a>
-            <a href="https://paypal.me/JEFF-PAYPAL-HANDLE" target="_blank" class="btn btn-ghost btn-block" style="text-decoration:none; justify-content:flex-start; gap:10px;">
+            <a href="https://paypal.me/jefferywilkerson1" target="_blank" class="btn btn-ghost btn-block" style="text-decoration:none; justify-content:flex-start; gap:10px;">
               <span style="font-size:18px;">🅿️</span>
-              <span><strong>PayPal</strong><br><span class="helptext">@JEFF-PAYPAL-HANDLE</span></span>
+              <span><strong>PayPal</strong><br><span class="helptext">@jefferywilkerson1</span></span>
             </a>
           </div>
           <p class="helptext" style="margin-top:10px;">Include your name in the payment note so Jeff knows who it's from.</p>
@@ -733,7 +733,8 @@ function renderBottomNav() {
     { id: 'standings', label: 'Standings', icon: iconStandings() },
     { id: 'bowl', label: 'Bowl', icon: iconBowl() },
     { id: 'money', label: 'Pot', icon: iconMoney() },
-    { id: 'rules', label: 'Rules', icon: iconRules() }
+    { id: 'rules', label: 'Rules', icon: iconRules() },
+    { id: 'profile', label: 'Profile', icon: iconProfile() }
   ];
   if (State.player.isAdmin) {
     const pendingCount = State.players.filter(p => !p.active && !p.isAdmin).length;
@@ -763,6 +764,7 @@ async function renderContent() {
     case 'bowl': renderBowl(content); break;
     case 'admin': renderAdmin(content); break;
     case 'rules': renderRules(content); break;
+    case 'profile': renderProfile(content); break;
     default: renderHome(content);
   }
   // then silently refresh in background -- if data changed, re-render
@@ -811,6 +813,7 @@ function iconMoney(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="curre
 function iconAdmin(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l3 5 5 1-4 4 1 6-5-3-5 3 1-6-4-4 5-1z"/></svg>`; }
 function iconBowl(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 4 0 0016 0"/><path d="M4 12V8a8 4 0 0116 0v4"/><circle cx="12" cy="6" r="1.2" fill="currentColor" stroke="none"/></svg>`; }
 function iconRules(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h16v16H4z" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>`; }
+function iconProfile(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>`; }
 
 /* football icon used as a fallback wherever a team has no matched ESPN logo */
 function iconFootball(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><ellipse cx="12" cy="12" rx="9" ry="6" transform="rotate(45 12 12)"/><path d="M8 8l8 8M9.5 6.5l-1 1M15.5 17.5l-1 1M6.5 9.5l1-1M17.5 14.5l1-1" stroke-width="1.3"/></svg>`; }
@@ -2062,6 +2065,233 @@ async function renderCareerStandings(el) {
 }
 
 /* ============================================================
+   PROFILE / SETTINGS VIEW
+   ============================================================ */
+function renderProfile(content) {
+  const p = State.player;
+  const season = State.season || {};
+  const myStandings = computeStandingsLocally().find(s => s.playerId === p.id);
+  const pts = myStandings ? myStandings.points : 0;
+  const correct = myStandings ? myStandings.correct : 0;
+  const upsetWins = myStandings ? myStandings.upsetWins : 0;
+  const upsetAttempts = myStandings ? myStandings.upsetAttempts : 0;
+  const JEFF_VENMO = '@Jeff-Wilkerson-16';
+  const JEFF_PAYPAL = 'https://paypal.me/jefferywilkerson1';
+  const entryFee = Number(season.entryFee || 100);
+  const referMsg = `🏈 Hey! You should join our Upset Special fantasy college football league. $${entryFee} entry, weekly cash prizes, and a Bowl Bonanza postseason contest. Sign up here: https://acebuilds51.github.io/UpsetSpecial`;
+
+  const avatarHtml = p.avatar
+    ? `<img src="${p.avatar}" style="width:52px; height:52px; border-radius:50%; object-fit:cover; flex-shrink:0;" alt="avatar">`
+    : `<div style="width:52px; height:52px; border-radius:50%; background:var(--upset-grad); display:flex; align-items:center; justify-content:center; font-family:var(--font-display); font-size:22px; font-weight:700; color:#1A1206; flex-shrink:0;">${escapeHtml((p.teamName || p.name || '?')[0].toUpperCase())}</div>`;
+
+  content.innerHTML = `
+    <div class="card" style="background:var(--surface-2); display:flex; align-items:center; gap:14px;">
+      <div id="avatar-wrapper" style="position:relative; cursor:pointer;" title="Tap to change avatar">
+        ${avatarHtml}
+        <div style="position:absolute; bottom:0; right:0; background:var(--gold); border-radius:50%; width:18px; height:18px; display:flex; align-items:center; justify-content:center; font-size:11px;">✏️</div>
+      </div>
+      <div style="flex:1; min-width:0;">
+        <div style="font-family:var(--font-display); font-size:18px; font-weight:700; color:var(--text);">${escapeHtml(p.teamName || p.name)}</div>
+        <div class="helptext" style="margin-top:2px;">${escapeHtml(p.name)} &middot; ${p.isAdmin ? 'Admin' : 'Player'} &middot; Since ${escapeHtml(String(p.joinedSeason || season.year || ''))}</div>
+      </div>
+    </div>
+    <input type="file" id="avatar-file-input" accept="image/*" style="display:none;">
+
+    <div class="section-label">This Season</div>
+    <div class="card" style="display:flex; gap:0; padding:0; overflow:hidden;">
+      <div style="flex:1; text-align:center; padding:14px 8px; border-right:1px solid var(--hairline);">
+        <div class="mono" style="font-size:24px; font-weight:700; color:var(--gold);">${pts % 1 === 0 ? pts : pts.toFixed(1)}</div>
+        <div class="helptext">Points</div>
+      </div>
+      <div style="flex:1; text-align:center; padding:14px 8px; border-right:1px solid var(--hairline);">
+        <div class="mono" style="font-size:24px; font-weight:700; color:var(--text);">${correct}</div>
+        <div class="helptext">Correct</div>
+      </div>
+      <div style="flex:1; text-align:center; padding:14px 8px;">
+        <div class="mono" style="font-size:24px; font-weight:700; color:${upsetWins > 0 ? 'var(--win)' : 'var(--text-faint)'};">${upsetWins}/${upsetAttempts}</div>
+        <div class="helptext">Upsets Hit</div>
+      </div>
+    </div>
+
+    <div class="section-label">Pay Jeff</div>
+    <div class="card">
+      <p class="helptext" style="margin-bottom:12px; line-height:1.6;">Tap the button for your preferred method — it opens the app ready to send.</p>
+      <div class="helptext" style="font-weight:700; margin-bottom:6px;">Regular Season — $${entryFee}</div>
+      <div style="display:flex; gap:8px; margin-bottom:10px;">
+        <a href="https://venmo.com/Jeff-Wilkerson-16?txn=pay&amount=${entryFee}&note=Upset+Special+2026+Entry" target="_blank"
+          class="btn btn-primary" style="flex:1; text-align:center; text-decoration:none; display:flex; align-items:center; justify-content:center; gap:6px;">
+          <span style="font-size:16px;">💸</span> Venmo
+        </a>
+        <a href="https://paypal.me/jefferywilkerson1/${entryFee}" target="_blank"
+          class="btn btn-primary" style="flex:1; text-align:center; text-decoration:none; display:flex; align-items:center; justify-content:center; gap:6px;">
+          <span style="font-size:16px;">🅿️</span> PayPal
+        </a>
+      </div>
+      <div class="helptext" style="font-weight:700; margin-bottom:6px;">Bowl Bonanza — $${Number(season.bowlEntryFee || 25)}</div>
+      <div style="display:flex; gap:8px;">
+        <a href="https://venmo.com/Jeff-Wilkerson-16?txn=pay&amount=${Number(season.bowlEntryFee || 25)}&note=Upset+Special+2026+Bowl+Bonanza" target="_blank"
+          class="btn btn-ghost" style="flex:1; text-align:center; text-decoration:none; display:flex; align-items:center; justify-content:center; gap:6px;">
+          <span style="font-size:16px;">💸</span> Venmo
+        </a>
+        <a href="https://paypal.me/jefferywilkerson1/${Number(season.bowlEntryFee || 25)}" target="_blank"
+          class="btn btn-ghost" style="flex:1; text-align:center; text-decoration:none; display:flex; align-items:center; justify-content:center; gap:6px;">
+          <span style="font-size:16px;">🅿️</span> PayPal
+        </a>
+      </div>
+      <p class="helptext" style="margin-top:10px; text-align:center; font-style:italic;">Whichever you use, select it below so Jeff knows how to pay you back.</p>
+      <div style="display:flex; gap:8px; margin-top:10px;">
+        <button class="btn ${p.paymentPref === 'venmo' ? 'btn-primary' : 'btn-ghost'}" style="flex:1;" data-pref="venmo" id="pref-venmo-btn">Venmo</button>
+        <button class="btn ${p.paymentPref === 'paypal' ? 'btn-primary' : 'btn-ghost'}" style="flex:1;" data-pref="paypal" id="pref-paypal-btn">PayPal</button>
+        <button class="btn ${p.paymentPref === 'check' ? 'btn-primary' : 'btn-ghost'}" style="flex:1;" data-pref="check" id="pref-check-btn">Check</button>
+      </div>
+    </div>
+
+    <div class="section-label">My Payment Info</div>
+    <div class="card">
+      <p class="helptext" style="margin-bottom:12px; line-height:1.6;">Add your Venmo handle and/or PayPal link so Jeff can pay you your winnings.</p>
+      <label class="field-label">Venmo Handle</label>
+      <input type="text" id="profile-venmo" placeholder="@YourVenmoHandle" value="${escapeHtml(p.venmo || '')}"
+        style="width:100%; background:var(--surface-2); border:1px solid var(--hairline); border-radius:var(--radius-sm); color:var(--text); padding:10px 12px; font-size:15px; margin-bottom:10px; box-sizing:border-box;">
+      <label class="field-label">PayPal Link</label>
+      <input type="text" id="profile-paypal" placeholder="https://paypal.me/YourHandle" value="${escapeHtml(p.paypal || '')}"
+        style="width:100%; background:var(--surface-2); border:1px solid var(--hairline); border-radius:var(--radius-sm); color:var(--text); padding:10px 12px; font-size:15px; margin-bottom:14px; box-sizing:border-box;">
+      <button class="btn btn-primary btn-block" id="save-payment-btn">Save Payment Info</button>
+    </div>
+
+    <div class="section-label">Change PIN</div>
+    <div class="card">
+      <p class="helptext" style="margin-bottom:12px; line-height:1.6;">Choose a 4–6 digit PIN that only you know.</p>
+      <label class="field-label">Current PIN</label>
+      <input type="password" id="pin-current" inputmode="numeric" placeholder="Current PIN" maxlength="6"
+        style="width:100%; background:var(--surface-2); border:1px solid var(--hairline); border-radius:var(--radius-sm); color:var(--text); padding:10px 12px; font-size:15px; margin-bottom:10px; box-sizing:border-box;">
+      <label class="field-label">New PIN</label>
+      <input type="password" id="pin-new" inputmode="numeric" placeholder="New PIN (4–6 digits)" maxlength="6"
+        style="width:100%; background:var(--surface-2); border:1px solid var(--hairline); border-radius:var(--radius-sm); color:var(--text); padding:10px 12px; font-size:15px; margin-bottom:10px; box-sizing:border-box;">
+      <label class="field-label">Confirm New PIN</label>
+      <input type="password" id="pin-confirm" inputmode="numeric" placeholder="Re-enter new PIN" maxlength="6"
+        style="width:100%; background:var(--surface-2); border:1px solid var(--hairline); border-radius:var(--radius-sm); color:var(--text); padding:10px 12px; font-size:15px; margin-bottom:14px; box-sizing:border-box;">
+      <button class="btn btn-primary btn-block" id="change-pin-btn">Update PIN</button>
+    </div>
+
+    <div class="section-label">Refer a Friend</div>
+    <div class="card">
+      <div style="background:var(--surface-2); border-radius:var(--radius-sm); padding:12px 14px; font-size:12px; color:var(--text-soft); line-height:1.6; margin-bottom:12px;" id="profile-refer-msg">${referMsg}</div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-primary" style="flex:1;" id="profile-copy-btn">📋 Copy</button>
+        <button class="btn btn-gold" style="flex:1;" id="profile-share-btn">📤 Share</button>
+      </div>
+    </div>
+
+    <div class="section-label">Account</div>
+    <div class="card">
+      <button class="btn btn-danger btn-block" id="profile-logout-btn">Log Out</button>
+    </div>
+  `;
+
+  // --- Avatar upload ---
+  document.getElementById('avatar-wrapper').onclick = () => document.getElementById('avatar-file-input').click();
+  document.getElementById('avatar-file-input').onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    // compress to max 150px and convert to base64
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const img = new Image();
+      img.onload = async () => {
+        const canvas = document.createElement('canvas');
+        const MAX = 150;
+        const ratio = Math.min(MAX / img.width, MAX / img.height);
+        canvas.width  = Math.round(img.width  * ratio);
+        canvas.height = Math.round(img.height * ratio);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        const b64 = canvas.toDataURL('image/jpeg', 0.75);
+        try {
+          await api('updateProfile', { playerId: p.id, avatar: b64 });
+          State.player.avatar = b64;
+          // update the avatar wrapper in place
+          document.getElementById('avatar-wrapper').innerHTML = `
+            <img src="${b64}" style="width:52px; height:52px; border-radius:50%; object-fit:cover;" alt="avatar">
+            <div style="position:absolute; bottom:0; right:0; background:var(--gold); border-radius:50%; width:18px; height:18px; display:flex; align-items:center; justify-content:center; font-size:11px;">✏️</div>
+          `;
+          showToast('Avatar updated', 'success');
+          await refreshState();
+        } catch(e) { showToast('Could not save avatar: ' + e.message, 'error'); }
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // --- Payment preference buttons ---
+  ['venmo','paypal','check'].forEach(pref => {
+    document.getElementById(`pref-${pref}-btn`).onclick = async () => {
+      try {
+        await api('updateProfile', { playerId: p.id, paymentPref: pref });
+        State.player.paymentPref = pref;
+        ['venmo','paypal','check'].forEach(pr => {
+          const btn = document.getElementById(`pref-${pr}-btn`);
+          btn.className = `btn ${pr === pref ? 'btn-primary' : 'btn-ghost'}`;
+        });
+        showToast(`Payment preference set to ${pref.charAt(0).toUpperCase() + pref.slice(1)}`, 'success');
+      } catch(e) { showToast('Could not save preference', 'error'); }
+    };
+  });
+
+  // --- Save payment info ---
+  document.getElementById('save-payment-btn').onclick = async () => {
+    const venmo  = document.getElementById('profile-venmo').value.trim();
+    const paypal = document.getElementById('profile-paypal').value.trim();
+    const btn = document.getElementById('save-payment-btn');
+    btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+    try {
+      await api('updateProfile', { playerId: p.id, venmo, paypal });
+      State.player.venmo  = venmo;
+      State.player.paypal = paypal;
+      showToast('Payment info saved', 'success');
+      btn.textContent = 'Save Payment Info';
+    } catch(e) { showToast(e.message || 'Could not save', 'error'); btn.textContent = 'Save Payment Info'; }
+  };
+
+  // --- Change PIN ---
+  document.getElementById('change-pin-btn').onclick = async () => {
+    const current = document.getElementById('pin-current').value.trim();
+    const newPin  = document.getElementById('pin-new').value.trim();
+    const confirm = document.getElementById('pin-confirm').value.trim();
+    if (!current) { showToast('Enter your current PIN', 'error'); return; }
+    if (newPin.length < 4) { showToast('New PIN must be at least 4 digits', 'error'); return; }
+    if (newPin !== confirm) { showToast('New PINs do not match', 'error'); return; }
+    if (newPin === current) { showToast('New PIN must be different from current PIN', 'error'); return; }
+    const btn = document.getElementById('change-pin-btn');
+    btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+    try {
+      await api('changePin', { playerId: p.id, currentPin: current, newPin });
+      showToast('PIN updated successfully', 'success');
+      ['pin-current','pin-new','pin-confirm'].forEach(id => document.getElementById(id).value = '');
+      btn.textContent = 'Update PIN';
+    } catch(e) { showToast(e.message || 'Could not update PIN', 'error'); btn.textContent = 'Update PIN'; }
+  };
+
+  // --- Refer copy/share ---
+  document.getElementById('profile-copy-btn').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(referMsg);
+      const btn = document.getElementById('profile-copy-btn');
+      btn.textContent = '✓ Copied!';
+      setTimeout(() => { if (btn) btn.textContent = '📋 Copy'; }, 2000);
+    } catch(e) { showToast('Copy failed', 'error'); }
+  };
+  document.getElementById('profile-share-btn').onclick = async () => {
+    if (navigator.share) { try { await navigator.share({ text: referMsg }); } catch(e) {} }
+    else { window.open('sms:?body=' + encodeURIComponent(referMsg)); }
+  };
+
+  // --- Log out ---
+  document.getElementById('profile-logout-btn').onclick = () => {
+    if (confirm('Log out of your account?')) logout();
+  };
+}
+
+/* ============================================================
    MONEY / POT VIEW (regular season)
    ============================================================ */
 function renderMoney(content) {
@@ -2882,15 +3112,23 @@ function renderAdminPlayers(el) {
     </div>
 
     <div class="section-label">Active Roster (${active.length})</div>
-    ${active.map(p => `
-      <div class="card" style="padding:12px 14px; display:flex; align-items:center; gap:10px;">
-        <div style="flex:1;">
-          <div style="font-weight:700; font-size:14px;">${escapeHtml(p.teamName || p.name)} ${p.isAdmin ? '<span class="pill pill-assigned">Admin</span>' : ''}</div>
-          <div class="helptext">${escapeHtml(p.name)} &middot; ${escapeHtml(p.email || '')} &middot; ${p.careerPoints || 0} career pts</div>
+    ${active.map(p => {
+      const hasPayment = p.venmo || p.paypal;
+      const paymentInfo = p.paymentPref
+        ? `<span style="color:var(--gold);">${p.paymentPref.charAt(0).toUpperCase() + p.paymentPref.slice(1)}</span>: ${p.venmo && p.paymentPref === 'venmo' ? escapeHtml(p.venmo) : p.paypal && p.paymentPref === 'paypal' ? escapeHtml(p.paypal) : p.venmo || p.paypal || ''}`
+        : '<span style="color:var(--text-faint);">No payment info</span>';
+      return `
+        <div class="card" style="padding:12px 14px; display:flex; align-items:center; gap:10px;">
+          ${p.avatar ? `<img src="${p.avatar}" style="width:36px; height:36px; border-radius:50%; object-fit:cover; flex-shrink:0;">` : `<div style="width:36px; height:36px; border-radius:50%; background:var(--upset-grad); display:flex; align-items:center; justify-content:center; font-weight:700; color:#1A1206; flex-shrink:0;">${escapeHtml((p.teamName || p.name || '?')[0])}</div>`}
+          <div style="flex:1; min-width:0;">
+            <div style="font-weight:700; font-size:14px;">${escapeHtml(p.teamName || p.name)} ${p.isAdmin ? '<span class="pill pill-assigned">Admin</span>' : ''}</div>
+            <div class="helptext">${escapeHtml(p.name)} &middot; ${p.careerPoints || 0} career pts</div>
+            <div class="helptext" style="margin-top:2px;">${paymentInfo}</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" data-toggle-active="${p.id}">Deactivate</button>
         </div>
-        <button class="btn btn-ghost btn-sm" data-toggle-active="${p.id}">Deactivate</button>
-      </div>
-    `).join('')}
+      `;
+    }).join('')}
   `;
 
   // pending approve/reject
