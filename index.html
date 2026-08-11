@@ -406,11 +406,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v3.9';
-const BUILD_TIME = '2026-08-11T00:15:06Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v4.1';
+const BUILD_TIME = '2026-08-11T02:47:02Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbxADK8_f2bVL33ZhgewXGvxWDzBNaEdUeGSvHPK-0oo5Bkx_NaGDae3L7OxiqtU4HbK/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbw6d6eZRtPWuhAL2eq1hMYAnGQr0nxtEvTKTRLfP2ME1paq1d-kh_EzLDLp9PZor43V/exec'
 };
 
 const State = {
@@ -824,13 +824,10 @@ function iconFootball(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="cu
 function renderTeamLogo(logoUrl, teamName) {
   const fallback = `<span class="team-logo-fallback">${iconFootball()}</span>`;
   if (!logoUrl) return fallback;
-  const safeUrl = escapeHtml(logoUrl);
+  const safeUrl = escapeHtml(logoUrl.replace(/^http:\/\//, 'https://'));
   const safeAlt = escapeHtml(teamName || '');
-  // the inline onerror replaces this exact img with the same fallback markup, escaping quotes for the attribute
-  const fallbackEscaped = fallback.replace(/"/g, '&quot;');
-  return `<img class="team-logo" src="${safeUrl}" alt="${safeAlt}" loading="lazy" onerror="this.outerHTML='${fallbackEscaped}'">`;
+  return `<img class="team-logo" src="${safeUrl}" alt="${safeAlt}" loading="lazy" onerror="this.style.display='none'">`;
 }
-
 /* field lines decorative SVG used as a subtle background graphic on stat cards */
 function fieldLinesSvg() {
   return `<svg viewBox="0 0 200 120" width="200" height="120" xmlns="http://www.w3.org/2000/svg" fill="none">
