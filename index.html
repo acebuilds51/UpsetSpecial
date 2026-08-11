@@ -397,6 +397,10 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 .pulse-update{ animation: numPulse 0.6s var(--ease); }
 @keyframes numPulse{ 0%{ text-shadow: 0 0 0 transparent; } 30%{ text-shadow: 0 0 16px rgba(242,182,50,0.7); } 100%{ text-shadow: 0 0 0 transparent; } }
 </style>
+
+  <!-- Firebase Cloud Messaging -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -406,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v4.2';
-const BUILD_TIME = '2026-08-11T02:54:33Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v4.3';
+const BUILD_TIME = '2026-08-11T04:47:57Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbw6d6eZRtPWuhAL2eq1hMYAnGQr0nxtEvTKTRLfP2ME1paq1d-kh_EzLDLp9PZor43V/exec'
@@ -456,6 +460,7 @@ function loadSession() { try { return JSON.parse(localStorage.getItem('usl_playe
 function clearSession() { try { localStorage.removeItem('usl_player'); } catch(e) {} }
 
 async function boot() {
+  initFirebase();
   // check version first -- show update banner if player is running an old version
   checkAppVersion();
 
@@ -938,7 +943,41 @@ function renderHome(content) {
         </button>
       </div>
 
-      <div class="section-label">Refer a Friend</div>
+      <div class="section-label">Push Notifications</div>
+    <div class="card">
+      <p class="helptext" style="margin-bottom:12px; line-height:1.6;">Enable push notifications to get pick reminders and board alerts automatically. Pick reminders and board-posted alerts are always on when enabled.</p>
+      <div id="notif-status-row" style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+        <div>
+          <div style="font-size:13px; font-weight:700; color:var(--text);">${State.player.fcmToken ? '🔔 Notifications enabled' : '🔕 Notifications disabled'}</div>
+          <div class="helptext" style="margin-top:2px;">${State.player.fcmToken ? 'You will receive pick reminders and board alerts' : 'Tap to enable'}</div>
+        </div>
+        <button class="btn ${State.player.fcmToken ? 'btn-danger' : 'btn-primary'} btn-sm" id="notif-toggle-btn">
+          ${State.player.fcmToken ? 'Disable' : 'Enable'}
+        </button>
+      </div>
+      ${State.player.fcmToken ? `
+        <div style="border-top:1px solid var(--hairline); padding-top:12px;">
+          <div style="font-size:13px; font-weight:700; color:var(--text); margin-bottom:8px;">Game Score Notifications</div>
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
+              <input type="radio" name="score-pref" value="each" ${(p.scoreNotif || 'each') === 'each' ? 'checked' : ''} style="accent-color:var(--gold);">
+              <div><strong style="color:var(--text);">Per game</strong> — notified as each game goes final (up to 10 on Saturday)</div>
+            </label>
+            <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
+              <input type="radio" name="score-pref" value="summary" ${(p.scoreNotif || '') === 'summary' ? 'checked' : ''} style="accent-color:var(--gold);">
+              <div><strong style="color:var(--text);">End of day</strong> — one notification with all final scores when the last game finishes</div>
+            </label>
+            <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
+              <input type="radio" name="score-pref" value="off" ${(p.scoreNotif || '') === 'off' ? 'checked' : ''} style="accent-color:var(--gold);">
+              <div><strong style="color:var(--text);">Off</strong> — no score notifications</div>
+            </label>
+          </div>
+          <button class="btn btn-primary btn-block" style="margin-top:12px;" id="save-score-pref-btn">Save Score Preference</button>
+        </div>
+      ` : ''}
+    </div>
+
+    <div class="section-label">Refer a Friend</div>
       <div class="card">
         <div style="font-size:13px; font-weight:700; color:var(--text); margin-bottom:6px;">Know someone who should join?</div>
         <div style="background:var(--surface-2); border-radius:var(--radius-sm); padding:12px 14px; font-size:12px; color:var(--text-soft); line-height:1.6; margin-bottom:12px;" id="refer-msg-box">🏈 Hey! You should join our Upset Special fantasy college football league. $${entryFee} entry, weekly cash prizes, and a Bowl Bonanza postseason contest. Sign up here: ${appUrl}</div>
@@ -2281,6 +2320,40 @@ function renderProfile(content) {
     if (navigator.share) { try { await navigator.share({ text: referMsg }); } catch(e) {} }
     else { window.open('sms:?body=' + encodeURIComponent(referMsg)); }
   };
+
+  // --- Notification toggle ---
+  const notifToggleBtn = document.getElementById('notif-toggle-btn');
+  if (notifToggleBtn) {
+    notifToggleBtn.onclick = async () => {
+      if (State.player.fcmToken) {
+        await unregisterPushNotifications(p.id);
+      } else {
+        await registerForPushNotifications(p.id);
+      }
+      await refreshState();
+      renderProfile(content);
+    };
+  }
+
+  // --- Score preference ---
+  const saveScorePrefBtn = document.getElementById('save-score-pref-btn');
+  if (saveScorePrefBtn) {
+    saveScorePrefBtn.onclick = async () => {
+      const selected = document.querySelector('input[name="score-pref"]:checked');
+      if (!selected) return;
+      const btn = saveScorePrefBtn;
+      btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+      try {
+        await api('updateProfile', { playerId: p.id, scoreNotif: selected.value });
+        State.player.scoreNotif = selected.value;
+        showToast('Score notification preference saved', 'success');
+        btn.textContent = 'Save Score Preference';
+      } catch(e) {
+        showToast('Could not save preference', 'error');
+        btn.textContent = 'Save Score Preference';
+      }
+    };
+  }
 
   // --- Log out ---
   document.getElementById('profile-logout-btn').onclick = () => {
@@ -3630,3 +3703,71 @@ function renderAdminBowlResolve(el) {
 </script>
 </body>
 </html>
+
+/* ============================================================
+   FIREBASE PUSH NOTIFICATIONS
+   ============================================================ */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDYt3OeHN0yorpDAWu4MPvH55GnkO_yD44",
+  authDomain: "ladle-and-spoon-push-notify.firebaseapp.com",
+  projectId: "ladle-and-spoon-push-notify",
+  storageBucket: "ladle-and-spoon-push-notify.firebasestorage.app",
+  messagingSenderId: "432229384791",
+  appId: "1:432229384791:web:2cb34b4d3a1c5878a95912"
+};
+const FCM_VAPID_KEY = "BHg_GXa8Qby_wGTVY9eBp8B73oKJZcTLd6z_O-Fh14hWz2blb8p32fw7iW0J-MnnjimcZDO_wraBVQ-Of_bzzns";
+
+let _fcmMessaging = null;
+
+async function initFirebase() {
+  try {
+    if (!firebase || !firebase.apps) return;
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    _fcmMessaging = firebase.messaging();
+    // handle foreground messages
+    _fcmMessaging.onMessage(payload => {
+      const { title, body } = payload.notification || {};
+      showToast((title ? title + ': ' : '') + (body || ''), 'info', 6000);
+    });
+  } catch(e) {
+    console.log('Firebase init skipped:', e.message);
+  }
+}
+
+async function registerForPushNotifications(playerId) {
+  try {
+    if (!_fcmMessaging) await initFirebase();
+    if (!_fcmMessaging) return;
+
+    // register service worker
+    const reg = await navigator.serviceWorker.register('/UpsetSpecial/firebase-messaging-sw.js');
+    await navigator.serviceWorker.ready;
+
+    // request permission
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+      showToast('Notifications blocked — enable in browser settings to receive pick reminders', 'error');
+      return;
+    }
+
+    // get token
+    const token = await _fcmMessaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: reg });
+    if (!token) return;
+
+    // save to backend
+    await api('registerFcmToken', { playerId, token });
+    State.player.fcmToken = token;
+    showToast('Push notifications enabled ✓', 'success');
+  } catch(e) {
+    console.log('Push notification setup error:', e.message);
+  }
+}
+
+async function unregisterPushNotifications(playerId) {
+  try {
+    await api('registerFcmToken', { playerId, token: '' });
+    State.player.fcmToken = '';
+    showToast('Notifications disabled', 'success');
+  } catch(e) {}
+}
+
