@@ -398,9 +398,6 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 @keyframes numPulse{ 0%{ text-shadow: 0 0 0 transparent; } 30%{ text-shadow: 0 0 16px rgba(242,182,50,0.7); } 100%{ text-shadow: 0 0 0 transparent; } }
 </style>
 
-  <!-- Firebase Cloud Messaging -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
 </head>
 <body>
 <div id="app"></div>
@@ -410,11 +407,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v4.3';
-const BUILD_TIME = '2026-08-11T04:47:57Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v4.6';
+const BUILD_TIME = '2026-08-11T05:06:00Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbw6d6eZRtPWuhAL2eq1hMYAnGQr0nxtEvTKTRLfP2ME1paq1d-kh_EzLDLp9PZor43V/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbzXmhKSBg-n8xLwWXyoqSDH20BYbscuSzAi8j5QmLQpmlZZOMCqjNRZn7FFDuWEQTuX/exec'
 };
 
 const State = {
@@ -459,8 +456,85 @@ function saveSession(player) { try { localStorage.setItem('usl_player', JSON.str
 function loadSession() { try { return JSON.parse(localStorage.getItem('usl_player') || 'null'); } catch(e) { return null; } }
 function clearSession() { try { localStorage.removeItem('usl_player'); } catch(e) {} }
 
+/* ============================================================
+   FIREBASE PUSH NOTIFICATIONS
+   ============================================================ */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDYt3OeHN0yorpDAWu4MPvH55GnkO_yD44",
+  authDomain: "ladle-and-spoon-push-notify.firebaseapp.com",
+  projectId: "ladle-and-spoon-push-notify",
+  storageBucket: "ladle-and-spoon-push-notify.firebasestorage.app",
+  messagingSenderId: "432229384791",
+  appId: "1:432229384791:web:2cb34b4d3a1c5878a95912"
+};
+const FCM_VAPID_KEY = "BHg_GXa8Qby_wGTVY9eBp8B73oKJZcTLd6z_O-Fh14hWz2blb8p32fw7iW0J-MnnjimcZDO_wraBVQ-Of_bzzns";
+
+let _fcmMessaging = null;
+
+async function initFirebase() {
+  // wait up to 10 seconds for the Firebase SDK to load (it loads deferred)
+  let attempts = 0;
+  while (typeof firebase === 'undefined' && attempts < 20) {
+    await new Promise(r => setTimeout(r, 500));
+    attempts++;
+  }
+  if (typeof firebase === 'undefined') {
+    console.log('Firebase SDK not available — push notifications disabled');
+    return;
+  }
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    _fcmMessaging = firebase.messaging();
+    _fcmMessaging.onMessage(payload => {
+      const { title, body } = payload.notification || {};
+      showToast((title ? title + ': ' : '') + (body || ''), 'info', 6000);
+    });
+    console.log('Firebase messaging ready');
+  } catch(e) {
+    console.log('Firebase init error:', e.message);
+  }
+}
+
+async function registerForPushNotifications(playerId) {
+  try {
+    if (!_fcmMessaging) await initFirebase();
+    if (!_fcmMessaging) return;
+
+    // register service worker
+    const reg = await navigator.serviceWorker.register('/UpsetSpecial/firebase-messaging-sw.js');
+    await navigator.serviceWorker.ready;
+
+    // request permission
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') {
+      showToast('Notifications blocked — enable in browser settings to receive pick reminders', 'error');
+      return;
+    }
+
+    // get token
+    const token = await _fcmMessaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: reg });
+    if (!token) return;
+
+    // save to backend
+    await api('registerFcmToken', { playerId, token });
+    State.player.fcmToken = token;
+    showToast('Push notifications enabled ✓', 'success');
+  } catch(e) {
+    console.log('Push notification setup error:', e.message);
+  }
+}
+
+async function unregisterPushNotifications(playerId) {
+  try {
+    await api('registerFcmToken', { playerId, token: '' });
+    State.player.fcmToken = '';
+    showToast('Notifications disabled', 'success');
+  } catch(e) {}
+}
+
 async function boot() {
-  initFirebase();
+  // init Firebase in background -- never block boot if it fails
+  setTimeout(() => { initFirebase().catch(e => console.log('Firebase init deferred error:', e)); }, 1000);
   // check version first -- show update banner if player is running an old version
   checkAppVersion();
 
@@ -3400,7 +3474,7 @@ async function renderAdminCareer(el) {
               <div style="font-size:13px; font-weight:700; color:var(--text); margin-bottom:2px;">${escapeHtml(r.teamName)}</div>
               <div class="helptext" style="margin-bottom:8px;">Appears in: ${yearsForName.join(', ')}</div>
               <div style="display:flex; gap:8px; align-items:center;">
-                <select class="career-map-select" style="flex:1; background:var(--surface-2); border:1px solid var(--hairline); border-radius:var(--radius-sm); color:var(--text); padding:8px 10px; font-size:13px;">
+                <select class="career-map-select" style="flex:1; background:#ffffff; border:1px solid var(--hairline); border-radius:var(--radius-sm); color:#1a1a1a; padding:8px 10px; font-size:13px;">
                   <option value="">— select player —</option>
                   ${activePlayers.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.teamName || p.name)} (${escapeHtml(p.name)})</option>`).join('')}
                 </select>
@@ -3701,73 +3775,9 @@ function renderAdminBowlResolve(el) {
   }
 }
 </script>
+  <!-- Firebase Cloud Messaging — loaded after app renders -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js" defer></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js" defer></script>
 </body>
 </html>
-
-/* ============================================================
-   FIREBASE PUSH NOTIFICATIONS
-   ============================================================ */
-const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyDYt3OeHN0yorpDAWu4MPvH55GnkO_yD44",
-  authDomain: "ladle-and-spoon-push-notify.firebaseapp.com",
-  projectId: "ladle-and-spoon-push-notify",
-  storageBucket: "ladle-and-spoon-push-notify.firebasestorage.app",
-  messagingSenderId: "432229384791",
-  appId: "1:432229384791:web:2cb34b4d3a1c5878a95912"
-};
-const FCM_VAPID_KEY = "BHg_GXa8Qby_wGTVY9eBp8B73oKJZcTLd6z_O-Fh14hWz2blb8p32fw7iW0J-MnnjimcZDO_wraBVQ-Of_bzzns";
-
-let _fcmMessaging = null;
-
-async function initFirebase() {
-  try {
-    if (!firebase || !firebase.apps) return;
-    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
-    _fcmMessaging = firebase.messaging();
-    // handle foreground messages
-    _fcmMessaging.onMessage(payload => {
-      const { title, body } = payload.notification || {};
-      showToast((title ? title + ': ' : '') + (body || ''), 'info', 6000);
-    });
-  } catch(e) {
-    console.log('Firebase init skipped:', e.message);
-  }
-}
-
-async function registerForPushNotifications(playerId) {
-  try {
-    if (!_fcmMessaging) await initFirebase();
-    if (!_fcmMessaging) return;
-
-    // register service worker
-    const reg = await navigator.serviceWorker.register('/UpsetSpecial/firebase-messaging-sw.js');
-    await navigator.serviceWorker.ready;
-
-    // request permission
-    const perm = await Notification.requestPermission();
-    if (perm !== 'granted') {
-      showToast('Notifications blocked — enable in browser settings to receive pick reminders', 'error');
-      return;
-    }
-
-    // get token
-    const token = await _fcmMessaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: reg });
-    if (!token) return;
-
-    // save to backend
-    await api('registerFcmToken', { playerId, token });
-    State.player.fcmToken = token;
-    showToast('Push notifications enabled ✓', 'success');
-  } catch(e) {
-    console.log('Push notification setup error:', e.message);
-  }
-}
-
-async function unregisterPushNotifications(playerId) {
-  try {
-    await api('registerFcmToken', { playerId, token: '' });
-    State.player.fcmToken = '';
-    showToast('Notifications disabled', 'success');
-  } catch(e) {}
-}
 
