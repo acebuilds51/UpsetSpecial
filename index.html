@@ -407,8 +407,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v5.8';
-const BUILD_TIME = '2026-08-11T12:03:59Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v5.9';
+const BUILD_TIME = '2026-08-11T12:13:09Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbxAgFyRiAqy8jogVMbGNgw-QsxzM6hS6CnCwuUDCbCK1Wwgt5OjMwMIB8GbH3LIDpUT/exec'
@@ -483,6 +483,15 @@ async function initFirebase() {
       const { title, body } = payload.notification || {};
       showToast((title ? title + ': ' : '') + (body || ''), 'info', 6000);
     });
+    // also listen for foreground messages posted by service worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', event => {
+        if (event.data && event.data.type === 'FCM_FOREGROUND') {
+          const { title, body } = event.data;
+          showToast((title ? title + ': ' : '') + (body || ''), 'info', 6000);
+        }
+      });
+    }
     console.log('Firebase messaging ready');
   } catch(e) {
     console.log('Firebase init error:', e.message);
