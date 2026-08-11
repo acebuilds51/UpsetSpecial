@@ -21,15 +21,22 @@ const messaging = firebase.messaging();
 messaging.onBackgroundMessage(function(payload) {
   const { title, body, icon } = payload.notification || {};
   const data = payload.data || {};
+  const tag = data.tag || 'upset-special';
 
-  self.registration.showNotification(title || 'Upset Special', {
-    body: body || '',
-    icon: icon || '/UpsetSpecial/icon-192.png',
-    badge: '/UpsetSpecial/icon-192.png',
-    tag: data.tag || 'upset-special',
-    data: { url: data.url || 'https://acebuilds51.github.io/UpsetSpecial' },
-    requireInteraction: data.requireInteraction === 'true',
-    vibrate: [200, 100, 200]
+  // Check if notification with same tag already exists and close it first
+  // This prevents iOS from showing duplicates when same token delivers twice
+  self.registration.getNotifications({ tag: tag }).then(function(existing) {
+    existing.forEach(function(n) { n.close(); });
+    
+    self.registration.showNotification(title || 'Upset Special', {
+      body: body || '',
+      icon: icon || '/UpsetSpecial/icon-192.png',
+      badge: '/UpsetSpecial/icon-192.png',
+      tag: tag,
+      renotify: false,
+      data: { url: data.url || 'https://acebuilds51.github.io/UpsetSpecial' },
+      vibrate: [200, 100, 200]
+    });
   });
 });
 

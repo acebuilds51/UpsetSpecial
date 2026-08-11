@@ -407,8 +407,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v5.7';
-const BUILD_TIME = '2026-08-11T12:00:02Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v5.8';
+const BUILD_TIME = '2026-08-11T12:03:59Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbxAgFyRiAqy8jogVMbGNgw-QsxzM6hS6CnCwuUDCbCK1Wwgt5OjMwMIB8GbH3LIDpUT/exec'
@@ -535,8 +535,6 @@ async function registerForPushNotifications(playerId) {
     console.log('FCM: token obtained, length=', token.length, 'first30=', token.substring(0,30));
     console.log('FCM: playerId=', playerId);
     console.log('FCM: sending to backend...');
-    showToast('Token obtained: ' + token.substring(0,20) + '...', 'info', 6000);
-    await new Promise(r => setTimeout(r, 500));
     try {
       const result = await api('registerFcmToken', { playerId, token });
       console.log('FCM: backend result=', JSON.stringify(result));
@@ -544,7 +542,7 @@ async function registerForPushNotifications(playerId) {
       const existingTokens = (State.player.fcmToken || '').split(',').map(t => t.trim()).filter(Boolean);
       if (!existingTokens.includes(token)) existingTokens.push(token);
       State.player.fcmToken = existingTokens.join(',');
-      showToast('Enabled ✓ — ' + result.tokenCount + ' device(s) registered', 'success');
+      showToast('Push notifications enabled ✓', 'success');
       console.log('FCM: saved. Total tokens now:', existingTokens.length);
     } catch(e) {
       console.error('FCM: failed to save token:', e.message, e);
