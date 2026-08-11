@@ -198,6 +198,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, .team-pick:focu
 }
 .field input:focus, .field select:focus{ outline:none; border-color: var(--navy-accent); background: var(--surface-3); }
 .field input::placeholder{ color: var(--text-faint); }
+[id^="bio-"]:is(input,textarea){ color:#000; background:#fff; border:1px solid var(--hairline); border-radius:var(--radius-sm); padding:10px 12px; font-size:14px; font-family:inherit; width:100%; box-sizing:border-box; margin-top:4px; }
+input[id^="bio-"], textarea[id^="bio-"]{ color:#000; background:#fff; }
 .row2{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
 
 /* ---------- Game row ---------- */
@@ -343,6 +345,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 .countdown.urgent::before{ content:''; width:6px; height:6px; border-radius:50%; background:var(--loss); animation: livepulse 1.1s ease-in-out infinite; }
 .countdown.locked{ background:var(--surface-2); color:var(--text-faint); }
 @keyframes livepulse{ 0%,100%{ opacity:1; transform:scale(1); } 50%{ opacity:0.4; transform:scale(0.7); } }
+@keyframes champSpin{ from{ transform:rotate(0deg); } to{ transform:rotate(360deg); } }
 
 .team-name-edit{ display:flex; align-items:center; gap:8px; }
 .team-name-edit input{ flex:1; padding:9px 11px; border-radius:9px; border:1px solid var(--hairline); background:var(--surface-2); color:var(--text); font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; }
@@ -639,6 +642,10 @@ async function refreshState() {
   State.bowlChampion = data.bowlChampion;
   State.bowlLedger = data.bowlLedger;
   State.snapshotCount = data.snapshotCount || 0;
+  // pre-load career history in the background so champion rings work everywhere
+  if (!State._careerHistory) {
+    api('getCareerHistory', {}).then(d => { State._careerHistory = d.history || []; }).catch(()=>{});
+  }
   // refresh logged-in player's own record (team name may have changed elsewhere)
   const me = State.players.find(p => p.id === State.player.id);
   if (me) {
@@ -934,6 +941,41 @@ function startBackgroundPolling() {
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+
+// Returns championship years for a player (highest points each year in CareerHistory)
+function getChampionYearsForPlayer(playerId) {
+  if (!playerId || !State._careerHistory) return [];
+  const byYear = {};
+  State._careerHistory.forEach(r => {
+    if (!byYear[r.year]) byYear[r.year] = [];
+    byYear[r.year].push(r);
+  });
+  const champYears = [];
+  Object.entries(byYear).forEach(([year, rows]) => {
+    const sorted = rows.slice().sort((a,b) => Number(b.points) - Number(a.points));
+    if (sorted.length && String(sorted[0].playerId) === String(playerId)) champYears.push(Number(year));
+  });
+  return champYears.sort((a,b) => a - b);
+}
+
+// Wraps an avatar with a spinning gold ring + "YYYY, YYYY Champion(s)" label
+function championRing(avatarHtml, playerId, size) {
+  const years = getChampionYearsForPlayer(playerId);
+  const inner = `<div style="width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${avatarHtml}</div>`;
+  if (!years.length) return inner;
+  const label = years.join(', ') + (years.length === 1 ? ' Champion' : ' Champions');
+  const pad = Math.max(3, Math.round(size * 0.09));
+  const fs = Math.max(7, Math.round(size * 0.14));
+  return `<div style="position:relative;display:inline-flex;flex-direction:column;align-items:center;flex-shrink:0;" title="${escapeHtml(label)}">` +
+    `<div style="position:relative;width:${size}px;height:${size}px;">` +
+      `<div style="position:absolute;inset:-${pad}px;border-radius:50%;background:conic-gradient(#FFD700 0deg,#FFF5A0 45deg,#C8960C 90deg,#FFD700 135deg,#FFF5A0 180deg,#C8960C 225deg,#FFD700 270deg,#FFF5A0 315deg,#C8960C 360deg);box-shadow:0 0 ${pad*3}px rgba(212,160,0,0.8);animation:champSpin 6s linear infinite;"></div>` +
+      `<div style="position:absolute;inset:${Math.round(pad*0.3)}px;border-radius:50%;background:var(--surface-1);z-index:1;"></div>` +
+      `<div style="position:absolute;inset:${pad}px;border-radius:50%;overflow:hidden;z-index:2;display:flex;align-items:center;justify-content:center;">${avatarHtml}</div>` +
+    `</div>` +
+    `<div style="margin-top:2px;background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#1A0800;font-size:${fs}px;font-weight:800;padding:1px ${Math.round(fs*0.6)}px;border-radius:20px;white-space:nowrap;letter-spacing:0.02em;box-shadow:0 1px 4px rgba(0,0,0,0.5);">${escapeHtml(label)}</div>` +
+  `</div>`;
+}
+
 
 /* ---------- Icons ---------- */
 function iconHome(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 11l9-7 9 7"/><path d="M5 10v9h14v-9"/></svg>`; }
@@ -1862,7 +1904,10 @@ function renderSeasonStandings(el, standings, completedWeeks) {
           <div class="standing-row ${i === 0 ? 'rank-1' : ''}" style="padding:12px 16px; border-bottom:${i < standings.length-1 ? '1px solid var(--hairline)' : 'none'};">
             <div class="standing-rank" style="color:${i === 0 ? 'var(--gold)' : i === 1 ? 'var(--text-soft)' : i === 2 ? '#cd7f32' : 'var(--text-faint)'};">${i + 1}</div>
             <div style="flex:1;">
-              <div class="standing-name" data-player-id="${s.playerId}" style="cursor:pointer;">${escapeHtml(s.teamName || s.name)}</div>
+              <div class="standing-name" data-player-id="${s.playerId}" style="cursor:pointer;display:flex;align-items:center;gap:6px;">
+                ${(() => { const yrs = getChampionYearsForPlayer(s.playerId); return yrs.length ? `<span style="font-size:11px;font-weight:800;background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#1A0800;padding:1px 6px;border-radius:20px;white-space:nowrap;">${escapeHtml(yrs.join(', '))} 👑</span>` : ''; })()}
+                ${escapeHtml(s.teamName || s.name)}
+              </div>
               <div class="standing-meta">${escapeHtml(s.name)} &middot; ${s.correct} correct &middot; ${s.upsetWins}/${s.upsetAttempts} upsets hit</div>
             </div>
             <div style="text-align:right;">
@@ -2225,9 +2270,10 @@ async function renderProfile(content) {
 
   const referMsg = `🏈 Hey! You should join our Upset Special fantasy college football league. $${entryFee} entry, weekly cash prizes, and a Bowl Bonanza postseason contest. Sign up here: https://acebuilds51.github.io/UpsetSpecial`;
 
-  const avatarHtml = p.avatar
-    ? `<img src="${p.avatar}" style="width:52px; height:52px; border-radius:50%; object-fit:cover; flex-shrink:0;" alt="avatar">`
-    : `<div style="width:52px; height:52px; border-radius:50%; background:var(--upset-grad); display:flex; align-items:center; justify-content:center; font-family:var(--font-display); font-size:22px; font-weight:700; color:#1A1206; flex-shrink:0;">${escapeHtml((p.teamName || p.name || '?')[0].toUpperCase())}</div>`;
+  const avatarInner = p.avatar
+    ? `<img src="${p.avatar}" style="width:52px; height:52px; border-radius:50%; object-fit:cover;" alt="avatar">`
+    : `<div style="width:52px; height:52px; border-radius:50%; background:var(--upset-grad); display:flex; align-items:center; justify-content:center; font-family:var(--font-display); font-size:22px; font-weight:700; color:#1A1206;">${escapeHtml((p.teamName || p.name || '?')[0].toUpperCase())}</div>`;
+  const avatarHtml = championRing(avatarInner, p.id, 52);
 
   content.innerHTML = `
     <div class="card" style="background:var(--surface-2); display:flex; align-items:center; gap:14px;">
@@ -3116,9 +3162,10 @@ function renderTrophyRoomContent(el, data) {
     trophyCaseHtml = caseWrap(inner);
   }
 
-  const avatarHtml = p.avatar
-    ? `<img src="${p.avatar}" style="width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid var(--hairline);" onclick="showLightbox('${p.avatar}')">`
+  const avatarInnerTR = p.avatar
+    ? `<img src="${p.avatar}" style="width:54px;height:54px;border-radius:50%;object-fit:cover;" onclick="showLightbox('${p.avatar}')">`
     : `<div style="width:54px;height:54px;border-radius:50%;background:var(--upset-grad);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:22px;color:#1A1206;">${escapeHtml((p.teamName||'?')[0].toUpperCase())}</div>`;
+  const avatarHtml = championRing(avatarInnerTR, p.id || p.playerId, 54);
 
   const photoHtml = bio.photoUrl
     ? `<img src="${bio.photoUrl}" style="width:64px;height:64px;border-radius:10px;object-fit:cover;border:1px solid var(--hairline);cursor:pointer;" onclick="showLightbox('${bio.photoUrl}')">`
@@ -3590,9 +3637,10 @@ function renderChatMessages() {
     const isComm = _chatTab === 'commissioner';
     const time = new Date(m.postedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     const player = State.players.find(pl => pl.id === m.playerId);
-    const avatar = player && player.avatar
-      ? `<img src="${player.avatar}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;flex-shrink:0;">`
-      : `<div style="width:32px;height:32px;border-radius:50%;background:${isMe ? 'var(--upset-grad)' : 'var(--surface-2)'};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:${isMe ? '#1A1206' : 'var(--text)'};flex-shrink:0;">${escapeHtml((m.teamName || '?')[0].toUpperCase())}</div>`;
+    const avatarInnerChat = player && player.avatar
+      ? `<img src="${player.avatar}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">`
+      : `<div style="width:32px;height:32px;border-radius:50%;background:${isMe ? 'var(--upset-grad)' : 'var(--surface-2)'};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:${isMe ? '#1A1206' : 'var(--text)'};">${escapeHtml((m.teamName || '?')[0].toUpperCase())}</div>`;
+    const avatar = player ? championRing(avatarInnerChat, player.id, 32) : avatarInnerChat;
 
     return `
       <div style="display:flex; gap:8px; align-items:flex-start; ${isMe ? 'flex-direction:row-reverse;' : ''}">
