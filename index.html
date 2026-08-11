@@ -407,11 +407,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v6.4';
-const BUILD_TIME = '2026-08-11T13:25:33Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v7.2';
+const BUILD_TIME = '2026-08-11T15:03:57Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbxPFvP1LhEX5FhhFWy1fCt4OdQRe7A9O4f3spGvvb1S9ZKd3tFgtEY77G4MzK5tFoJ-/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbzoaD6obRg9Y5tC1ZrPQjVPsqPszNqsfLamWW07I-wP07Rqjx7CEoNb4P0msFXaVXzW/exec'
 };
 
 const State = {
@@ -1862,7 +1862,7 @@ function renderSeasonStandings(el, standings, completedWeeks) {
           <div class="standing-row ${i === 0 ? 'rank-1' : ''}" style="padding:12px 16px; border-bottom:${i < standings.length-1 ? '1px solid var(--hairline)' : 'none'};">
             <div class="standing-rank" style="color:${i === 0 ? 'var(--gold)' : i === 1 ? 'var(--text-soft)' : i === 2 ? '#cd7f32' : 'var(--text-faint)'};">${i + 1}</div>
             <div style="flex:1;">
-              <div class="standing-name">${escapeHtml(s.teamName || s.name)}</div>
+              <div class="standing-name" data-player-id="${s.playerId}" style="cursor:pointer;">${escapeHtml(s.teamName || s.name)}</div>
               <div class="standing-meta">${escapeHtml(s.name)} &middot; ${s.correct} correct &middot; ${s.upsetWins}/${s.upsetAttempts} upsets hit</div>
             </div>
             <div style="text-align:right;">
@@ -2156,7 +2156,7 @@ async function renderCareerStandings(el) {
                 <div style="width:28px; text-align:center; font-size:${i < 3 ? '18px' : '13px'}; font-weight:700; color:${rankColor}; flex-shrink:0;">${rankLabel}</div>
                 <div style="flex:1; min-width:0;">
                   <div style="font-size:13px; font-weight:700; color:${isMe ? 'var(--gold)' : 'var(--text)'}; display:flex; align-items:center; flex-wrap:wrap; gap:4px;">
-                    <span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(r.teamName)}${isMe ? ' ★' : ''}</span>
+                    <span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" data-player-id="${r.playerId || ''}" style="cursor:pointer;">${escapeHtml(r.teamName)}${isMe ? ' ★' : ''}</span>
                     ${selectedYear === 'all' ? podiumBadge(pod) : ''}
                     ${perfCount > 0 ? `<span style="font-size:11px;" title="${perfCount} perfect week${perfCount > 1 ? 's' : ''} this season">💯×${perfCount}</span>` : ''}
                     ${!r.matched ? '<span style="color:var(--text-faint); font-size:10px; font-style:italic;">(unlinked)</span>' : ''}
@@ -2185,6 +2185,7 @@ async function renderCareerStandings(el) {
     ${!history.every(r => r.matched) ? '<p class="helptext" style="text-align:center; margin-top:8px; font-style:italic;">Some historical names aren\'t linked to current players yet.</p>' : ''}
   `;
 
+  wirePlayerNameTaps(el);
   el.querySelectorAll('[data-year]').forEach(btn => {
     btn.onclick = () => {
       State._careerYear = btn.dataset.year === 'all' ? 'all' : Number(btn.dataset.year);
@@ -2370,6 +2371,34 @@ async function renderProfile(content) {
       </div>
     </div>
 
+    <div class="section-label">Trophy Room Bio</div>
+    <div class="card">
+      <p class="helptext" style="margin-bottom:12px; line-height:1.6;">Fill this in and tap Generate Bio — Claude will write your Trophy Room profile. Other players can tap your name anywhere in the app to see your Trophy Room.</p>
+      <label class="field-label">Where do you live?</label>
+      <input type="text" id="bio-hometown" placeholder="e.g. Waterford, MI" value="${escapeHtml(State._bioData && State._bioData.hometown || '')}">
+      <label class="field-label" style="margin-top:8px;">College</label>
+      <input type="text" id="bio-college" placeholder="e.g. University of Michigan">
+      <label class="field-label" style="margin-top:8px;">Favorite college football team</label>
+      <input type="text" id="bio-favTeam" placeholder="e.g. Michigan Wolverines">
+      <label class="field-label" style="margin-top:8px;">First college game attended (teams + year)</label>
+      <input type="text" id="bio-firstGame" placeholder="e.g. Michigan vs Penn State, 1994">
+      <label class="field-label" style="margin-top:8px;">Favorite game attended and why</label>
+      <textarea id="bio-favGame" rows="2" placeholder="e.g. 2016 Michigan vs Ohio State — greatest atmosphere I've ever experienced" style="width:100%;box-sizing:border-box;background:var(--surface-2);border:1px solid var(--hairline);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:14px;font-family:inherit;resize:none;margin-top:4px;"></textarea>
+      <label class="field-label" style="margin-top:8px;">Favorite college player of all time and why</label>
+      <textarea id="bio-favPlayer" rows="2" placeholder="e.g. Charles Woodson — the 1997 Heisman was deserved and then some" style="width:100%;box-sizing:border-box;background:var(--surface-2);border:1px solid var(--hairline);border-radius:var(--radius-sm);color:var(--text);padding:10px 12px;font-size:14px;font-family:inherit;resize:none;margin-top:4px;"></textarea>
+      <label class="field-label" style="margin-top:8px;">Favorite upset you've ever seen</label>
+      <input type="text" id="bio-favUpset" placeholder="e.g. App State over Michigan, 2007">
+      <label class="field-label" style="margin-top:8px;">Your pick'em strategy</label>
+      <input type="text" id="bio-strategy" placeholder="e.g. Gut feel + alma mater bias">
+      <label class="field-label" style="margin-top:8px;">Occupation (optional)</label>
+      <input type="text" id="bio-occupation" placeholder="e.g. Software developer">
+      <label class="field-label" style="margin-top:8px;">One fun/strange fact about yourself</label>
+      <input type="text" id="bio-funFact" placeholder="e.g. Once drove 4 hours to watch a game in a snowstorm">
+      <button class="btn btn-gold btn-block" id="bio-generate-btn" style="margin-top:14px;">✨ Generate Bio with AI</button>
+      <div id="bio-preview" style="display:none;margin-top:12px;background:var(--surface-2);border-radius:var(--radius-sm);padding:12px;font-size:13px;color:var(--text-soft);line-height:1.7;font-style:italic;border:1px solid var(--hairline);"></div>
+      <button class="btn btn-primary btn-block" id="bio-save-btn" style="margin-top:10px;">Save Bio</button>
+    </div>
+
     <div class="section-label">Account</div>
     <div class="card">
       <button class="btn btn-danger btn-block" id="profile-logout-btn">Log Out</button>
@@ -2523,6 +2552,83 @@ async function renderProfile(content) {
   // --- Log out ---
   document.getElementById('profile-logout-btn').onclick = () => {
     if (confirm('Log out of your account?')) logout();
+  };
+
+  // --- Bio: load existing data and wire handlers ---
+  api('getTrophyRoom', { playerId: p.id }).then(data => {
+    const bio = data.bio || {};
+    const fields = ['hometown','college','favTeam','firstGame','favGame','favPlayer','favUpset','strategy','occupation','funFact'];
+    fields.forEach(f => {
+      const el = document.getElementById('bio-' + f);
+      if (el && bio[f]) el.value = bio[f];
+    });
+  }).catch(() => {});
+
+  document.getElementById('bio-generate-btn').onclick = async () => {
+    const btn = document.getElementById('bio-generate-btn');
+    const fields = ['hometown','college','favTeam','firstGame','favGame','favPlayer','favUpset','strategy','occupation','funFact'];
+    const answers = {};
+    fields.forEach(f => {
+      const el = document.getElementById('bio-' + f);
+      if (el && el.value.trim()) answers[f] = el.value.trim();
+    });
+    if (Object.keys(answers).length < 3) { showToast('Fill in at least 3 fields to generate a bio', 'error'); return; }
+
+    btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span> Generating...';
+    btn.disabled = true;
+
+    // Build prompt for Claude
+    const prompt = `You are writing a fun, witty, third-person bio paragraph for a fantasy college football pick'em league called Upset Special. The player has been in this league since ${p.joinedSeason || 'its founding'}. Write ONE paragraph (3-5 sentences) in a warm, slightly irreverent sports-bar voice. Use their answers to craft something personal and entertaining. Do not use their real name — refer to them by their team name "${p.teamName}". Here are their answers:\n${Object.entries(answers).map(([k,v]) => `- ${k}: ${v}`).join('\n')}\nWrite only the bio paragraph, no quotes or preamble.`;
+
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 300,
+          messages: [{ role: 'user', content: prompt }]
+        })
+      });
+      const result = await response.json();
+      const bioText = result.content && result.content[0] && result.content[0].text ? result.content[0].text.trim() : '';
+      if (bioText) {
+        const preview = document.getElementById('bio-preview');
+        preview.textContent = bioText;
+        preview.style.display = 'block';
+        // store for save
+        preview.dataset.bioText = bioText;
+        showToast('Bio generated! Review it and tap Save.', 'success');
+      }
+    } catch(e) {
+      showToast('Could not generate bio: ' + e.message, 'error');
+    } finally {
+      btn.innerHTML = '✨ Generate Bio with AI';
+      btn.disabled = false;
+    }
+  };
+
+  document.getElementById('bio-save-btn').onclick = async () => {
+    const fields = ['hometown','college','favTeam','firstGame','favGame','favPlayer','favUpset','strategy','occupation','funFact'];
+    const payload = { playerId: p.id, email: p.email || '' };
+    fields.forEach(f => {
+      const el = document.getElementById('bio-' + f);
+      if (el) payload[f] = el.value.trim();
+    });
+    const preview = document.getElementById('bio-preview');
+    if (preview && preview.dataset.bioText) payload.bioText = preview.dataset.bioText;
+
+    const btn = document.getElementById('bio-save-btn');
+    btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+    try {
+      await api('saveBio', payload);
+      _trophyRoomCache = {}; // clear cache so trophy room reloads fresh
+      showToast('Bio saved ✓', 'success');
+      btn.textContent = 'Save Bio';
+    } catch(e) {
+      showToast('Could not save bio', 'error');
+      btn.textContent = 'Save Bio';
+    }
   };
 }
 
@@ -2741,6 +2847,228 @@ function getMyBowlChampionPick() { return (State.bowlChampion || []).find(c => c
 /* ============================================================
    INFO VIEW (Rules for non-admins)
    ============================================================ */
+/* ============================================================
+   TROPHY ROOM — modal overlay, tap any player name to open
+   ============================================================ */
+let _trophyRoomCache = {};
+
+function openTrophyRoom(playerId) {
+  // create modal if not exists
+  let modal = document.getElementById('trophy-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'trophy-modal';
+    modal.style.cssText = 'position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.85);overflow-y:auto;display:none;';
+    modal.innerHTML = `
+      <div id="trophy-modal-inner" style="max-width:480px;margin:0 auto;padding:16px 12px 40px;">
+        <div style="display:flex;justify-content:flex-end;margin-bottom:8px;">
+          <button onclick="document.getElementById('trophy-modal').style.display='none'" 
+            style="background:var(--surface-2);border:none;border-radius:50%;width:36px;height:36px;font-size:20px;cursor:pointer;color:var(--text);line-height:1;">✕</button>
+        </div>
+        <div id="trophy-modal-content">
+          <div class="empty-state"><span class="spinner"></span></div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.onclick = e => { if (e.target === modal) modal.style.display = 'none'; };
+  }
+  modal.style.display = 'block';
+  modal.scrollTop = 0;
+  loadTrophyRoom(playerId);
+}
+
+async function loadTrophyRoom(playerId) {
+  const inner = document.getElementById('trophy-modal-content');
+  if (!inner) return;
+
+  if (_trophyRoomCache[playerId]) {
+    renderTrophyRoomContent(inner, _trophyRoomCache[playerId]);
+    return;
+  }
+
+  inner.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading Trophy Room...</p></div>';
+
+  try {
+    const data = await api('getTrophyRoom', { playerId });
+    _trophyRoomCache[playerId] = data;
+    renderTrophyRoomContent(inner, data);
+  } catch(e) {
+    inner.innerHTML = `<div class="empty-state"><p>Could not load Trophy Room.</p></div>`;
+  }
+}
+
+function renderTrophyRoomContent(el, data) {
+  const p = data.player;
+  const isMe = State.player && State.player.id === p.id;
+  const bio = data.bio || {};
+
+  const avatarHtml = p.avatar
+    ? `<img src="${p.avatar}" style="width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid var(--hairline);" onclick="showLightbox('${p.avatar}')">`
+    : `<div style="width:54px;height:54px;border-radius:50%;background:var(--upset-grad);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:22px;color:#1A1206;">${escapeHtml((p.teamName||'?')[0].toUpperCase())}</div>`;
+
+  const photoHtml = bio.photoUrl
+    ? `<img src="${bio.photoUrl}" style="width:64px;height:64px;border-radius:10px;object-fit:cover;border:1px solid var(--hairline);cursor:pointer;" onclick="showLightbox('${bio.photoUrl}')">`
+    : `<div style="width:64px;height:64px;border-radius:10px;background:var(--surface-2);border:1px dashed var(--hairline);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-faint);text-align:center;line-height:1.4;">${isMe ? 'Add<br>Photo' : 'No<br>Photo'}</div>`;
+
+  // Trophy case
+  const hasTrophies = data.trophies && data.trophies.length > 0;
+  const trophyHtml = hasTrophies ? `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      ${data.trophies.map(t => `
+        <div style="display:flex;flex-direction:column;align-items:center;gap:5px;background:rgba(255,215,0,0.07);border:1px solid rgba(200,150,12,0.35);border-radius:10px;padding:12px 10px;animation:float 4s ease-in-out infinite;">
+          <span style="font-size:28px;">${t.position===1?'🥇':t.position===2?'🥈':'🥉'}</span>
+          <span style="font-size:11px;font-weight:700;color:#c8960c;">${t.year}</span>
+          <span style="font-size:10px;color:rgba(200,150,12,0.65);text-transform:uppercase;letter-spacing:0.06em;">${t.position===1?'Champion':t.position===2?'Runner-up':'3rd place'}</span>
+        </div>`).join('')}
+    </div>` : `
+    <div style="border:1.5px dashed var(--hairline);border-radius:10px;padding:1.5rem;text-align:center;">
+      <div style="display:flex;justify-content:center;gap:14px;margin-bottom:10px;opacity:0.1;">
+        <span style="font-size:32px;">🏆</span><span style="font-size:32px;">🏆</span><span style="font-size:32px;">🏆</span>
+      </div>
+      <div style="font-size:13px;color:var(--text-faint);">Trophy case is empty</div>
+      <div style="font-size:11px;color:var(--text-faint);margin-top:4px;">No podium finishes yet — this could be the year.</div>
+    </div>`;
+
+  // Perfect week banner
+  const perfectHtml = data.perfectWeeks && data.perfectWeeks.length > 0 ? data.perfectWeeks.map(pw => `
+    <div style="background:linear-gradient(135deg,#7c2d00,#c2410c,#FFB800,#FF6B35);border:1.5px solid #FF6B35;border-radius:12px;padding:1rem 1.25rem;text-align:center;animation:pulse-orange 2s ease-in-out infinite;position:relative;overflow:hidden;margin-bottom:8px;">
+      <div style="display:flex;justify-content:center;gap:5px;margin-bottom:6px;">
+        <span style="font-size:14px;animation:spin-slow 8s linear infinite;display:inline-block;color:#1A1206;">✦</span>
+        <span style="font-size:14px;animation:spin-slow 8s linear infinite;display:inline-block;color:#1A1206;animation-delay:-2.7s;">✦</span>
+        <span style="font-size:14px;animation:spin-slow 8s linear infinite;display:inline-block;color:#1A1206;animation-delay:-5.3s;">✦</span>
+      </div>
+      <div style="font-size:26px;margin-bottom:4px;position:relative;z-index:1;">💯</div>
+      <div style="font-size:15px;font-weight:700;color:#1A1206;position:relative;z-index:1;">Perfect Week</div>
+      <div style="font-size:12px;color:rgba(26,18,6,0.8);margin-top:3px;position:relative;z-index:1;">10 / 10 correct · Week ${pw.week}, ${pw.year}</div>
+      ${data.leaguePerfectCount > 0 ? `<div style="font-size:11px;color:rgba(26,18,6,0.55);margin-top:5px;position:relative;z-index:1;">One of only ${data.leaguePerfectCount} ever in league history</div>` : ''}
+    </div>`).join('') : '';
+
+  // About table
+  const aboutRows = [
+    ['Lives in', bio.hometown],
+    ['College', bio.college],
+    ['Favorite team', bio.favTeam],
+    ['First game', bio.firstGame],
+    ['Favorite game attended', bio.favGame],
+    ['Favorite player all-time', bio.favPlayer],
+    ['Favorite upset seen', bio.favUpset],
+    ['Pick strategy', bio.strategy],
+    ['Occupation', bio.occupation],
+    ['Fun fact', bio.funFact],
+  ].filter(r => r[1]);
+
+  el.innerHTML = `
+    <style>
+      @keyframes pulse-orange { 0%,100%{box-shadow:0 0 0 0 rgba(255,107,53,0)} 50%{box-shadow:0 0 18px 6px rgba(255,107,53,0.3)} }
+      @keyframes pulse-gold { 0%,100%{box-shadow:0 0 0 0 rgba(234,179,8,0)} 50%{box-shadow:0 0 16px 5px rgba(234,179,8,0.3)} }
+      @keyframes shimmer { 0%{background-position:-200% center} 100%{background-position:200% center} }
+      @keyframes spin-slow { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+      @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
+    </style>
+
+    <!-- Header -->
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;background:var(--surface-2);border:1px solid var(--hairline);border-radius:12px;padding:14px;margin-bottom:10px;">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+        ${avatarHtml}
+        <span style="font-size:10px;color:var(--text-faint);">Avatar</span>
+      </div>
+      <div style="flex:1;text-align:center;padding:0 12px;">
+        <div style="font-size:16px;font-weight:700;color:var(--text);">${escapeHtml(p.teamName)}</div>
+        <div style="font-size:12px;color:var(--text-faint);margin-top:2px;">${escapeHtml(p.name)}</div>
+        ${bio.hometown ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.hometown)}</div>` : ''}
+        ${bio.college ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.college)}</div>` : ''}
+        <div style="font-size:11px;color:var(--text-faint);margin-top:2px;">In league since ${p.joinedSeason || ''}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
+        ${photoHtml}
+        <span style="font-size:10px;color:var(--text-faint);">Photo</span>
+      </div>
+    </div>
+
+    <!-- Bio -->
+    ${bio.bioText ? `<div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:12px;padding:14px;margin-bottom:10px;font-size:13px;color:var(--text-soft);line-height:1.7;font-style:italic;">"${escapeHtml(bio.bioText)}"</div>` : isMe ? `<div style="background:var(--surface-2);border:1px dashed var(--hairline);border-radius:12px;padding:14px;margin-bottom:10px;text-align:center;"><div class="helptext">Complete your Trophy Room bio in your Profile tab</div><button class="btn btn-primary btn-sm" style="margin-top:8px;" onclick="document.getElementById('trophy-modal').style.display='none';State.view='profile';renderContent();">Set Up Bio →</button></div>` : ''}
+
+    <!-- Trophy Case -->
+    <div style="background:linear-gradient(135deg,#1a1206,#2d1f00,#1a1206);border:1.5px solid #c8960c;border-radius:12px;padding:14px;margin-bottom:10px;position:relative;overflow:hidden;animation:pulse-gold 3s ease-in-out infinite;">
+      <div style="position:absolute;top:0;left:-100%;width:60%;height:100%;background:linear-gradient(90deg,transparent,rgba(255,215,0,0.07),transparent);animation:shimmer 3s ease-in-out infinite;"></div>
+      <div style="font-size:12px;font-weight:700;color:#c8960c;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">★ Top 3 Finishes ★</div>
+      <div style="font-size:11px;color:rgba(200,150,12,0.55);margin-bottom:12px;">Season champions &amp; podium finishes</div>
+      ${trophyHtml}
+    </div>
+
+    <!-- Perfect Week -->
+    ${perfectHtml}
+
+    <!-- Upset Stats -->
+    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:10px;">
+      <div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:12px;padding:12px;">
+        <div style="font-size:11px;color:var(--text-faint);margin-bottom:4px;">Upset specials hit</div>
+        <div style="font-size:22px;font-weight:700;color:var(--text);">${data.upsetHits}</div>
+        <div style="font-size:11px;color:var(--text-faint);">of ${data.upsetAttempts} attempts</div>
+      </div>
+      <div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:12px;padding:12px;">
+        <div style="font-size:11px;color:var(--text-faint);margin-bottom:4px;">Total upset pts</div>
+        <div style="font-size:22px;font-weight:700;color:var(--text);">${data.totalUpsetPts}</div>
+        <div style="font-size:11px;color:var(--text-faint);">career total</div>
+      </div>
+    </div>
+
+    <!-- Biggest Upset -->
+    ${data.biggestUpset ? `
+    <div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:12px;padding:14px;margin-bottom:10px;">
+      <div style="font-size:11px;color:var(--text-faint);font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:8px;">Biggest Upset Special</div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span style="font-size:28px;">💥</span>
+        <div>
+          <div style="font-size:14px;font-weight:700;color:var(--text);">${escapeHtml(data.biggestUpset.team)} +${data.biggestUpset.spread}</div>
+          <div style="font-size:12px;color:var(--text-faint);">+${data.biggestUpset.spread} pts · Week ${data.biggestUpset.week}, ${data.biggestUpset.year}</div>
+        </div>
+      </div>
+    </div>` : ''}
+
+    <!-- About -->
+    ${aboutRows.length > 0 ? `
+    <div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:12px;padding:14px;margin-bottom:10px;">
+      <div style="font-size:11px;color:var(--text-faint);font-weight:700;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">About</div>
+      <div style="display:flex;flex-direction:column;gap:8px;font-size:13px;">
+        ${aboutRows.map((r,i) => `
+          <div style="display:flex;justify-content:space-between;gap:12px;${i>0?'padding-top:8px;border-top:1px solid var(--hairline);':''}">
+            <span style="color:var(--text-faint);flex-shrink:0;">${r[0]}</span>
+            <span style="color:var(--text);text-align:right;">${escapeHtml(r[1])}</span>
+          </div>`).join('')}
+      </div>
+    </div>` : ''}
+
+    ${isMe ? `<button class="btn btn-primary btn-block" onclick="document.getElementById('trophy-modal').style.display='none';State.view='profile';renderContent();">Edit My Trophy Room →</button>` : ''}
+  `;
+}
+
+// Show a lightbox for avatar/photo expand
+function showLightbox(src) {
+  let lb = document.getElementById('trophy-lightbox');
+  if (!lb) {
+    lb = document.createElement('div');
+    lb.id = 'trophy-lightbox';
+    lb.style.cssText = 'position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,0.92);display:flex;align-items:center;justify-content:center;cursor:pointer;';
+    lb.onclick = () => lb.style.display = 'none';
+    document.body.appendChild(lb);
+  }
+  lb.innerHTML = `<img src="${src}" style="max-width:90vw;max-height:80vh;border-radius:12px;border:2px solid var(--hairline);">`;
+  lb.style.display = 'flex';
+}
+
+// Wire up player name taps — call this after any screen renders player names
+function wirePlayerNameTaps(container) {
+  if (!container) container = document;
+  container.querySelectorAll('[data-player-id]').forEach(el => {
+    el.style.cursor = 'pointer';
+    el.onclick = (e) => {
+      e.stopPropagation();
+      openTrophyRoom(el.dataset.playerId);
+    };
+  });
+}
+
 function renderInfo(content) {
   content.innerHTML = `
     <div class="section-label">League Info</div>
@@ -2861,7 +3189,7 @@ function renderChatMessages() {
         ${avatar}
         <div style="max-width:75%; ${isMe ? 'align-items:flex-end;' : ''} display:flex; flex-direction:column; gap:3px;">
           <div style="font-size:11px; color:var(--text-faint); ${isMe ? 'text-align:right;' : ''}">
-            ${isMe ? 'You' : escapeHtml(m.teamName)}${isComm ? ' <span style="color:var(--gold);font-weight:700;">Commissioner</span>' : ''} · ${time}
+            ${isMe ? 'You' : `<span data-player-id="${m.playerId}" style="cursor:pointer;">${escapeHtml(m.teamName)}</span>`}${isComm ? ' <span style="color:var(--gold);font-weight:700;">Commissioner</span>' : ''} · ${time}
             ${isAdmin ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px;margin-left:4px;" data-delete-msg="${m.messageId}">✕</button>` : ''}
           </div>
           <div style="background:${isMe ? 'var(--gold)' : 'var(--surface-2)'}; color:${isMe ? '#1A1206' : 'var(--text)'}; padding:9px 12px; border-radius:${isMe ? '16px 4px 16px 16px' : '4px 16px 16px 16px'}; font-size:14px; line-height:1.5; word-break:break-word;">
@@ -2882,6 +3210,7 @@ function renderChatMessages() {
     };
   });
 
+  wirePlayerNameTaps(container);
   // scroll to bottom
   container.scrollTop = container.scrollHeight;
 }
