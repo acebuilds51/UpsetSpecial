@@ -407,8 +407,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v5.2';
-const BUILD_TIME = '2026-08-11T05:59:01Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v5.4';
+const BUILD_TIME = '2026-08-11T11:31:12Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbxAgFyRiAqy8jogVMbGNgw-QsxzM6hS6CnCwuUDCbCK1Wwgt5OjMwMIB8GbH3LIDpUT/exec'
@@ -532,9 +532,10 @@ async function registerForPushNotifications(playerId) {
     }
 
     // save to backend
-    console.log('FCM: saving token to backend...');
+    console.log('FCM: saving token to backend, playerId=', playerId, 'token length=', token.length);
     try {
-      await api('registerFcmToken', { playerId, token });
+      const result = await api('registerFcmToken', { playerId, token });
+      console.log('FCM: backend result=', JSON.stringify(result));
       State.player.fcmToken = token;
       showToast('Push notifications enabled ✓', 'success');
       console.log('FCM: token saved successfully');
@@ -550,10 +551,20 @@ async function registerForPushNotifications(playerId) {
 
 async function unregisterPushNotifications(playerId) {
   try {
-    await api('registerFcmToken', { playerId, token: '' });
+    // get the current device's token to remove it specifically
+    let currentToken = '';
+    if (_fcmMessaging) {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration('/UpsetSpecial/firebase-messaging-sw.js');
+        if (reg) currentToken = await _fcmMessaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: reg }) || '';
+      } catch(e) {}
+    }
+    await api('registerFcmToken', { playerId, token: currentToken, remove: true });
     State.player.fcmToken = '';
-    showToast('Notifications disabled', 'success');
-  } catch(e) {}
+    showToast('Notifications disabled for this device', 'success');
+  } catch(e) {
+    showToast('Could not disable notifications: ' + e.message, 'error');
+  }
 }
 
 async function boot() {
@@ -2166,7 +2177,7 @@ async function renderCareerStandings(el) {
 /* ============================================================
    PROFILE / SETTINGS VIEW
    ============================================================ */
-function renderProfile(content) {
+async function renderProfile(content) {
   const p = State.player;
   const season = State.season || {};
   const myStandings = computeStandingsLocally().find(s => s.playerId === p.id);
@@ -2177,6 +2188,21 @@ function renderProfile(content) {
   const JEFF_VENMO = '@Jeff-Wilkerson-16';
   const JEFF_PAYPAL = 'https://paypal.me/jefferywilkerson1';
   const entryFee = Number(season.entryFee || 100);
+  // check if current device is registered for notifications
+  let _deviceNotifEnabled = false;
+  if (p.fcmToken && _fcmMessaging) {
+    try {
+      const swReg = await navigator.serviceWorker.getRegistration('/UpsetSpecial/firebase-messaging-sw.js');
+      if (swReg) {
+        const deviceToken = await _fcmMessaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: swReg }).catch(() => '');
+        if (deviceToken) {
+          const tokens = (p.fcmToken || '').split(',').map(t => t.trim()).filter(Boolean);
+          _deviceNotifEnabled = tokens.includes(deviceToken);
+        }
+      }
+    } catch(e) {}
+  }
+
   const referMsg = `🏈 Hey! You should join our Upset Special fantasy college football league. $${entryFee} entry, weekly cash prizes, and a Bowl Bonanza postseason contest. Sign up here: https://acebuilds51.github.io/UpsetSpecial`;
 
   const avatarHtml = p.avatar
@@ -2277,11 +2303,11 @@ function renderProfile(content) {
       <p class="helptext" style="margin-bottom:12px; line-height:1.6;">Enable push notifications to get pick reminders and board alerts automatically. Pick reminders and board-posted alerts are always on when enabled.</p>
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
         <div>
-          <div style="font-size:13px; font-weight:700; color:var(--text);">${p.fcmToken ? '🔔 Notifications enabled' : '🔕 Notifications disabled'}</div>
-          <div class="helptext" style="margin-top:2px;">${p.fcmToken ? 'You will receive pick reminders and board alerts' : 'Tap to enable'}</div>
+          <div style="font-size:13px; font-weight:700; color:var(--text);">${_deviceNotifEnabled ? '🔔 This device: enabled' : '🔕 This device: disabled'}</div>
+          <div class="helptext" style="margin-top:2px;">${p.fcmToken ? (p.fcmToken.split(',').filter(Boolean).length + ' device(s) registered') : 'No devices registered'}</div>
         </div>
-        <button class="btn ${p.fcmToken ? 'btn-danger' : 'btn-primary'} btn-sm" id="notif-toggle-btn">
-          ${p.fcmToken ? 'Disable' : 'Enable'}
+        <button class="btn ${_deviceNotifEnabled ? 'btn-danger' : 'btn-primary'} btn-sm" id="notif-toggle-btn">
+          ${_deviceNotifEnabled ? 'Disable' : 'Enable'}
         </button>
       </div>
       ${p.fcmToken ? `
