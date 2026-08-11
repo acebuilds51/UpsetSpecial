@@ -406,8 +406,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v4.1';
-const BUILD_TIME = '2026-08-11T02:47:02Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v4.2';
+const BUILD_TIME = '2026-08-11T02:54:33Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbw6d6eZRtPWuhAL2eq1hMYAnGQr0nxtEvTKTRLfP2ME1paq1d-kh_EzLDLp9PZor43V/exec'
@@ -875,7 +875,7 @@ let _upsetSelection = null; // {espnEventId, awayTeam, homeTeam, favorite, sprea
    ============================================================ */
 function renderHome(content) {
   try {
-    const week = Number((State.season || {}).currentWeek || 1);
+    const cw = (State.season || {}).currentWeek; const week = cw !== undefined && cw !== '' ? Number(cw) : 1;
     const p = State.player;
     const season = State.season || {};
     const games = getGamesForWeek(week);
@@ -980,7 +980,7 @@ function renderHome(content) {
 /* ============================================================
    UTILITY / HELPER FUNCTIONS
    ============================================================ */
-function currentWeek() { return Number((State.season || {}).currentWeek || 1); }
+function currentWeek() { const cw = (State.season || {}).currentWeek; return cw !== undefined && cw !== '' ? Number(cw) : 1; }
 function fmtSpread(s) { const n = Number(s); return n % 1 === 0 ? n.toFixed(1) : String(n); }
 function getPlayerById(id) { return (State.players || []).find(p => p.id === id); }
 function getRotationForWeek(week) { return (State.rotation || []).find(r => Number(r.week) === Number(week)); }
@@ -2918,7 +2918,7 @@ function renderAdminWeek(el) {
 
   document.getElementById('week-jump').onclick = () => {
     const w = prompt('Jump to week #:', week);
-    if (w && !isNaN(Number(w))) adminSetSeasonField('currentWeek', Number(w));
+    if (w !== null && w !== '' && !isNaN(Number(w))) adminSetSeasonField('currentWeek', Number(w));
   };
   document.getElementById('assign-picker-btn').onclick = async () => {
     const playerId = document.getElementById('picker-select').value;
@@ -3219,7 +3219,7 @@ function renderAdminSeason(el) {
       <div class="field"><label>League Name</label><input type="text" id="season-name" value="${escapeHtml(State.season.leagueName || '')}"></div>
       <div class="row2">
         <div class="field"><label>Year</label><input type="number" id="season-year" value="${State.season.year || ''}"></div>
-        <div class="field"><label>Current Week</label><input type="number" id="season-week" value="${State.season.currentWeek || 1}"></div>
+        <div class="field"><label>Current Week</label><input type="number" id="season-week" value="${State.season.currentWeek !== undefined && State.season.currentWeek !== '' ? State.season.currentWeek : 1}"></div>
       </div>
       <div class="row2">
         <div class="field"><label>Entry Fee ($)</label><input type="number" id="season-entryfee" value="${State.season.entryFee || ''}"></div>
