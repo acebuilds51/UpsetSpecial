@@ -407,8 +407,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v4.8';
-const BUILD_TIME = '2026-08-11T05:25:07Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v4.9';
+const BUILD_TIME = '2026-08-11T05:32:46Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbyxAcUFJ61mxVg2Z3P0gdyI6GFSykDeIdZ_pgkZzGwZDSZck-ikXK-83Pi7OX2-YJT9/exec'
@@ -472,12 +472,6 @@ const FCM_VAPID_KEY = "BHg_GXa8Qby_wGTVY9eBp8B73oKJZcTLd6z_O-Fh14hWz2blb8p32fw7i
 let _fcmMessaging = null;
 
 async function initFirebase() {
-  // wait up to 10 seconds for the Firebase SDK to load (it loads deferred)
-  let attempts = 0;
-  while (typeof firebase === 'undefined' && attempts < 20) {
-    await new Promise(r => setTimeout(r, 500));
-    attempts++;
-  }
   if (typeof firebase === 'undefined') {
     console.log('Firebase SDK not available — push notifications disabled');
     return;
@@ -556,8 +550,8 @@ async function unregisterPushNotifications(playerId) {
 }
 
 async function boot() {
-  // init Firebase in background -- never block boot if it fails
-  setTimeout(() => { initFirebase().catch(e => console.log('Firebase init deferred error:', e)); }, 1000);
+  // Firebase loads synchronously at bottom of body — init it now
+  initFirebase().catch(e => console.log('Firebase boot init error:', e));
   // check version first -- show update banner if player is running an old version
   checkAppVersion();
 
@@ -3798,9 +3792,14 @@ function renderAdminBowlResolve(el) {
   }
 }
 </script>
-  <!-- Firebase Cloud Messaging — loaded after app renders -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js" defer></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js" defer></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
+  <script>
+    // Firebase is now loaded — init messaging and re-check if user is logged in
+    if (typeof firebase !== 'undefined') {
+      initFirebase().catch(function(e) { console.log('Firebase post-load init error:', e); });
+    }
+  </script>
 </body>
 </html>
 
