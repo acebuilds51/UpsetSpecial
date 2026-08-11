@@ -407,8 +407,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v5.6';
-const BUILD_TIME = '2026-08-11T11:54:07Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v5.7';
+const BUILD_TIME = '2026-08-11T12:00:02Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbxAgFyRiAqy8jogVMbGNgw-QsxzM6hS6CnCwuUDCbCK1Wwgt5OjMwMIB8GbH3LIDpUT/exec'
@@ -508,9 +508,9 @@ async function registerForPushNotifications(playerId) {
       return;
     }
 
-    // register service worker
+    // register service worker with explicit scope
     console.log('FCM: registering service worker...');
-    const reg = await navigator.serviceWorker.register('/UpsetSpecial/firebase-messaging-sw.js');
+    const reg = await navigator.serviceWorker.register('/UpsetSpecial/firebase-messaging-sw.js', { scope: '/UpsetSpecial/' });
     await navigator.serviceWorker.ready;
     console.log('FCM: service worker ready');
 
@@ -562,7 +562,7 @@ async function unregisterPushNotifications(playerId) {
     let currentToken = '';
     if (_fcmMessaging) {
       try {
-        const reg = await navigator.serviceWorker.getRegistration('/UpsetSpecial/firebase-messaging-sw.js');
+        const reg = await navigator.serviceWorker.getRegistration('/UpsetSpecial/');
         if (reg) currentToken = await _fcmMessaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: reg }) || '';
       } catch(e) {}
     }
@@ -2199,7 +2199,7 @@ async function renderProfile(content) {
   let _deviceNotifEnabled = false;
   if (p.fcmToken && _fcmMessaging) {
     try {
-      const swReg = await navigator.serviceWorker.getRegistration('/UpsetSpecial/firebase-messaging-sw.js');
+      const swReg = await navigator.serviceWorker.getRegistration('/UpsetSpecial/');
       if (swReg) {
         const deviceToken = await _fcmMessaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: swReg }).catch(() => '');
         if (deviceToken) {
