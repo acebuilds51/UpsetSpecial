@@ -407,11 +407,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v4.6';
-const BUILD_TIME = '2026-08-11T05:06:00Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v4.8';
+const BUILD_TIME = '2026-08-11T05:25:07Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbzXmhKSBg-n8xLwWXyoqSDH20BYbscuSzAi8j5QmLQpmlZZOMCqjNRZn7FFDuWEQTuX/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbyxAcUFJ61mxVg2Z3P0gdyI6GFSykDeIdZ_pgkZzGwZDSZck-ikXK-83Pi7OX2-YJT9/exec'
 };
 
 const State = {
@@ -497,30 +497,53 @@ async function initFirebase() {
 
 async function registerForPushNotifications(playerId) {
   try {
-    if (!_fcmMessaging) await initFirebase();
-    if (!_fcmMessaging) return;
-
-    // register service worker
-    const reg = await navigator.serviceWorker.register('/UpsetSpecial/firebase-messaging-sw.js');
-    await navigator.serviceWorker.ready;
-
-    // request permission
-    const perm = await Notification.requestPermission();
-    if (perm !== 'granted') {
-      showToast('Notifications blocked — enable in browser settings to receive pick reminders', 'error');
+    // ensure Firebase is ready
+    if (!_fcmMessaging) {
+      showToast('Initializing Firebase…', 'info');
+      await initFirebase();
+    }
+    if (!_fcmMessaging) {
+      showToast('Firebase not available — try refreshing the page', 'error');
+      console.error('FCM: messaging not initialized');
       return;
     }
 
-    // get token
+    // check service worker support
+    if (!('serviceWorker' in navigator)) {
+      showToast('Push notifications not supported in this browser', 'error');
+      return;
+    }
+
+    // register service worker
+    console.log('FCM: registering service worker...');
+    const reg = await navigator.serviceWorker.register('/UpsetSpecial/firebase-messaging-sw.js');
+    await navigator.serviceWorker.ready;
+    console.log('FCM: service worker ready');
+
+    // request permission
+    const perm = await Notification.requestPermission();
+    console.log('FCM: permission =', perm);
+    if (perm !== 'granted') {
+      showToast('Notifications blocked — enable in your browser or phone settings', 'error');
+      return;
+    }
+
+    // get FCM token
+    console.log('FCM: getting token...');
     const token = await _fcmMessaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: reg });
-    if (!token) return;
+    console.log('FCM: token =', token ? token.substring(0, 20) + '...' : 'NULL');
+    if (!token) {
+      showToast('Could not get push token — check browser notification settings', 'error');
+      return;
+    }
 
     // save to backend
     await api('registerFcmToken', { playerId, token });
     State.player.fcmToken = token;
     showToast('Push notifications enabled ✓', 'success');
   } catch(e) {
-    console.log('Push notification setup error:', e.message);
+    console.error('Push notification setup error:', e);
+    showToast('Notification setup failed: ' + e.message, 'error');
   }
 }
 
