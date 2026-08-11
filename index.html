@@ -407,8 +407,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v4.9';
-const BUILD_TIME = '2026-08-11T05:32:46Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v5.0';
+const BUILD_TIME = '2026-08-11T05:44:53Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbyxAcUFJ61mxVg2Z3P0gdyI6GFSykDeIdZ_pgkZzGwZDSZck-ikXK-83Pi7OX2-YJT9/exec'
@@ -550,8 +550,7 @@ async function unregisterPushNotifications(playerId) {
 }
 
 async function boot() {
-  // Firebase loads synchronously at bottom of body — init it now
-  initFirebase().catch(e => console.log('Firebase boot init error:', e));
+  // Firebase is initialized by the inline script after the SDK loads — see bottom of body
   // check version first -- show update banner if player is running an old version
   checkAppVersion();
 
@@ -1033,40 +1032,6 @@ function renderHome(content) {
           ${posted ? 'Make My Picks' : 'View This Week'}
         </button>
       </div>
-
-      <div class="section-label">Push Notifications</div>
-    <div class="card">
-      <p class="helptext" style="margin-bottom:12px; line-height:1.6;">Enable push notifications to get pick reminders and board alerts automatically. Pick reminders and board-posted alerts are always on when enabled.</p>
-      <div id="notif-status-row" style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
-        <div>
-          <div style="font-size:13px; font-weight:700; color:var(--text);">${State.player.fcmToken ? '🔔 Notifications enabled' : '🔕 Notifications disabled'}</div>
-          <div class="helptext" style="margin-top:2px;">${State.player.fcmToken ? 'You will receive pick reminders and board alerts' : 'Tap to enable'}</div>
-        </div>
-        <button class="btn ${State.player.fcmToken ? 'btn-danger' : 'btn-primary'} btn-sm" id="notif-toggle-btn">
-          ${State.player.fcmToken ? 'Disable' : 'Enable'}
-        </button>
-      </div>
-      ${State.player.fcmToken ? `
-        <div style="border-top:1px solid var(--hairline); padding-top:12px;">
-          <div style="font-size:13px; font-weight:700; color:var(--text); margin-bottom:8px;">Game Score Notifications</div>
-          <div style="display:flex; flex-direction:column; gap:8px;">
-            <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
-              <input type="radio" name="score-pref" value="each" ${(p.scoreNotif || 'each') === 'each' ? 'checked' : ''} style="accent-color:var(--gold);">
-              <div><strong style="color:var(--text);">Per game</strong> — notified as each game goes final (up to 10 on Saturday)</div>
-            </label>
-            <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
-              <input type="radio" name="score-pref" value="summary" ${(p.scoreNotif || '') === 'summary' ? 'checked' : ''} style="accent-color:var(--gold);">
-              <div><strong style="color:var(--text);">End of day</strong> — one notification with all final scores when the last game finishes</div>
-            </label>
-            <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
-              <input type="radio" name="score-pref" value="off" ${(p.scoreNotif || '') === 'off' ? 'checked' : ''} style="accent-color:var(--gold);">
-              <div><strong style="color:var(--text);">Off</strong> — no score notifications</div>
-            </label>
-          </div>
-          <button class="btn btn-primary btn-block" style="margin-top:12px;" id="save-score-pref-btn">Save Score Preference</button>
-        </div>
-      ` : ''}
-    </div>
 
     <div class="section-label">Refer a Friend</div>
       <div class="card">
@@ -2298,6 +2263,40 @@ function renderProfile(content) {
       <input type="password" id="pin-confirm" inputmode="numeric" placeholder="Re-enter new PIN" maxlength="6"
         style="width:100%; background:var(--surface-2); border:1px solid var(--hairline); border-radius:var(--radius-sm); color:var(--text); padding:10px 12px; font-size:15px; margin-bottom:14px; box-sizing:border-box;">
       <button class="btn btn-primary btn-block" id="change-pin-btn">Update PIN</button>
+    </div>
+
+    <div class="section-label">Push Notifications</div>
+    <div class="card">
+      <p class="helptext" style="margin-bottom:12px; line-height:1.6;">Enable push notifications to get pick reminders and board alerts automatically. Pick reminders and board-posted alerts are always on when enabled.</p>
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+        <div>
+          <div style="font-size:13px; font-weight:700; color:var(--text);">${p.fcmToken ? '🔔 Notifications enabled' : '🔕 Notifications disabled'}</div>
+          <div class="helptext" style="margin-top:2px;">${p.fcmToken ? 'You will receive pick reminders and board alerts' : 'Tap to enable'}</div>
+        </div>
+        <button class="btn ${p.fcmToken ? 'btn-danger' : 'btn-primary'} btn-sm" id="notif-toggle-btn">
+          ${p.fcmToken ? 'Disable' : 'Enable'}
+        </button>
+      </div>
+      ${p.fcmToken ? `
+        <div style="border-top:1px solid var(--hairline); padding-top:12px;">
+          <div style="font-size:13px; font-weight:700; color:var(--text); margin-bottom:8px;">Game Score Notifications</div>
+          <div style="display:flex; flex-direction:column; gap:8px;">
+            <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
+              <input type="radio" name="score-pref" value="each" ${(p.scoreNotif || 'each') === 'each' ? 'checked' : ''} style="accent-color:var(--gold);">
+              <div><strong style="color:var(--text);">Per game</strong> — notified as each game goes final</div>
+            </label>
+            <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
+              <input type="radio" name="score-pref" value="summary" ${(p.scoreNotif || '') === 'summary' ? 'checked' : ''} style="accent-color:var(--gold);">
+              <div><strong style="color:var(--text);">End of day</strong> — one notification with all final scores</div>
+            </label>
+            <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
+              <input type="radio" name="score-pref" value="off" ${(p.scoreNotif || '') === 'off' ? 'checked' : ''} style="accent-color:var(--gold);">
+              <div><strong style="color:var(--text);">Off</strong> — no score notifications</div>
+            </label>
+          </div>
+          <button class="btn btn-primary btn-block" style="margin-top:12px;" id="save-score-pref-btn">Save Score Preference</button>
+        </div>
+      ` : ''}
     </div>
 
     <div class="section-label">Refer a Friend</div>
@@ -3795,10 +3794,16 @@ function renderAdminBowlResolve(el) {
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
   <script>
-    // Firebase is now loaded — init messaging and re-check if user is logged in
-    if (typeof firebase !== 'undefined') {
-      initFirebase().catch(function(e) { console.log('Firebase post-load init error:', e); });
-    }
+    // Firebase SDKs are now fully loaded and parsed — safe to initialize
+    (function() {
+      if (typeof firebase !== 'undefined') {
+        initFirebase()
+          .then(function() { console.log('FCM: ready after SDK load'); })
+          .catch(function(e) { console.log('FCM init error:', e.message); });
+      } else {
+        console.log('FCM: firebase global still not defined after SDK scripts');
+      }
+    })();
   </script>
 </body>
 </html>
