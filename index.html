@@ -407,11 +407,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v5.9';
-const BUILD_TIME = '2026-08-11T12:13:09Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v6.1';
+const BUILD_TIME = '2026-08-11T12:34:44Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbxAgFyRiAqy8jogVMbGNgw-QsxzM6hS6CnCwuUDCbCK1Wwgt5OjMwMIB8GbH3LIDpUT/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycby9UBm8RBpV4Q8TyarcjwyRAh_CXxHIEib7EOSfIt5STOcy_LeUzDIvFkzYhsYgWniL/exec'
 };
 
 const State = {
@@ -859,7 +859,7 @@ function renderBottomNav() {
     { id: 'slate', label: 'This Week', icon: iconSlate() },
     { id: 'standings', label: 'Standings', icon: iconStandings() },
     { id: 'bowl', label: 'Bowl', icon: iconBowl() },
-    { id: 'money', label: 'Pot', icon: iconMoney() },
+    { id: 'scores', label: 'Scores', icon: iconScores() },
     { id: 'rules', label: 'Rules', icon: iconRules() },
     { id: 'profile', label: 'Profile', icon: iconProfile() }
   ];
@@ -887,7 +887,7 @@ async function renderContent() {
     case 'home': renderHome(content); break;
     case 'slate': renderSlate(content); break;
     case 'standings': renderStandings(content); break;
-    case 'money': renderMoney(content); break;
+    case 'scores': renderLiveScores(content); break;
     case 'bowl': renderBowl(content); break;
     case 'admin': renderAdmin(content); break;
     case 'rules': renderRules(content); break;
@@ -911,7 +911,7 @@ async function silentRefresh() {
         case 'home': renderHome(content); break;
         case 'slate': renderSlate(content); break;
         case 'standings': renderStandings(content); break;
-        case 'money': renderMoney(content); break;
+        case 'scores': renderLiveScores(content); break;
         case 'bowl': renderBowl(content); break;
         case 'admin': renderAdmin(content); break;
         case 'rules': renderRules(content); break;
@@ -937,6 +937,7 @@ function iconHome(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="curren
 function iconSlate(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>`; }
 function iconStandings(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M5 21V10M12 21V3M19 21v-7"/></svg>`; }
 function iconMoney(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5c0-1.1 1.1-2 2.5-2s2.5.9 2.5 2-1.1 1.6-2.5 2-2.5.9-2.5 2 1.1 2 2.5 2 2.5-.9 2.5-2"/></svg>`; }
+function iconScores(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 12h8M12 8v8"/></svg>`; }
 function iconAdmin(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2l3 5 5 1-4 4 1 6-5-3-5 3 1-6-4-4 5-1z"/></svg>`; }
 function iconBowl(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 12a8 4 0 0016 0"/><path d="M4 12V8a8 4 0 0116 0v4"/><circle cx="12" cy="6" r="1.2" fill="currentColor" stroke="none"/></svg>`; }
 function iconRules(){ return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 4h16v16H4z" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>`; }
@@ -2232,6 +2233,11 @@ async function renderProfile(content) {
       <div style="flex:1; min-width:0;">
         <div style="font-family:var(--font-display); font-size:18px; font-weight:700; color:var(--text);">${escapeHtml(p.teamName || p.name)}</div>
         <div class="helptext" style="margin-top:2px;">${escapeHtml(p.name)} &middot; ${p.isAdmin ? 'Admin' : 'Player'} &middot; Since ${escapeHtml(String(p.joinedSeason || season.year || ''))}</div>
+        <div style="margin-top:4px;">
+          <span style="font-size:11px; font-weight:700; padding:2px 8px; border-radius:20px; background:${p.isPaid ? 'rgba(76,175,80,0.15)' : 'rgba(255,82,82,0.15)'}; color:${p.isPaid ? 'var(--win)' : 'var(--loss)'};">
+            ${p.isPaid ? '✓ Entry Fee Paid' : '⚠ Entry Fee Unpaid'}
+          </span>
+        </div>
       </div>
     </div>
     <input type="file" id="avatar-file-input" accept="image/*" style="display:none;">
@@ -2499,7 +2505,134 @@ async function renderProfile(content) {
 }
 
 /* ============================================================
-   MONEY / POT VIEW (regular season)
+   LIVE SCORES VIEW
+   ============================================================ */
+let _liveScoresCache = null;
+let _liveScoresLoading = false;
+
+async function renderLiveScores(content) {
+  const week = currentWeek();
+  const boardGames = getGamesForWeek(week);
+
+  content.innerHTML = `
+    <div class="section-label" style="display:flex; justify-content:space-between; align-items:center;">
+      <span>Week ${week} Board</span>
+      <button class="btn btn-ghost btn-sm" id="scores-refresh-btn">↻ Refresh</button>
+    </div>
+
+    ${boardGames.length === 0 ? `
+      <div class="card"><p class="helptext">No games on the board yet this week.</p></div>
+    ` : `
+      <div class="card" style="padding:0; overflow:hidden;" id="board-scores-list">
+        ${boardGames.map(g => renderScoreRow(g, true)).join('')}
+      </div>
+    `}
+
+    <div class="section-label" style="margin-top:16px;">All FBS Games This Week</div>
+    <div id="all-scores-container">
+      <div class="empty-state"><span class="spinner"></span><p style="margin-top:8px;">Loading ESPN scores...</p></div>
+    </div>
+  `;
+
+  document.getElementById('scores-refresh-btn').onclick = () => {
+    _liveScoresCache = null;
+    renderLiveScores(content);
+  };
+
+  loadAllEspnScores(week);
+}
+
+function renderScoreRow(g, isBoard) {
+  const result = computeGameResult(g);
+  const dog = underdogOf(g);
+  const started = isGameStarted(g);
+  const final = isGameFinal(g);
+
+  const awayScore = final || started ? (g.finalAwayScore || g.awayScore || '') : '';
+  const homeScore = final || started ? (g.finalHomeScore || g.homeScore || '') : '';
+
+  const awayWon = final && Number(awayScore) > Number(homeScore);
+  const homeWon = final && Number(homeScore) > Number(awayScore);
+  const awayIsUpset = awayWon && g.favorite === g.homeTeam;
+  const homeIsUpset = homeWon && g.favorite === g.awayTeam;
+
+  const status = final ? 'Final' : started ? 'Live' : g.kickoff ? new Date(g.kickoff).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : 'TBD';
+  const statusColor = final ? 'var(--text-faint)' : started ? 'var(--win)' : 'var(--text-faint)';
+
+  const spread = g.spread ? (g.favorite === g.awayTeam ? `-${fmtSpread(g.spread)}` : `+${fmtSpread(g.spread)}`) : '';
+  const homeSpread = g.spread ? (g.favorite === g.homeTeam ? `-${fmtSpread(g.spread)}` : `+${fmtSpread(g.spread)}`) : '';
+
+  return `
+    <div style="padding:10px 14px; border-bottom:1px solid var(--hairline); display:flex; align-items:center; gap:8px; ${isBoard ? 'background:rgba(255,184,0,0.03);' : ''}">
+      ${isBoard ? '<div style="width:8px; height:8px; border-radius:50%; background:var(--gold); flex-shrink:0;"></div>' : '<div style="width:8px;"></div>'}
+      <div style="flex:1; min-width:0;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:3px;">
+          <span style="font-size:13px; font-weight:${awayWon ? '700' : '400'}; color:${awayIsUpset ? 'var(--gold)' : awayWon ? 'var(--text)' : 'var(--text-soft)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:55%;">${escapeHtml(g.awayTeam)}${awayIsUpset ? ' 🚨' : ''} <span style="font-size:11px; color:var(--text-faint);">${spread}</span></span>
+          <span class="mono" style="font-size:15px; font-weight:700; color:${awayWon ? 'var(--text)' : 'var(--text-faint)'};">${awayScore}</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size:13px; font-weight:${homeWon ? '700' : '400'}; color:${homeIsUpset ? 'var(--gold)' : homeWon ? 'var(--text)' : 'var(--text-soft)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:55%;">${escapeHtml(g.homeTeam)}${homeIsUpset ? ' 🚨' : ''} <span style="font-size:11px; color:var(--text-faint);">${homeSpread}</span></span>
+          <span class="mono" style="font-size:15px; font-weight:700; color:${homeWon ? 'var(--text)' : 'var(--text-faint)'};">${homeScore}</span>
+        </div>
+      </div>
+      <div style="text-align:right; flex-shrink:0; min-width:40px;">
+        <div style="font-size:10px; font-weight:700; color:${statusColor}; text-transform:uppercase;">${status}</div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadAllEspnScores(week) {
+  const container = document.getElementById('all-scores-container');
+  if (!container) return;
+
+  if (_liveScoresCache) {
+    renderAllScores(container, _liveScoresCache);
+    return;
+  }
+
+  try {
+    const data = await api('getAllEspnScores', { week });
+    _liveScoresCache = data.games || [];
+    renderAllScores(container, _liveScoresCache);
+  } catch(e) {
+    if (container) container.innerHTML = `<div class="empty-state"><p>Could not load ESPN scores. ${e.message}</p></div>`;
+  }
+}
+
+function renderAllScores(container, games) {
+  if (!container) return;
+  const boardIds = new Set(getGamesForWeek(currentWeek()).map(g => g.espnEventId));
+
+  // separate board games (already shown above) from rest
+  const otherGames = games.filter(g => !boardIds.has(g.espnEventId));
+
+  if (otherGames.length === 0) {
+    container.innerHTML = '<div class="empty-state"><p class="helptext">No other FBS games found for this week.</p></div>';
+    return;
+  }
+
+  // group by status: live first, then upcoming, then final
+  const live     = otherGames.filter(g => g.status === 'in' || g.status === 'live');
+  const upcoming = otherGames.filter(g => g.status === 'pre' || g.status === 'upcoming');
+  const final    = otherGames.filter(g => g.status === 'post' || g.status === 'final');
+
+  const sections = [
+    { label: '🔴 Live', games: live },
+    { label: 'Upcoming', games: upcoming },
+    { label: 'Final', games: final }
+  ].filter(s => s.games.length > 0);
+
+  container.innerHTML = sections.map(s => `
+    <div class="section-label" style="margin-top:8px;">${s.label} (${s.games.length})</div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      ${s.games.map(g => renderScoreRow(g, false)).join('')}
+    </div>
+  `).join('');
+}
+
+/* ============================================================
+   MONEY / POT VIEW — now in Admin only, kept for reference
    ============================================================ */
 function renderMoney(content) {
   const entryFee = Number(State.season.entryFee || 0);
@@ -3332,6 +3465,7 @@ function renderAdminPlayers(el) {
             <div class="helptext">${escapeHtml(p.name)} &middot; ${p.careerPoints || 0} career pts</div>
             <div class="helptext" style="margin-top:2px;">${paymentInfo}</div>
           </div>
+          <button class="btn ${p.isPaid ? 'btn-ghost' : 'btn-gold'} btn-sm" data-toggle-paid="${p.id}" data-is-paid="${p.isPaid}">${p.isPaid ? '✓ Paid' : 'Mark Paid'}</button>
           <button class="btn btn-ghost btn-sm" data-toggle-active="${p.id}">Deactivate</button>
         </div>
       `;
@@ -3372,53 +3506,93 @@ function renderAdminPlayers(el) {
       await refreshState(); renderAdmin(document.getElementById('content'));
     };
   });
+
+  el.querySelectorAll('[data-toggle-paid]').forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.dataset.togglePaid;
+      const currentlyPaid = btn.dataset.isPaid === 'true';
+      btn.textContent = '...';
+      await api('adminTogglePaid', { adminId: State.player.id, playerId: id, isPaid: !currentlyPaid });
+      await refreshState(); renderAdminPlayers(el);
+    };
+  });
 }
 
 /* ---- Admin: Ledger / Pot ---- */
 function renderAdminLedger(el) {
   const entryFee = Number(State.season.entryFee || 0);
+  const activePlayers = State.players.filter(p => p.active);
+  const paid = activePlayers.filter(p => p.isPaid);
+  const unpaid = activePlayers.filter(p => !p.isPaid);
+
   el.innerHTML = `
+    <div class="section-label">Entry Fee Status</div>
+    <div class="card" style="display:flex; gap:0; padding:0; overflow:hidden; margin-bottom:12px;">
+      <div style="flex:1; text-align:center; padding:14px 8px; border-right:1px solid var(--hairline);">
+        <div class="mono" style="font-size:24px; font-weight:700; color:var(--win);">${paid.length}</div>
+        <div class="helptext">Paid</div>
+      </div>
+      <div style="flex:1; text-align:center; padding:14px 8px; border-right:1px solid var(--hairline);">
+        <div class="mono" style="font-size:24px; font-weight:700; color:var(--loss);">${unpaid.length}</div>
+        <div class="helptext">Unpaid</div>
+      </div>
+      <div style="flex:1; text-align:center; padding:14px 8px;">
+        <div class="mono" style="font-size:24px; font-weight:700; color:var(--gold);">$${paid.length * entryFee}</div>
+        <div class="helptext">Collected</div>
+      </div>
+    </div>
+
+    ${unpaid.length > 0 ? `
+      <div class="section-label">Still Owes ($${entryFee} each)</div>
+      <div class="card" style="padding:0; overflow:hidden; margin-bottom:12px;">
+        ${unpaid.map(p => `
+          <div style="padding:10px 14px; border-bottom:1px solid var(--hairline); display:flex; align-items:center; gap:10px;">
+            <div style="flex:1;">
+              <div style="font-weight:700; font-size:13px;">${escapeHtml(p.teamName || p.name)}</div>
+              <div class="helptext">${escapeHtml(p.name)}${p.venmo ? ' · Venmo: ' + escapeHtml(p.venmo) : ''}${p.paypal ? ' · PayPal: ' + escapeHtml(p.paypal) : ''}</div>
+            </div>
+            <button class="btn btn-gold btn-sm" data-mark-paid="${p.id}">Mark Paid</button>
+          </div>
+        `).join('')}
+      </div>
+    ` : '<div class="card" style="margin-bottom:12px;"><p class="helptext" style="color:var(--win);">✓ All players have paid!</p></div>'}
+
+    <div class="section-label">Record Ledger Entry</div>
     <div class="card">
       <div class="card-title">Record Entry</div>
-      <div class="field"><label>Player</label><select id="ledger-player">${State.players.filter(p => p.active).map(p => `<option value="${p.id}">${escapeHtml(p.teamName || p.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Player</label><select id="ledger-player" style="color:#1a1a1a;">${State.players.filter(p => p.active).map(p => `<option value="${p.id}">${escapeHtml(p.teamName || p.name)}</option>`).join('')}</select></div>
       <div class="row2">
         <div class="field"><label>Type</label>
-          <select id="ledger-type">
-            <option value="paid">Buy-In Paid</option>
-            <option value="weekly_prize">Weekly Prize</option>
-            <option value="perfect_bonus">Perfect Week Bonus</option>
-            <option value="payout">Season Payout</option>
+          <select id="ledger-type" style="color:#1a1a1a;">
+            <option value='paid'>Entry Fee Paid</option>
+            <option value='payout'>Season Payout</option>
+            <option value='weekly_prize'>Weekly Prize</option>
+            <option value='perfect_bonus'>Perfect Week Bonus</option>
+            <option value='bowl_paid'>Bowl Entry Paid</option>
+            <option value='bowl_payout'>Bowl Payout</option>
           </select>
         </div>
-        <div class="field"><label>Amount ($)</label><input type="number" id="ledger-amount" placeholder="${entryFee}"></div>
+        <div class="field"><label>Amount ($)</label><input type="number" id="ledger-amount" placeholder="100"></div>
       </div>
-      <div class="field"><label>Note (optional)</label><input type="text" id="ledger-note" placeholder="e.g. Week 6 high score"></div>
-      <button class="btn btn-primary btn-block" id="ledger-save-btn">Save Entry</button>
+      <button class="btn btn-primary btn-block" id="ledger-submit-btn" style="margin-top:8px;">Record</button>
     </div>
-    <div class="section-label">Recent Entries</div>
-    <div class="card">
-      ${State.ledger.length === 0 ? '<p class="helptext">No ledger entries yet.</p>' : `
-        <table class="simple">
-          <thead><tr><th>Team</th><th>Type</th><th>Amount</th><th>Note</th></tr></thead>
-          <tbody>
-            ${State.ledger.slice().reverse().map(l => {
-              const p = getPlayerById(l.playerId);
-              return `<tr><td>${escapeHtml(p ? (p.teamName || p.name) : '—')}</td><td>${escapeHtml(l.type)}</td><td class="mono">$${l.amount}</td><td class="helptext">${escapeHtml(l.note || '')}</td></tr>`;
-            }).join('')}
-          </tbody>
-        </table>
-      `}
+
+    <div class="section-label">Ledger History</div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      ${(State.ledger || []).length === 0 ? '<div style="padding:14px;" class="helptext">No entries yet.</div>' :
+        [...(State.ledger || [])].reverse().map(e => {
+          const player = State.players.find(p => p.id === e.playerId);
+          const isCredit = e.type === 'payout' || e.type === 'weekly_prize' || e.type === 'perfect_bonus' || e.type === 'bowl_payout';
+          return `<div style="padding:10px 14px; border-bottom:1px solid var(--hairline); display:flex; justify-content:space-between; align-items:center;">
+            <div>
+              <div style="font-size:13px; font-weight:600;">${escapeHtml(player ? (player.teamName || player.name) : '—')}</div>
+              <div class="helptext">${escapeHtml(e.type)} · ${escapeHtml(e.date || '')}</div>
+            </div>
+            <div class="mono" style="font-weight:700; color:${isCredit ? 'var(--loss)' : 'var(--win)'};">${isCredit ? '-' : '+'}$${Number(e.amount).toFixed(0)}</div>
+          </div>`;
+        }).join('')}
     </div>
   `;
-  document.getElementById('ledger-save-btn').onclick = async () => {
-    const playerId = document.getElementById('ledger-player').value;
-    const type = document.getElementById('ledger-type').value;
-    const amount = Number(document.getElementById('ledger-amount').value || entryFee);
-    const note = document.getElementById('ledger-note').value.trim();
-    await api('adminLedgerEntry', { adminId: State.player.id, playerId, type, amount, note });
-    showToast('Ledger updated', 'success');
-    await refreshState(); renderAdmin(document.getElementById('content'));
-  };
 }
 
 /* ---- Admin: Season Settings ---- */
