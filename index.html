@@ -407,8 +407,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v6.1';
-const BUILD_TIME = '2026-08-11T12:34:44Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v6.2';
+const BUILD_TIME = '2026-08-11T12:48:15Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycby9UBm8RBpV4Q8TyarcjwyRAh_CXxHIEib7EOSfIt5STOcy_LeUzDIvFkzYhsYgWniL/exec'
@@ -642,7 +642,7 @@ async function refreshState() {
   // refresh logged-in player's own record (team name may have changed elsewhere)
   const me = State.players.find(p => p.id === State.player.id);
   if (me) {
-    State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active };
+    State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, avatar: me.avatar, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif };
     saveSession(State.player);
   }
 }
