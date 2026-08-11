@@ -407,11 +407,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v7.2';
-const BUILD_TIME = '2026-08-11T15:03:57Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v7.3';
+const BUILD_TIME = '2026-08-11T17:53:29Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbzoaD6obRg9Y5tC1ZrPQjVPsqPszNqsfLamWW07I-wP07Rqjx7CEoNb4P0msFXaVXzW/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbyAIlScZZLdou4s5bPqQB1wQuR8tT_9Ir9XK0Ei7BnxGyzWgAcjoMOtFfIuioUy-Tmn/exec'
 };
 
 const State = {
@@ -2399,6 +2399,13 @@ async function renderProfile(content) {
       <button class="btn btn-primary btn-block" id="bio-save-btn" style="margin-top:10px;">Save Bio</button>
     </div>
 
+    <div class="section-label">Claim Previous Team Names</div>
+    <div class="card">
+      <p style="font-size:13px;color:var(--text-soft);margin-bottom:12px;">If you played under a different team name in previous seasons, you can claim it here. Jeff will review and approve — once approved, your historical stats and trophies will be merged into your career totals.</p>
+      <div id="claim-my-claims"></div>
+      <button class="btn btn-secondary btn-block" id="claim-browse-btn" style="margin-top:8px;">Browse Claimable Team Names</button>
+    </div>
+
     <div class="section-label">Account</div>
     <div class="card">
       <button class="btn btn-danger btn-block" id="profile-logout-btn">Log Out</button>
@@ -2552,6 +2559,93 @@ async function renderProfile(content) {
   // --- Log out ---
   document.getElementById('profile-logout-btn').onclick = () => {
     if (confirm('Log out of your account?')) logout();
+  };
+
+  // --- Name Claims: load my existing claims ---
+  async function loadMyClaims() {
+    const el = document.getElementById('claim-my-claims');
+    try {
+      const data = await api('getMyNameClaims', { playerId: p.id });
+      const claims = data.claims || [];
+      if (!claims.length) {
+        el.innerHTML = '<p style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">You have no pending or approved claims.</p>';
+        return;
+      }
+      el.innerHTML = claims.map(c => {
+        const badgeColor = c.status === 'approved' ? 'var(--green)' : c.status === 'rejected' ? 'var(--red)' : 'var(--text-soft)';
+        const badge = `<span style="font-size:11px;font-weight:700;color:${badgeColor};text-transform:uppercase;">${c.status}</span>`;
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--hairline);">
+          <div>
+            <div style="font-size:13px;font-weight:600;color:var(--text);">${escapeHtml(c.claimedTeamName)}</div>
+            <div style="font-size:11px;color:var(--text-soft);">Submitted ${new Date(c.submittedAt).toLocaleDateString()}</div>
+          </div>
+          ${badge}
+        </div>`;
+      }).join('');
+    } catch(e) {
+      el.innerHTML = '<p style="font-size:12px;color:var(--text-muted);">Could not load claims.</p>';
+    }
+  }
+  loadMyClaims();
+
+  // --- Browse & submit claim ---
+  document.getElementById('claim-browse-btn').onclick = async () => {
+    const btn = document.getElementById('claim-browse-btn');
+    btn.disabled = true;
+    btn.textContent = 'Loading...';
+    try {
+      const data = await api('getClaimableNames', { playerId: p.id });
+      const claimable = data.claimable || [];
+      btn.style.display = 'none';
+
+      if (!claimable.length) {
+        document.getElementById('claim-my-claims').insertAdjacentHTML('afterend',
+          '<p style="font-size:13px;color:var(--text-soft);margin-top:8px;">No unlinked historical team names found.</p>');
+        return;
+      }
+
+      const listEl = document.createElement('div');
+      listEl.id = 'claim-list';
+      listEl.innerHTML = `
+        <p style="font-size:12px;color:var(--text-soft);margin-bottom:10px;">Select a historical team name that was yours. You'll be asked for a brief reason so Jeff can verify.</p>
+        <div style="max-height:240px;overflow-y:auto;border:1px solid var(--hairline);border-radius:var(--radius-sm);">
+          ${claimable.map(c => `
+            <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--hairline);">
+              <div>
+                <div style="font-size:13px;font-weight:600;color:var(--text);">${escapeHtml(c.teamName)}</div>
+                <div style="font-size:11px;color:var(--text-soft);">${c.seasons} season${c.seasons!==1?'s':''} · ${c.years.join(', ')}</div>
+              </div>
+              <button class="btn btn-secondary btn-sm claim-select-btn" data-name="${escapeHtml(c.teamName)}" style="white-space:nowrap;flex-shrink:0;">Claim</button>
+            </div>`).join('')}
+        </div>`;
+      btn.parentNode.insertBefore(listEl, btn);
+
+      listEl.querySelectorAll('.claim-select-btn').forEach(b => {
+        b.onclick = () => {
+          const name = b.dataset.name;
+          const reason = prompt(`Why are you claiming "${name}"?\n\nTell Jeff how he can verify this was your team (e.g. "I used this name in 2018-2019 before changing to my current name"):`);
+          if (reason === null) return;
+          if (!reason.trim()) { showToast('Please provide a reason', 'error'); return; }
+          b.disabled = true; b.textContent = 'Submitting...';
+          api('submitNameClaim', { playerId: p.id, claimedTeamName: name, reason: reason.trim() })
+            .then(res => {
+              if (res.ok) {
+                showToast('Claim submitted! Jeff will review it shortly.', 'success');
+                b.textContent = 'Pending';
+                b.disabled = true;
+                loadMyClaims();
+              } else {
+                showToast(res.error || 'Could not submit claim', 'error');
+                b.disabled = false; b.textContent = 'Claim';
+              }
+            }).catch(() => { showToast('Network error', 'error'); b.disabled=false; b.textContent='Claim'; });
+        };
+      });
+    } catch(e) {
+      showToast('Could not load claimable names', 'error');
+      btn.disabled = false;
+      btn.textContent = 'Browse Claimable Team Names';
+    }
   };
 
   // --- Bio: load existing data and wire handlers ---
@@ -2902,6 +2996,126 @@ function renderTrophyRoomContent(el, data) {
   const isMe = State.player && State.player.id === p.id;
   const bio = data.bio || {};
 
+  // ── Trophy case cubby layout ─────────────────────────────
+  // Sort newest first. Split by type. Each section: min 3 cubbies,
+  // up to 4 per row; if > 4 trophies a new row starts.
+  function buildCubbies(trophies, type) {
+    // Sort newest first
+    const sorted = [...trophies].sort((a,b) => b.year - a.year || a.position - b.position);
+    if (!sorted.length) return '';
+
+    const CUBBY_H = 180; // px per row height
+    const rows = [];
+    let i = 0;
+    while (i < sorted.length) {
+      // How many go in this row?
+      const remaining = sorted.length - i;
+      const perRow = remaining <= 4 ? Math.max(remaining, 3) : 4;
+      rows.push(sorted.slice(i, i + perRow));
+      i += perRow;
+    }
+
+    const PAL = {
+      1: { body:'#D4A017', mid:'#9A7010', dark:'#3A2800', fb:'#D4A017', label:'Champion', blabel:'1ST PLACE' },
+      2: { body:'#C8C8DC', mid:'#8888A0', dark:'#282838', fb:'#C8C8DC', label:'Runner-up', blabel:'2ND PLACE' },
+      3: { body:'#C04A00', mid:'#7A2E00', dark:'#2A1000', fb:'#C04A00', label:'3rd Place', blabel:'3RD PLACE' },
+    };
+
+    const caseId = `tc-${type}-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+
+    const rowHtml = rows.map((row, ri) => {
+      const n = row.length;
+      const canvasId = `${caseId}-r${ri}`;
+      const pct = 100 / n;
+
+      const labels = row.map((t, ci) => {
+        const pal = PAL[t.position] || PAL[3];
+        const color = t.position===1?'#FFD700':t.position===2?'#E8E8E8':'#CD7F32';
+        const sub = t.position===1?'#B8860B':t.position===2?'#A0A0A0':'#A05030';
+        const sublabel = type==='season' ? pal.label : pal.blabel;
+        return `<div style="width:${pct}%;text-align:center;border-left:${ci>0?'1px solid rgba(200,150,12,0.25)':'none'};">
+          <div style="font-size:8px;font-weight:700;color:${color};margin-top:3px;">${t.year}</div>
+          <div style="font-size:7px;color:${sub};">${sublabel}</div>
+          <div style="height:10px;background:linear-gradient(180deg,#A06830,#7A5230 35%,#5C3D1A 68%,#3D2808);border-radius:2px;margin-top:2px;box-shadow:0 3px 8px rgba(0,0,0,.6);"></div>
+        </div>`;
+      }).join('');
+
+      // Store row data for Three.js init
+      const rowData = JSON.stringify(row.map(t => ({
+        pos: t.position,
+        type: type
+      })));
+
+      return `
+        <div style="position:relative;border-top:${ri>0?'1px solid rgba(200,150,12,0.18)':'none'};">
+          <canvas id="${canvasId}" width="800" height="${CUBBY_H*2}"
+            style="display:block;width:100%;height:${CUBBY_H}px;position:relative;z-index:3;"
+            data-row='${rowData}' data-n="${n}"></canvas>
+          <div style="display:flex;position:relative;z-index:3;">
+            ${labels}
+          </div>
+        </div>`;
+    }).join('');
+
+    return `
+      <div id="${caseId}" style="
+        border-radius:0 0 6px 6px;
+        background:repeating-linear-gradient(88deg,transparent 0,transparent 3px,rgba(0,0,0,.05) 3px,rgba(0,0,0,.05) 4px,transparent 4px,transparent 10px,rgba(255,255,255,.05) 10px,rgba(255,255,255,.05) 11px,transparent 11px,transparent 18px),
+        linear-gradient(180deg,#2e1500,#5C3310 15%,#6B3D14 30%,#7A4718 45%,#6B3D14 60%,#5C3310 75%,#6B3D14 88%,#5C3310);
+      ">
+        ${rowHtml}
+      </div>`;
+  }
+
+  const seasonTrophies = data.trophies || [];
+  const bowlTrophies   = data.bowlTrophies || [];
+  const hasSeason      = seasonTrophies.length > 0;
+  const hasBowl        = bowlTrophies.length > 0;
+  const hasTrophies    = hasSeason || hasBowl;
+  const hasAny         = hasTrophies;
+
+  // Case shell HTML — wood top/sides/bottom wrap
+  function caseWrap(inner) {
+    return `
+    <div style="border-radius:10px 10px 8px 8px;overflow:hidden;margin-bottom:10px;box-shadow:0 8px 22px rgba(0,0,0,.7);">
+      <div style="height:22px;background:linear-gradient(180deg,#150800,#3a1c00 30%,#6B3D14 60%,#8B5020 80%,#7A4718);"></div>
+      <div style="position:relative;">
+        <div style="position:absolute;left:0;top:0;bottom:0;width:12px;z-index:5;background:linear-gradient(90deg,#0e0500,#2a1400,#3a1c00);"></div>
+        <div style="position:absolute;right:0;top:0;bottom:0;width:12px;z-index:5;background:linear-gradient(270deg,#0e0500,#2a1400,#3a1c00);"></div>
+        <div style="padding:0 12px;">
+          <div style="font-size:9px;font-weight:700;color:#D4AF37;letter-spacing:.14em;text-transform:uppercase;text-align:center;padding:6px 0 5px;text-shadow:0 0 8px rgba(212,175,55,.8);">★ Upset Special Trophy Room ★</div>
+          ${inner}
+        </div>
+      </div>
+      <div style="height:20px;background:linear-gradient(180deg,#7A4718,#5C3310 30%,#2a1400 70%,#150800);"></div>
+    </div>`;
+  }
+
+  function sectionLabel(txt) {
+    return `<div style="font-size:9px;font-weight:700;color:#D4AF37;letter-spacing:.12em;text-transform:uppercase;text-align:center;padding:4px 0 3px;text-shadow:0 0 7px rgba(212,175,55,.8);">— ${txt} —</div>`;
+  }
+
+  let trophyCaseHtml = '';
+  if (!hasAny) {
+    trophyCaseHtml = caseWrap(`
+      <div style="border:1.5px dashed rgba(200,150,12,0.3);border-radius:10px;padding:1.5rem;text-align:center;margin:8px 0;">
+        <div style="font-size:11px;color:rgba(200,150,12,0.5);">Trophy case is empty</div>
+        <div style="font-size:10px;color:rgba(200,150,12,0.3);margin-top:4px;">No podium finishes yet — this could be the year.</div>
+      </div>`);
+  } else {
+    let inner = '';
+    if (hasSeason) {
+      inner += sectionLabel('Regular Season');
+      inner += buildCubbies(seasonTrophies, 'season');
+    }
+    if (hasBowl) {
+      inner += `<div style="height:1px;background:linear-gradient(90deg,transparent,rgba(200,150,12,.4),transparent);margin:5px 0;"></div>`;
+      inner += sectionLabel('Bowl Bonanza');
+      inner += buildCubbies(bowlTrophies, 'bowl');
+    }
+    trophyCaseHtml = caseWrap(inner);
+  }
+
   const avatarHtml = p.avatar
     ? `<img src="${p.avatar}" style="width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid var(--hairline);" onclick="showLightbox('${p.avatar}')">`
     : `<div style="width:54px;height:54px;border-radius:50%;background:var(--upset-grad);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:22px;color:#1A1206;">${escapeHtml((p.teamName||'?')[0].toUpperCase())}</div>`;
@@ -2911,14 +3125,19 @@ function renderTrophyRoomContent(el, data) {
     : `<div style="width:64px;height:64px;border-radius:10px;background:var(--surface-2);border:1px dashed var(--hairline);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-faint);text-align:center;line-height:1.4;">${isMe ? 'Add<br>Photo' : 'No<br>Photo'}</div>`;
 
   // Trophy case
-  const hasTrophies = data.trophies && data.trophies.length > 0;
+  const hasTrophies = (data.trophies && data.trophies.length > 0) || (data.bowlTrophies && data.bowlTrophies.length > 0);
+  const allTrophies = [
+    ...(data.trophies || []).map(t => ({...t, type: 'season'})),
+    ...(data.bowlTrophies || []).map(t => ({...t, type: 'bowl'}))
+  ].sort((a, b) => a.year - b.year);
   const trophyHtml = hasTrophies ? `
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
-      ${data.trophies.map(t => `
-        <div style="display:flex;flex-direction:column;align-items:center;gap:5px;background:rgba(255,215,0,0.07);border:1px solid rgba(200,150,12,0.35);border-radius:10px;padding:12px 10px;animation:float 4s ease-in-out infinite;">
+      ${allTrophies.map((t, i) => `
+        <div style="display:flex;flex-direction:column;align-items:center;gap:5px;background:rgba(255,215,0,0.07);border:1px solid rgba(200,150,12,0.35);border-radius:10px;padding:12px 10px;animation:float 4s ease-in-out infinite;animation-delay:${i*0.3}s">
           <span style="font-size:28px;">${t.position===1?'🥇':t.position===2?'🥈':'🥉'}</span>
           <span style="font-size:11px;font-weight:700;color:#c8960c;">${t.year}</span>
-          <span style="font-size:10px;color:rgba(200,150,12,0.65);text-transform:uppercase;letter-spacing:0.06em;">${t.position===1?'Champion':t.position===2?'Runner-up':'3rd place'}</span>
+          <span style="font-size:10px;color:rgba(200,150,12,0.65);text-transform:uppercase;letter-spacing:0.06em;">${t.position===1?'Champion':t.position===2?'Runner-up':'3rd'}</span>
+          ${t.type==='bowl' ? '<span style="font-size:9px;color:rgba(200,150,12,0.5);">Bowl Bonanza</span>' : '<span style="font-size:9px;color:rgba(200,150,12,0.5);">Regular Season</span>'}
         </div>`).join('')}
     </div>` : `
     <div style="border:1.5px dashed var(--hairline);border-radius:10px;padding:1.5rem;text-align:center;">
@@ -2989,12 +3208,7 @@ function renderTrophyRoomContent(el, data) {
     ${bio.bioText ? `<div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:12px;padding:14px;margin-bottom:10px;font-size:13px;color:var(--text-soft);line-height:1.7;font-style:italic;">"${escapeHtml(bio.bioText)}"</div>` : isMe ? `<div style="background:var(--surface-2);border:1px dashed var(--hairline);border-radius:12px;padding:14px;margin-bottom:10px;text-align:center;"><div class="helptext">Complete your Trophy Room bio in your Profile tab</div><button class="btn btn-primary btn-sm" style="margin-top:8px;" onclick="document.getElementById('trophy-modal').style.display='none';State.view='profile';renderContent();">Set Up Bio →</button></div>` : ''}
 
     <!-- Trophy Case -->
-    <div style="background:linear-gradient(135deg,#1a1206,#2d1f00,#1a1206);border:1.5px solid #c8960c;border-radius:12px;padding:14px;margin-bottom:10px;position:relative;overflow:hidden;animation:pulse-gold 3s ease-in-out infinite;">
-      <div style="position:absolute;top:0;left:-100%;width:60%;height:100%;background:linear-gradient(90deg,transparent,rgba(255,215,0,0.07),transparent);animation:shimmer 3s ease-in-out infinite;"></div>
-      <div style="font-size:12px;font-weight:700;color:#c8960c;letter-spacing:0.08em;text-transform:uppercase;margin-bottom:4px;">★ Top 3 Finishes ★</div>
-      <div style="font-size:11px;color:rgba(200,150,12,0.55);margin-bottom:12px;">Season champions &amp; podium finishes</div>
-      ${trophyHtml}
-    </div>
+    ${trophyCaseHtml}
 
     <!-- Perfect Week -->
     ${perfectHtml}
@@ -3041,6 +3255,202 @@ function renderTrophyRoomContent(el, data) {
 
     ${isMe ? `<button class="btn btn-primary btn-block" onclick="document.getElementById('trophy-modal').style.display='none';State.view='profile';renderContent();">Edit My Trophy Room →</button>` : ''}
   `;
+
+  // Render 3D trophies into each canvas after innerHTML is set
+  setTimeout(() => initTrophyCanvases(el), 50);
+}
+
+// ── 3D Trophy canvas renderer ────────────────────────────────────────────────
+function initTrophyCanvases(el) {
+  if (typeof THREE === 'undefined') {
+    // Load Three.js if not present
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js';
+    s.onload = () => initTrophyCanvases(el);
+    document.head.appendChild(s);
+    return;
+  }
+
+  const canvases = el.querySelectorAll('canvas[data-row]');
+  if (!canvases.length) return;
+
+  const PAL = {
+    1: { body:0xD4A017, mid:0x9A7010, dark:0x3A2800, fb:0xD4A017 },
+    2: { body:0xC8C8DC, mid:0x8888A0, dark:0x282838, fb:0xC8C8DC },
+    3: { body:0xC04A00, mid:0x7A2E00, dark:0x2A1000, fb:0xC04A00 },
+  };
+
+  function mm(hex) { return new THREE.MeshStandardMaterial({color:hex,roughness:0.12,metalness:0.88,emissive:hex,emissiveIntensity:0.16}); }
+  function mm2(hex){ return new THREE.MeshStandardMaterial({color:hex,roughness:0.22,metalness:0.84,emissive:hex,emissiveIntensity:0.08}); }
+  const BLK = new THREE.MeshStandardMaterial({color:0x080808,roughness:0.4,metalness:0.5});
+  const WHT = new THREE.MeshStandardMaterial({color:0xffffff,roughness:0.8,metalness:0.0});
+
+  function mkScene() {
+    const s = new THREE.Scene();
+    s.add(new THREE.AmbientLight(0xffffff, 0.9));
+    const sun = new THREE.DirectionalLight(0xfff5e0, 2.4); sun.position.set(3,10,8); s.add(sun);
+    s.add(Object.assign(new THREE.DirectionalLight(0xbbccff,0.4),{position:new THREE.Vector3(-7,4,5)}));
+    s.add(Object.assign(new THREE.DirectionalLight(0xffffff,0.55),{position:new THREE.Vector3(7,5,-3)}));
+    s.add(Object.assign(new THREE.DirectionalLight(0xffeedd,0.25),{position:new THREE.Vector3(0,-5,5)}));
+    return s;
+  }
+
+  function mkCFP(pal) {
+    const g = new THREE.Group();
+    const bdy=mm(pal.body), mid=mm2(pal.mid), drk=mm2(pal.dark), fbm=mm(pal.fb);
+    fbm.roughness=0.2; fbm.metalness=0.82;
+    const pts=[]; for(let i=0;i<=28;i++){const a=i/28*Math.PI;pts.push(new THREE.Vector2(Math.sin(a)*.46,Math.cos(a)*.66));}
+    const fb=new THREE.Mesh(new THREE.LatheGeometry(pts,32),fbm); fb.position.y=2.62; g.add(fb);
+    const lb=new THREE.Mesh(new THREE.BoxGeometry(.06,.52,.06),WHT); lb.position.set(.34,2.62,.35); g.add(lb);
+    for(let j=-2;j<=2;j++){const ls=new THREE.Mesh(new THREE.BoxGeometry(.17,.04,.05),WHT);ls.position.set(.28,2.62+j*.1,.37);ls.rotation.y=.25;g.add(ls);}
+    const fG=new THREE.CylinderGeometry(.11,.84,.17,6);
+    [[-0.34,-0.28],[0.34,0.28]].forEach(([x,rz])=>{const f=new THREE.Mesh(fG,bdy);f.position.set(x,1.82,0);f.rotation.z=rz;g.add(f);});
+    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.5,.5,.13,22),bdy),{position:new THREE.Vector3(0,1.80,0)}));
+    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.21,.33,.40,16),mid),{position:new THREE.Vector3(0,1.46,0)}));
+    const cG=new THREE.CylinderGeometry(.18,.36,2.05,18), sG=new THREE.BoxGeometry(.09,2.05,.42);
+    [[-0.42,0.14],[0.42,-0.14]].forEach(([x,rz])=>{
+      const col=new THREE.Mesh(cG,bdy); col.position.set(x,.15,0); col.rotation.z=rz; g.add(col);
+      const sl=new THREE.Mesh(sG,drk); sl.position.set(x-Math.sign(x)*.28,.15,0); sl.rotation.z=rz; g.add(sl);
+    });
+    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.21,.29,.27,16),mid),{position:new THREE.Vector3(0,-.82,0)}));
+    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.68,.80,.21,8),BLK),{position:new THREE.Vector3(0,-1.05,0)}));
+    g.add(Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.38,.29,.70),BLK),{position:new THREE.Vector3(0,-1.32,0)}));
+    g.add(Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.58,.20,.80),BLK),{position:new THREE.Vector3(0,-1.54,0)}));
+    g.add(Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.42,.05,.74),mid),{position:new THREE.Vector3(0,-1.18,0)}));
+    return g;
+  }
+
+  function mkShield(pal, label) {
+    const g = new THREE.Group();
+    const edg = mm(pal.body);
+    const rb=(pal.body>>16)&0xff, gb=(pal.body>>8)&0xff, bb=pal.body&0xff;
+    function mkTex(isFront) {
+      const CW=512,CH=680,cv=document.createElement('canvas');
+      cv.width=CW; cv.height=CH;
+      const ctx=cv.getContext('2d'); ctx.clearRect(0,0,CW,CH);
+      function clip(pad){
+        const x=pad,y=pad,ew=CW-pad*2,eh=CH-pad*2;
+        ctx.beginPath();
+        ctx.moveTo(x+ew*.12,y); ctx.lineTo(x+ew*.88,y);
+        ctx.quadraticCurveTo(x+ew,y,x+ew,y+eh*.12);
+        ctx.lineTo(x+ew,y+eh*.52);
+        ctx.quadraticCurveTo(x+ew,y+eh*.78,CW/2,y+eh);
+        ctx.quadraticCurveTo(x,y+eh*.78,x,y+eh*.52);
+        ctx.lineTo(x,y+eh*.12);
+        ctx.quadraticCurveTo(x,y,x+ew*.12,y);
+        ctx.closePath();
+      }
+      ctx.save(); clip(0); ctx.clip();
+      ctx.fillStyle=`rgb(${rb},${gb},${bb})`; ctx.fillRect(0,0,CW,CH);
+      ctx.restore();
+      if (isFront) {
+        ctx.save(); clip(28); ctx.clip();
+        ctx.fillStyle='rgba(0,0,0,0.78)'; ctx.fillRect(0,0,CW,CH);
+        ctx.restore();
+        ctx.save(); clip(28); ctx.clip();
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.font='900 148px Arial Black,sans-serif'; ctx.fillStyle='#fff'; ctx.shadowColor='rgba(0,0,0,0.6)'; ctx.shadowBlur=10;
+        ctx.fillText('BOWL',CW/2,CH*.27);
+        ctx.shadowBlur=0; ctx.strokeStyle='rgba(255,255,255,0.28)'; ctx.lineWidth=4;
+        ctx.beginPath(); ctx.moveTo(55,CH*.46); ctx.lineTo(CW-55,CH*.46); ctx.stroke();
+        ctx.font='700 76px Arial Black,sans-serif'; ctx.fillStyle='rgba(255,255,255,0.92)'; ctx.shadowBlur=8; ctx.shadowColor='rgba(0,0,0,0.5)';
+        ctx.fillText('BONANZA',CW/2,CH*.60);
+        ctx.restore();
+      } else {
+        ctx.save(); clip(0); ctx.clip(); ctx.fillStyle='rgba(0,0,0,0.35)'; ctx.fillRect(0,0,CW,CH); ctx.restore();
+        ctx.save(); clip(28); ctx.clip(); ctx.fillStyle='rgba(0,0,0,0.88)'; ctx.fillRect(0,0,CW,CH); ctx.restore();
+        ctx.save(); clip(28); ctx.clip();
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        const [num,plc] = label.split(' ');
+        ctx.font='900 160px Arial Black,sans-serif'; ctx.fillStyle=`rgb(${rb},${gb},${bb})`; ctx.shadowColor='#fff'; ctx.shadowBlur=24;
+        ctx.fillText(num,CW/2,CH*0.26); ctx.shadowBlur=0;
+        ctx.font='900 120px Arial Black,sans-serif'; ctx.fillStyle='#fff';
+        ctx.fillText(plc,CW/2,CH*0.48);
+        ctx.strokeStyle='rgba(255,255,255,0.35)'; ctx.lineWidth=4;
+        ctx.beginPath(); ctx.moveTo(60,CH*.60); ctx.lineTo(CW-60,CH*.60); ctx.stroke();
+        ctx.font='600 58px Arial,sans-serif'; ctx.fillStyle='rgba(255,255,255,0.7)'; ctx.shadowBlur=6; ctx.shadowColor='rgba(0,0,0,0.5)';
+        ctx.fillText('Bowl Bonanza',CW/2,CH*0.72);
+        ctx.restore();
+      }
+      const t=new THREE.CanvasTexture(cv); t.needsUpdate=true; return t;
+    }
+    const shW=2.1, shH=shW*(680/512);
+    const fMat=new THREE.MeshStandardMaterial({color:0xffffff,map:mkTex(true), transparent:true,alphaTest:0.1,roughness:0.1,metalness:0.5,side:THREE.FrontSide});
+    const bMat=new THREE.MeshStandardMaterial({color:0xffffff,map:mkTex(false),transparent:true,alphaTest:0.1,roughness:0.1,metalness:0.5,side:THREE.FrontSide});
+    const front=new THREE.Mesh(new THREE.PlaneGeometry(shW,shH),fMat); front.position.z=0.18; g.add(front);
+    const back=new THREE.Mesh(new THREE.PlaneGeometry(shW,shH),bMat); back.position.z=-0.18; back.rotation.y=Math.PI; g.add(back);
+    const tb=new THREE.Mesh(new THREE.BoxGeometry(shW*.88,.08,.36),edg); tb.position.set(0,shH/2-.04,0); g.add(tb);
+    const tip=new THREE.Mesh(new THREE.ConeGeometry(shW*.14,.44,8),edg); tip.position.set(0,-shH/2-.21,0); g.add(tip);
+    const dG=new THREE.SphereGeometry(.07,10,10);
+    [-0.44,-0.22,0,0.22,0.44].forEach(x=>{const d=new THREE.Mesh(dG,edg);d.position.set(x,-shH*.34,.2);g.add(d);});
+    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.13,.17,.36,12),BLK),{position:new THREE.Vector3(0,-shH/2-.45,0)}));
+    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.32,.36,.10,16),BLK),{position:new THREE.Vector3(0,-shH/2-.65,0)}));
+    return g;
+  }
+
+  const BLABEL = { 1:'1ST PLACE', 2:'2ND PLACE', 3:'3RD PLACE' };
+  const animObjs = [];
+  let animRunning = false;
+
+  canvases.forEach(canvas => {
+    const row = JSON.parse(canvas.dataset.row);
+    const n = parseInt(canvas.dataset.n);
+    const W = canvas.width, H = canvas.height;
+    const Z = 13;
+
+    const sc = mkScene();
+    const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
+    renderer.setSize(W, H);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+
+    const cam = new THREE.PerspectiveCamera(40, W/H, 0.1, 100);
+    cam.position.set(0, 0.4, Z);
+    cam.lookAt(0, 0, 0);
+
+    // Place each trophy centred in its cubby
+    const fhw = Math.tan(20*Math.PI/180) * Z;
+    const colW = W / n;
+
+    row.forEach((item, ci) => {
+      const pal = PAL[item.pos] || PAL[3];
+      const mesh = item.type === 'season' ? mkCFP(pal) : mkShield(pal, BLABEL[item.pos]||'3RD PLACE');
+      // Centre of cubby ci in pixel coords
+      const px = colW * ci + colW / 2;
+      const worldX = (px/W - 0.5) * 2 * fhw;
+      mesh.position.set(worldX, 0, 0);
+      sc.add(mesh);
+      animObjs.push({ g: mesh, wx: worldX, spd: 0.48 + ci*0.04, off: ci*1.6, renderer, scene: sc, cam });
+    });
+
+    // Draw cubby dividers as vertical lines on top of canvas via overlay div
+    // (handled by border-left in label divs below canvas)
+  });
+
+  if (!animRunning) {
+    animRunning = true;
+    let T = 0;
+    function loop() {
+      requestAnimationFrame(loop);
+      T += 0.012;
+      // Group by renderer to avoid redundant renders
+      const rendered = new Set();
+      animObjs.forEach(o => {
+        o.g.rotation.y = T * o.spd + o.off;
+        o.g.position.x = o.wx;
+        o.g.position.y = Math.sin(T * 0.6 + o.off) * 0.06;
+        o.g.position.z = 0;
+        if (!rendered.has(o.renderer)) {
+          o.renderer.render(o.scene, o.cam);
+          rendered.add(o.renderer);
+        }
+      });
+      // Re-render all (some may not be first-rendered above if objects share renderer)
+      const allRenderers = new Map();
+      animObjs.forEach(o => allRenderers.set(o.renderer, {sc:o.scene, cam:o.cam}));
+      allRenderers.forEach((v,r) => r.render(v.sc, v.cam));
+    }
+    loop();
+  }
 }
 
 // Show a lightbox for avatar/photo expand
@@ -3714,7 +4124,8 @@ function renderAdmin(content) {
     { id: 'ledger', label: 'Pot' },
     { id: 'season', label: 'Season' },
     { id: 'bowladmin', label: 'Bowl' },
-    { id: 'career', label: 'Career' }
+    { id: 'career', label: 'Career' },
+    { id: 'nameclaims', label: 'Name Claims' }
   ];
   content.innerHTML = `
     <div class="tab-row" style="flex-wrap:wrap;">${tabs.map(t => `<button data-tab="${t.id}" class="${_adminTab === t.id ? 'active' : ''}" style="flex:1 1 30%;">${t.label}</button>`).join('')}</div>
@@ -3728,6 +4139,76 @@ function renderAdmin(content) {
   if (_adminTab === 'season') renderAdminSeason(tabContent);
   if (_adminTab === 'bowladmin') renderAdminBowl(tabContent);
   if (_adminTab === 'career') renderAdminCareer(tabContent);
+  if (_adminTab === 'nameclaims') renderAdminNameClaims(tabContent);
+}
+
+async function renderAdminNameClaims(el) {
+  el.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading claims...</p></div>';
+  try {
+    const data = await api('adminGetNameClaims', { playerId: State.player.id });
+    const claims = (data.claims || []).sort((a,b) => {
+      if (a.status === 'pending' && b.status !== 'pending') return -1;
+      if (b.status === 'pending' && a.status !== 'pending') return 1;
+      return new Date(b.submittedAt) - new Date(a.submittedAt);
+    });
+
+    if (!claims.length) {
+      el.innerHTML = '<div class="card"><p class="helptext">No name claims submitted yet.</p></div>';
+      return;
+    }
+
+    el.innerHTML = `
+      <div class="section-label">Name Claims (${claims.filter(c=>c.status==='pending').length} pending)</div>
+      ${claims.map(c => {
+        const isPending = c.status === 'pending';
+        const badgeColor = c.status === 'approved' ? '#2a7a2a' : c.status === 'rejected' ? '#7a2a2a' : '#5a5a00';
+        const badgeBg = c.status === 'approved' ? 'rgba(0,200,0,0.12)' : c.status === 'rejected' ? 'rgba(200,0,0,0.12)' : 'rgba(200,200,0,0.12)';
+        return `<div class="card" style="margin-bottom:10px;${isPending?'border:1px solid var(--upset-gold);':''}">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+            <div>
+              <div style="font-size:14px;font-weight:700;color:var(--text);">${escapeHtml(c.playerName)} <span style="color:var(--text-soft);font-weight:400;">→</span> <span style="color:var(--upset-gold);">${escapeHtml(c.claimedTeamName)}</span></div>
+              <div style="font-size:12px;color:var(--text-soft);margin-top:2px;">Current name: ${escapeHtml(c.currentTeamName)} · ${c.seasons} season${c.seasons!==1?'s':''} claimed (${(c.years||[]).join(', ')})</div>
+              <div style="font-size:12px;color:var(--text-soft);margin-top:2px;">Submitted: ${new Date(c.submittedAt).toLocaleDateString()}</div>
+            </div>
+            <span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;background:${badgeBg};color:${badgeColor};text-transform:uppercase;flex-shrink:0;">${c.status}</span>
+          </div>
+          ${c.reason ? `<div style="font-size:13px;color:var(--text);background:var(--surface-2);border-radius:var(--radius-sm);padding:8px 10px;margin-bottom:10px;font-style:italic;">"${escapeHtml(c.reason)}"</div>` : ''}
+          ${isPending ? `
+            <div style="display:flex;gap:8px;">
+              <button class="btn btn-primary btn-sm claim-approve-btn" data-id="${escapeHtml(c.claimId)}" data-name="${escapeHtml(c.claimedTeamName)}" style="flex:1;">✓ Approve</button>
+              <button class="btn btn-danger btn-sm claim-reject-btn" data-id="${escapeHtml(c.claimId)}" style="flex:1;">✗ Reject</button>
+            </div>` : ''}
+        </div>`;
+      }).join('')}`;
+
+    el.querySelectorAll('.claim-approve-btn').forEach(btn => {
+      btn.onclick = async () => {
+        const name = btn.dataset.name;
+        if (!confirm(`Approve claim for "${name}"?\n\nThis will link all CareerHistory and UpsetHistory rows with this team name to the player's account. This cannot be undone.`)) return;
+        btn.disabled = true; btn.textContent = 'Approving...';
+        try {
+          const res = await api('adminReviewNameClaim', { playerId: State.player.id, claimId: btn.dataset.id, decision: 'approved', reviewerName: State.player.teamName });
+          if (res.ok) { showToast('Claim approved — history linked!', 'success'); renderAdminNameClaims(el); }
+          else showToast(res.error || 'Error', 'error');
+        } catch(e) { showToast('Network error', 'error'); }
+      };
+    });
+
+    el.querySelectorAll('.claim-reject-btn').forEach(btn => {
+      btn.onclick = async () => {
+        if (!confirm('Reject this claim?')) return;
+        btn.disabled = true; btn.textContent = 'Rejecting...';
+        try {
+          const res = await api('adminReviewNameClaim', { playerId: State.player.id, claimId: btn.dataset.id, decision: 'rejected', reviewerName: State.player.teamName });
+          if (res.ok) { showToast('Claim rejected', 'success'); renderAdminNameClaims(el); }
+          else showToast(res.error || 'Error', 'error');
+        } catch(e) { showToast('Network error', 'error'); }
+      };
+    });
+
+  } catch(e) {
+    el.innerHTML = '<div class="card"><p class="helptext">Could not load name claims.</p></div>';
+  }
 }
 
 /* ---- Admin: This Week ---- */
@@ -3745,7 +4226,7 @@ function renderAdminWeek(el) {
         <div class="card-title" style="margin-bottom:0;">Week ${week} &middot; Picker</div>
         <button class="btn btn-ghost btn-sm" id="week-jump">‹ Wk</button>
       </div>
-      <select id="picker-select" style="width:100%; padding:10px; border-radius:9px; border:1.5px solid var(--hairline);">
+      <select id="picker-select" style="width:100%; padding:10px; border-radius:9px; border:1.5px solid var(--hairline); color:#000; background:#fff;">
         <option value="">— Select picker —</option>
         ${eligible.map(p => `<option value="${p.id}" ${rotation && rotation.playerId === p.id ? 'selected' : ''}>${escapeHtml(p.teamName || p.name)}</option>`).join('')}
       </select>
@@ -4187,6 +4668,33 @@ function renderAdminBowl(el) {
   const phaseContent = document.getElementById('bowl-admin-phase-content');
   if (window._bowlAdminTab === 'resolve') renderAdminBowlResolve(phaseContent);
   else renderAdminBowlPhaseSetup(phaseContent, window._bowlAdminTab);
+
+  // Record Bowl Winners button — shown at end of season
+  const recordBtn = document.createElement('div');
+  recordBtn.style.marginTop = '12px';
+  recordBtn.innerHTML = `
+    <div class="section-label">End of Season</div>
+    <div class="card">
+      <p class="helptext" style="margin-bottom:10px;">Once all Bowl Bonanza games are final, record the top 3 finishers so they appear in Trophy Rooms.</p>
+      <button class="btn btn-primary btn-block" id="record-bowl-winners-btn">Record Bowl Bonanza Winners</button>
+      <div id="bowl-winners-result" style="margin-top:8px;"></div>
+    </div>
+  `;
+  el.appendChild(recordBtn);
+  document.getElementById('record-bowl-winners-btn').onclick = async () => {
+    const btn = document.getElementById('record-bowl-winners-btn');
+    btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+    try {
+      const result = await api('adminRecordBowlWinners', { adminId: State.player.id, year: State.season.year });
+      const res = document.getElementById('bowl-winners-result');
+      if (result.winners && result.winners.length > 0) {
+        res.innerHTML = result.winners.map(w => `<div style="font-size:13px;color:var(--text);">${w.position===1?'🥇':w.position===2?'🥈':'🥉'} ${escapeHtml(w.teamName)} — ${w.points} pts</div>`).join('');
+        showToast('Bowl Bonanza winners recorded ✓', 'success');
+        _trophyRoomCache = {};
+      }
+    } catch(e) { showToast('Error: ' + e.message, 'error'); }
+    btn.textContent = 'Record Bowl Bonanza Winners';
+  };
 }
 
 /* ---- Admin: Career History Mapping ---- */
