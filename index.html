@@ -407,8 +407,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v5.4';
-const BUILD_TIME = '2026-08-11T11:31:12Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v5.6';
+const BUILD_TIME = '2026-08-11T11:54:07Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbxAgFyRiAqy8jogVMbGNgw-QsxzM6hS6CnCwuUDCbCK1Wwgt5OjMwMIB8GbH3LIDpUT/exec'
@@ -532,16 +532,23 @@ async function registerForPushNotifications(playerId) {
     }
 
     // save to backend
-    console.log('FCM: saving token to backend, playerId=', playerId, 'token length=', token.length);
+    console.log('FCM: token obtained, length=', token.length, 'first30=', token.substring(0,30));
+    console.log('FCM: playerId=', playerId);
+    console.log('FCM: sending to backend...');
+    showToast('Token obtained: ' + token.substring(0,20) + '...', 'info', 6000);
+    await new Promise(r => setTimeout(r, 500));
     try {
       const result = await api('registerFcmToken', { playerId, token });
       console.log('FCM: backend result=', JSON.stringify(result));
-      State.player.fcmToken = token;
-      showToast('Push notifications enabled ✓', 'success');
-      console.log('FCM: token saved successfully');
+      // update local state with full token list
+      const existingTokens = (State.player.fcmToken || '').split(',').map(t => t.trim()).filter(Boolean);
+      if (!existingTokens.includes(token)) existingTokens.push(token);
+      State.player.fcmToken = existingTokens.join(',');
+      showToast('Enabled ✓ — ' + result.tokenCount + ' device(s) registered', 'success');
+      console.log('FCM: saved. Total tokens now:', existingTokens.length);
     } catch(e) {
-      console.error('FCM: failed to save token:', e);
-      showToast('Notifications enabled on this device but could not save to server: ' + e.message, 'error');
+      console.error('FCM: failed to save token:', e.message, e);
+      showToast('Could not save notification token: ' + e.message, 'error');
     }
   } catch(e) {
     console.error('Push notification setup error:', e);
