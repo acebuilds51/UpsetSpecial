@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v10.1';
-const BUILD_TIME = '2026-08-12T18:53:37Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v10.3';
+const BUILD_TIME = '2026-08-12T19:15:56Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbzS2RqHyHpCpKzPI7JQ7qXuf_eZp7qkIiC4sUuzhjFgC6Fg0jXQFrMCaVZUTR-HrNRg/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbwpipxop4PEh117g3x8jN1ZoWBclD55PGU2SP9G3MkwYxSIzgdVB5ORlW4Zum8yrq2m/exec'
 };
 
 const State = {
@@ -991,14 +991,14 @@ function championRing(avatarHtml, playerId, size) {
   if (!years.length) return inner;
   const label = years.join(', ') + (years.length === 1 ? ' Champion' : ' Champions');
   const pad = Math.max(3, Math.round(size * 0.09));
-  const fs = Math.max(7, Math.round(size * 0.14));
+  const fs = Math.max(7, Math.round(size * 0.13));
   return `<div style="position:relative;display:inline-flex;flex-direction:column;align-items:center;flex-shrink:0;" title="${escapeHtml(label)}">` +
     `<div style="position:relative;width:${size}px;height:${size}px;">` +
       `<div style="position:absolute;inset:-${pad}px;border-radius:50%;background:conic-gradient(#FFD700 0deg,#FFF5A0 45deg,#C8960C 90deg,#FFD700 135deg,#FFF5A0 180deg,#C8960C 225deg,#FFD700 270deg,#FFF5A0 315deg,#C8960C 360deg);box-shadow:0 0 ${pad*3}px rgba(212,160,0,0.8);animation:champSpin 6s linear infinite;"></div>` +
       `<div style="position:absolute;inset:${Math.round(pad*0.3)}px;border-radius:50%;background:var(--surface-1);z-index:1;"></div>` +
-      `<div style="position:absolute;inset:${pad}px;border-radius:50%;overflow:hidden;z-index:2;display:flex;align-items:center;justify-content:center;">${avatarHtml}</div>` +
+      `<div style="position:absolute;inset:${pad}px;border-radius:50%;overflow:hidden;z-index:2;">${avatarHtml}</div>` +
     `</div>` +
-    `<div style="margin-top:2px;background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#1A0800;font-size:${fs}px;font-weight:800;padding:1px ${Math.round(fs*0.6)}px;border-radius:20px;white-space:nowrap;letter-spacing:0.02em;box-shadow:0 1px 4px rgba(0,0,0,0.5);">${escapeHtml(label)}</div>` +
+    `<div style="margin-top:2px;background:linear-gradient(135deg,#C8920A,#FFD700,#C8920A);color:#000000;font-size:${fs}px;font-weight:900;padding:2px ${Math.round(fs*0.7)}px;border-radius:20px;white-space:nowrap;letter-spacing:0.03em;box-shadow:0 1px 4px rgba(0,0,0,0.5);text-shadow:none;">${escapeHtml(label)}</div>` +
   `</div>`;
 }
 
@@ -2116,7 +2116,7 @@ async function renderAllTimeLeaderboard(el) {
 
     function sorted(){
       const d = lb.slice();
-      if (sort==='gold') d.sort((a,b) => (b.wins||0)-(a.wins||0) || (b.winPct||0)-(a.winPct||0));
+      if (sort==='gold') d.sort((a,b) => (b.totalPts||0)-(a.totalPts||0));
       else if (sort==='pw') d.sort((a,b) => (b.perfectWeeks||[]).length-(a.perfectWeeks||[]).length || score(b)-score(a));
       else if (sort==='name') d.sort((a,b) => a.teamName.localeCompare(b.teamName));
       else d.sort((a,b) => total(b)-total(a) || b.gold.length-a.gold.length || score(b)-score(a));
@@ -2130,10 +2130,10 @@ async function renderAllTimeLeaderboard(el) {
 
       const headerCols = isCareerView
         ? `<div></div><div></div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Wins</div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Win%</div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Total</div>
            <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Avg</div>
            <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Best</div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Pod</div>
            <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Seas</div>`
         : `<div></div><div></div>
            <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥇</div>
@@ -2164,15 +2164,15 @@ async function renderAllTimeLeaderboard(el) {
             : '';
           let dataCols;
           if (isCareerView) {
-            const wins = p.wins||0, winPct = p.winPct!=null?p.winPct+'%':'—';
-            const avg = p.avgPts||'—', best = p.bestPts||'—', seas = p.seasons||'—';
+            const total = p.totalPts||'—', avg = p.avgPts||'—';
+            const best = p.bestPts||'—', pod = p.podiums||'—', seas = p.seasons||'—';
             dataCols = '<div style="font-size:12px;color:var(--text-soft);text-align:center;">' + (isNameSort?'':i+1) + '</div>'
               + '<div style="min-width:0;"><div style="font-size:13px;' + nameStyle + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(p.teamName) + champRingEl + unlinked + '</div>'
               + '<div style="font-size:10px;color:var(--text-soft);margin-top:1px;">' + (p.seasons?p.seasons+' seasons played':'') + '</div></div>'
-              + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (wins?'#B8860B':'var(--text-soft)') + ';">' + (wins||'—') + '</div>'
-              + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + winPct + '</div>'
+              + '<div style="font-size:11px;font-weight:700;text-align:center;color:var(--text);">' + total + '</div>'
               + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + avg + '</div>'
               + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + best + '</div>'
+              + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + pod + '</div>'
               + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + seas + '</div>';
           } else {
             const tot = p.gold.length+p.silver.length+p.bronze.length+(p.perfectWeeks||[]).length;
@@ -3380,16 +3380,16 @@ function renderTrophyRoomContent(el, data) {
   const avatarHtml = (function(){
     const years = data.champYears && data.champYears.length ? data.champYears : getChampionYearsForPlayer(p.id || p.playerId);
     const inner = avatarInnerTR;
-    if (!years.length) return `<div style="width:54px;height:54px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${inner}</div>`;
+    if (!years.length) return `<div style="width:54px;height:54px;border-radius:50%;overflow:hidden;flex-shrink:0;">${inner}</div>`;
     const label = years.join(', ') + (years.length === 1 ? ' Champion' : ' Champions');
     const pad = 5, fs = 8;
     return `<div style="position:relative;display:inline-flex;flex-direction:column;align-items:center;flex-shrink:0;" title="${escapeHtml(label)}">` +
       `<div style="position:relative;width:54px;height:54px;">` +
         `<div style="position:absolute;inset:-${pad}px;border-radius:50%;background:conic-gradient(#FFD700 0deg,#FFF5A0 45deg,#C8960C 90deg,#FFD700 135deg,#FFF5A0 180deg,#C8960C 225deg,#FFD700 270deg,#FFF5A0 315deg,#C8960C 360deg);box-shadow:0 0 ${pad*3}px rgba(212,160,0,0.8);animation:champSpin 6s linear infinite;"></div>` +
         `<div style="position:absolute;inset:${Math.round(pad*0.3)}px;border-radius:50%;background:var(--surface-1);z-index:1;"></div>` +
-        `<div style="position:absolute;inset:${pad}px;border-radius:50%;overflow:hidden;z-index:2;display:flex;align-items:center;justify-content:center;">${inner}</div>` +
+        `<div style="position:absolute;inset:${pad}px;border-radius:50%;overflow:hidden;z-index:2;">${inner}</div>` +
       `</div>` +
-      `<div style="margin-top:2px;background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#1A0800;font-size:${fs}px;font-weight:800;padding:1px ${Math.round(fs*0.6)}px;border-radius:20px;white-space:nowrap;letter-spacing:0.02em;box-shadow:0 1px 4px rgba(0,0,0,0.5);">${escapeHtml(label)}</div>` +
+      `<div style="margin-top:2px;background:linear-gradient(135deg,#C8920A,#FFD700,#C8920A);color:#000000;font-size:${fs}px;font-weight:900;padding:2px ${Math.round(fs*0.7)}px;border-radius:20px;white-space:nowrap;letter-spacing:0.03em;box-shadow:0 1px 4px rgba(0,0,0,0.5);text-shadow:none;">${escapeHtml(label)}</div>` +
     `</div>`;
   })();
 
