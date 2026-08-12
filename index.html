@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v7.6';
-const BUILD_TIME = '2026-08-11T00:44:35Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v7.9';
+const BUILD_TIME = '2026-08-11T01:13:08Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbwbUYsSxIlHhDVid_7m1uo85CkfIfw8BWlt8d4rru51PBRbRsdNfjNNwzFS61MB5e3k/exec'
@@ -3206,18 +3206,37 @@ function renderTrophyRoomContent(el, data) {
     </div>`;
 
   // Perfect week banner
-  const perfectHtml = data.perfectWeeks && data.perfectWeeks.length > 0 ? data.perfectWeeks.map(pw => `
-    <div style="background:linear-gradient(135deg,#7c2d00,#c2410c,#FFB800,#FF6B35);border:1.5px solid #FF6B35;border-radius:12px;padding:1rem 1.25rem;text-align:center;animation:pulse-orange 2s ease-in-out infinite;position:relative;overflow:hidden;margin-bottom:8px;">
-      <div style="display:flex;justify-content:center;gap:5px;margin-bottom:6px;">
-        <span style="font-size:14px;animation:spin-slow 8s linear infinite;display:inline-block;color:#1A1206;">✦</span>
-        <span style="font-size:14px;animation:spin-slow 8s linear infinite;display:inline-block;color:#1A1206;animation-delay:-2.7s;">✦</span>
-        <span style="font-size:14px;animation:spin-slow 8s linear infinite;display:inline-block;color:#1A1206;animation-delay:-5.3s;">✦</span>
+  function mkPerfectBadge(pw) {
+    const historyLine = data.leaguePerfectCount > 0
+      ? `<div style="font-size:11px;color:rgba(255,255,255,0.65);margin-top:4px;">One of only ${data.leaguePerfectCount} ever in league history</div>`
+      : '';
+    const svgBullseye = `<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="32" cy="32" r="30" fill="#1A0800" stroke="rgba(255,200,50,0.4)" stroke-width="1"/>
+      <circle cx="32" cy="32" r="24" fill="none" stroke="#FF6B35" stroke-width="3"/>
+      <circle cx="32" cy="32" r="17" fill="none" stroke="#FFB800" stroke-width="3"/>
+      <circle cx="32" cy="32" r="10" fill="none" stroke="#FF6B35" stroke-width="2"/>
+      <circle cx="32" cy="32" r="4" fill="#FFD700"/>
+      <line x1="6" y1="6" x2="27" y2="27" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+      <polygon points="27,20 27,27 20,27" fill="#fff"/>
+      <line x1="58" y1="4" x2="35" y2="27" stroke="#FFD700" stroke-width="2.5" stroke-linecap="round"/>
+      <polygon points="35,20 35,27 42,27" fill="#FFD700"/>
+      <line x1="4" y1="56" x2="27" y2="36" stroke="#FF6B35" stroke-width="2.5" stroke-linecap="round"/>
+      <polygon points="20,36 27,36 27,43" fill="#FF6B35"/>
+    </svg>`;
+    return `<div style="margin-bottom:10px;border-radius:14px;overflow:hidden;background:linear-gradient(135deg,#7c2d00,#c2410c 40%,#FF6B35 70%,#FFB800);border:1.5px solid rgba(255,107,53,0.6);animation:pulse-orange 2s ease-in-out infinite;">
+      <div style="display:flex;align-items:center;gap:14px;padding:14px 16px;">
+        <div style="flex-shrink:0;animation:spin-slow 12s linear infinite;">${svgBullseye}</div>
+        <div style="flex:1;">
+          <div style="font-size:16px;font-weight:800;color:#fff;letter-spacing:0.03em;">Perfect Week</div>
+          <div style="font-size:13px;color:rgba(255,255,255,0.9);margin-top:2px;">10 / 10 correct &middot; Week ${pw.week}, ${pw.year}</div>
+          ${historyLine}
+        </div>
       </div>
-      <div style="font-size:26px;margin-bottom:4px;position:relative;z-index:1;">💯</div>
-      <div style="font-size:15px;font-weight:700;color:#1A1206;position:relative;z-index:1;">Perfect Week</div>
-      <div style="font-size:12px;color:rgba(26,18,6,0.8);margin-top:3px;position:relative;z-index:1;">10 / 10 correct · Week ${pw.week}, ${pw.year}</div>
-      ${data.leaguePerfectCount > 0 ? `<div style="font-size:11px;color:rgba(26,18,6,0.55);margin-top:5px;position:relative;z-index:1;">One of only ${data.leaguePerfectCount} ever in league history</div>` : ''}
-    </div>`).join('') : '';
+    </div>`;
+  }
+  const perfectHtml = data.perfectWeeks && data.perfectWeeks.length > 0
+    ? data.perfectWeeks.map(pw => mkPerfectBadge(pw)).join('')
+    : '';
 
   // About table
   const aboutRows = [
@@ -3314,7 +3333,7 @@ function renderTrophyRoomContent(el, data) {
   `;
 
   // Render 3D trophies into each canvas after innerHTML is set
-  setTimeout(() => initTrophyCanvases(el), 50);
+  setTimeout(() => initTrophyCanvases(el), 150);
 }
 
 // ── 3D Trophy canvas renderer ────────────────────────────────────────────────
@@ -3346,9 +3365,9 @@ function initTrophyCanvases(el) {
     const s = new THREE.Scene();
     s.add(new THREE.AmbientLight(0xffffff, 0.9));
     const sun = new THREE.DirectionalLight(0xfff5e0, 2.4); sun.position.set(3,10,8); s.add(sun);
-    s.add(Object.assign(new THREE.DirectionalLight(0xbbccff,0.4),{position:new THREE.Vector3(-7,4,5)}));
-    s.add(Object.assign(new THREE.DirectionalLight(0xffffff,0.55),{position:new THREE.Vector3(7,5,-3)}));
-    s.add(Object.assign(new THREE.DirectionalLight(0xffeedd,0.25),{position:new THREE.Vector3(0,-5,5)}));
+    const fl = new THREE.DirectionalLight(0xbbccff,0.4); fl.position.set(-7,4,5); s.add(fl);
+    const ri = new THREE.DirectionalLight(0xffffff,0.55); ri.position.set(7,5,-3); s.add(ri);
+    const bo = new THREE.DirectionalLight(0xffeedd,0.25); bo.position.set(0,-5,5); s.add(bo);
     return s;
   }
 
@@ -3362,18 +3381,18 @@ function initTrophyCanvases(el) {
     for(let j=-2;j<=2;j++){const ls=new THREE.Mesh(new THREE.BoxGeometry(.17,.04,.05),WHT);ls.position.set(.28,2.62+j*.1,.37);ls.rotation.y=.25;g.add(ls);}
     const fG=new THREE.CylinderGeometry(.11,.84,.17,6);
     [[-0.34,-0.28],[0.34,0.28]].forEach(([x,rz])=>{const f=new THREE.Mesh(fG,bdy);f.position.set(x,1.82,0);f.rotation.z=rz;g.add(f);});
-    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.5,.5,.13,22),bdy),{position:new THREE.Vector3(0,1.80,0)}));
-    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.21,.33,.40,16),mid),{position:new THREE.Vector3(0,1.46,0)}));
+    g.add((function(){const _m=new THREE.Mesh(new THREE.CylinderGeometry(.5,.5,.13,22),bdy);_m.position.set(0,1.80,0);return _m;})());
+    g.add((function(){const _m=new THREE.Mesh(new THREE.CylinderGeometry(.21,.33,.40,16),mid);_m.position.set(0,1.46,0);return _m;})());
     const cG=new THREE.CylinderGeometry(.18,.36,2.05,18), sG=new THREE.BoxGeometry(.09,2.05,.42);
     [[-0.42,0.14],[0.42,-0.14]].forEach(([x,rz])=>{
       const col=new THREE.Mesh(cG,bdy); col.position.set(x,.15,0); col.rotation.z=rz; g.add(col);
       const sl=new THREE.Mesh(sG,drk); sl.position.set(x-Math.sign(x)*.28,.15,0); sl.rotation.z=rz; g.add(sl);
     });
-    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.21,.29,.27,16),mid),{position:new THREE.Vector3(0,-.82,0)}));
-    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.68,.80,.21,8),BLK),{position:new THREE.Vector3(0,-1.05,0)}));
-    g.add(Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.38,.29,.70),BLK),{position:new THREE.Vector3(0,-1.32,0)}));
-    g.add(Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.58,.20,.80),BLK),{position:new THREE.Vector3(0,-1.54,0)}));
-    g.add(Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.42,.05,.74),mid),{position:new THREE.Vector3(0,-1.18,0)}));
+    g.add((function(){const _m=new THREE.Mesh(new THREE.CylinderGeometry(.21,.29,.27,16),mid);_m.position.set(0,-.82,0);return _m;})());
+    g.add((function(){const _m=new THREE.Mesh(new THREE.CylinderGeometry(.68,.80,.21,8),BLK);_m.position.set(0,-1.05,0);return _m;})());
+    g.add((function(){const _m=new THREE.Mesh(new THREE.BoxGeometry(1.38,.29,.70),BLK);_m.position.set(0,-1.32,0);return _m;})());
+    g.add((function(){const _m=new THREE.Mesh(new THREE.BoxGeometry(1.58,.20,.80),BLK);_m.position.set(0,-1.54,0);return _m;})());
+    g.add((function(){const _m=new THREE.Mesh(new THREE.BoxGeometry(1.42,.05,.74),mid);_m.position.set(0,-1.18,0);return _m;})());
     return g;
   }
 
@@ -3440,8 +3459,8 @@ function initTrophyCanvases(el) {
     const tip=new THREE.Mesh(new THREE.ConeGeometry(shW*.14,.44,8),edg); tip.position.set(0,-shH/2-.21,0); g.add(tip);
     const dG=new THREE.SphereGeometry(.07,10,10);
     [-0.44,-0.22,0,0.22,0.44].forEach(x=>{const d=new THREE.Mesh(dG,edg);d.position.set(x,-shH*.34,.2);g.add(d);});
-    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.13,.17,.36,12),BLK),{position:new THREE.Vector3(0,-shH/2-.45,0)}));
-    g.add(Object.assign(new THREE.Mesh(new THREE.CylinderGeometry(.32,.36,.10,16),BLK),{position:new THREE.Vector3(0,-shH/2-.65,0)}));
+    g.add((function(){const _m=new THREE.Mesh(new THREE.CylinderGeometry(.13,.17,.36,12),BLK);_m.position.set(0,-shH/2-.45,0);return _m;})());
+    g.add((function(){const _m=new THREE.Mesh(new THREE.CylinderGeometry(.32,.36,.10,16),BLK);_m.position.set(0,-shH/2-.65,0);return _m;})());
     return g;
   }
 
@@ -3452,28 +3471,32 @@ function initTrophyCanvases(el) {
   canvases.forEach(canvas => {
     const row = JSON.parse(canvas.dataset.row);
     const n = parseInt(canvas.dataset.n);
-    const W = canvas.width, H = canvas.height;
-    const Z = 13;
+    // Use actual displayed width, not the canvas.width attribute
+    const W = canvas.offsetWidth || canvas.clientWidth || canvas.getBoundingClientRect().width || 649;
+    const H = Math.round(W * 0.48);
+    canvas.width = W;
+    canvas.height = H;
+    canvas.style.height = H + 'px';
+    const Z = 10;
 
     const sc = mkScene();
     const renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:true});
     renderer.setSize(W, H);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+    renderer.setPixelRatio(1);
 
-    const cam = new THREE.PerspectiveCamera(40, W/H, 0.1, 100);
-    cam.position.set(0, 0.4, Z);
+    const aspect = W / H;
+    const cam = new THREE.PerspectiveCamera(40, aspect, 0.1, 100);
+    cam.position.set(0, 0.3, Z);
     cam.lookAt(0, 0, 0);
 
-    // Place each trophy centred in its cubby
-    const fhw = Math.tan(20*Math.PI/180) * Z;
-    const colW = W / n;
+    // Correct frustum half-width = tan(fov/2) * Z * aspect
+    const fhw = Math.tan(20 * Math.PI / 180) * Z * aspect;
+    const slotW = (2 * fhw) / n;
 
     row.forEach((item, ci) => {
       const pal = PAL[item.pos] || PAL[3];
       const mesh = item.type === 'season' ? mkCFP(pal) : mkShield(pal, BLABEL[item.pos]||'3RD PLACE');
-      // Centre of cubby ci in pixel coords
-      const px = colW * ci + colW / 2;
-      const worldX = (px/W - 0.5) * 2 * fhw;
+      const worldX = -fhw + slotW * ci + slotW / 2;
       mesh.position.set(worldX, 0, 0);
       sc.add(mesh);
       animObjs.push({ g: mesh, wx: worldX, spd: 0.48 + ci*0.04, off: ci*1.6, renderer, scene: sc, cam });
