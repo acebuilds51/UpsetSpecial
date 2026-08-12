@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v8.8';
-const BUILD_TIME = '2026-08-11T14:02:07Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v9.0';
+const BUILD_TIME = '2026-08-11T14:46:12Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbzfipqgASs9LDVMzA8b0XU_3JUC1VY1W1a6358AyOP0DzlEQEk4fUU4kb8yGOrKCwoR/exec'
@@ -948,9 +948,6 @@ function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-// Returns championship years for a player (highest points each year in CareerHistory)
-// Uses ALL rows including unlinked — so an unlinked winner doesn't falsely give
-// the trophy to the next-highest linked player
 function getChampionYearsForPlayer(playerId) {
   if (!playerId || !State._careerHistory) return [];
   const byYear = {};
@@ -961,9 +958,10 @@ function getChampionYearsForPlayer(playerId) {
   const champYears = [];
   Object.entries(byYear).forEach(([year, rows]) => {
     const sorted = rows.slice().sort((a,b) => Number(b.points) - Number(a.points));
-    // Only award the trophy if this player actually had the highest points
-    // AND they are the top row (linked or unlinked)
-    if (sorted.length && String(sorted[0].playerId) === String(playerId)) {
+    if (!sorted.length) return;
+    const winner = sorted[0];
+    // Only award trophy if winner is THIS player — and winner must have a playerId (not unlinked)
+    if (String(winner.playerId||'').trim() === String(playerId) && winner.playerId) {
       champYears.push(Number(year));
     }
   });
@@ -3263,9 +3261,32 @@ function renderTrophyRoomContent(el, data) {
     if (hasPerfect) {
       inner += `<div style="height:1px;background:linear-gradient(90deg,transparent,rgba(200,150,12,.4),transparent);margin:5px 0;"></div>`;
       inner += sectionLabel('Perfect Weeks');
-      inner += `<div style="padding:8px 8px 4px;">` +
-        data.perfectWeeks.map(pw => mkPerfectBadge(pw)).join('') +
-      `</div>`;
+      // Sort newest first, group into rows of 3-4
+      const sortedPW = data.perfectWeeks.slice().sort((a,b) => b.year - a.year || b.week - a.week);
+      let pi = 0;
+      while (pi < sortedPW.length) {
+        const rem = sortedPW.length - pi;
+        const perRow = rem <= 4 ? Math.max(rem, 3) : 4;
+        const pwRow = sortedPW.slice(pi, pi + perRow);
+        const n = pwRow.length;
+        const pct = 100 / n;
+        const caseId = `tc-perfect-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
+        const rowData = JSON.stringify(pwRow.map(pw => ({ pos: 1, type: 'perfect', week: pw.week, year: pw.year })));
+        const labels = pwRow.map((pw, ci) => `
+          <div style="width:${pct}%;text-align:center;border-left:${ci>0?'1px solid rgba(200,150,12,0.25)':'none'};">
+            <div style="font-size:8px;font-weight:700;color:#FF6B35;margin-top:3px;">${pw.year}</div>
+            <div style="font-size:7px;color:#CC4400;">Wk ${pw.week} · 10/10</div>
+            <div style="height:10px;background:linear-gradient(180deg,#A06830,#7A5230 35%,#5C3D1A 68%,#3D2808);border-radius:2px;margin-top:2px;box-shadow:0 3px 8px rgba(0,0,0,.6);"></div>
+          </div>`).join('');
+        inner += `
+          <div style="position:relative;border-top:${pi>0?'1px solid rgba(200,150,12,0.18)':'none'};">
+            <canvas width="800" height="360"
+              style="display:block;width:100%;height:180px;position:relative;z-index:3;"
+              data-row='${rowData}' data-n="${n}"></canvas>
+            <div style="display:flex;position:relative;z-index:3;">${labels}</div>
+          </div>`;
+        pi += perRow;
+      }
     }
     trophyCaseHtml = caseWrap(inner);
   }
@@ -3273,7 +3294,22 @@ function renderTrophyRoomContent(el, data) {
   const avatarInnerTR = p.avatar
     ? `<img src="${p.avatar}" style="width:54px;height:54px;border-radius:50%;object-fit:cover;" onclick="showLightbox('${p.avatar}')">`
     : `<div style="width:54px;height:54px;border-radius:50%;background:var(--upset-grad);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:22px;color:#1A1206;">${escapeHtml((p.teamName||'?')[0].toUpperCase())}</div>`;
-  const avatarHtml = championRing(avatarInnerTR, p.id || p.playerId, 54);
+  // Use server-computed champYears — avoids race condition with _careerHistory background load
+  const avatarHtml = (function(){
+    const years = data.champYears && data.champYears.length ? data.champYears : getChampionYearsForPlayer(p.id || p.playerId);
+    const inner = avatarInnerTR;
+    if (!years.length) return `<div style="width:54px;height:54px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${inner}</div>`;
+    const label = years.join(', ') + (years.length === 1 ? ' Champion' : ' Champions');
+    const pad = 5, fs = 8;
+    return `<div style="position:relative;display:inline-flex;flex-direction:column;align-items:center;flex-shrink:0;" title="${escapeHtml(label)}">` +
+      `<div style="position:relative;width:54px;height:54px;">` +
+        `<div style="position:absolute;inset:-${pad}px;border-radius:50%;background:conic-gradient(#FFD700 0deg,#FFF5A0 45deg,#C8960C 90deg,#FFD700 135deg,#FFF5A0 180deg,#C8960C 225deg,#FFD700 270deg,#FFF5A0 315deg,#C8960C 360deg);box-shadow:0 0 ${pad*3}px rgba(212,160,0,0.8);animation:champSpin 6s linear infinite;"></div>` +
+        `<div style="position:absolute;inset:${Math.round(pad*0.3)}px;border-radius:50%;background:var(--surface-1);z-index:1;"></div>` +
+        `<div style="position:absolute;inset:${pad}px;border-radius:50%;overflow:hidden;z-index:2;display:flex;align-items:center;justify-content:center;">${inner}</div>` +
+      `</div>` +
+      `<div style="margin-top:2px;background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#1A0800;font-size:${fs}px;font-weight:800;padding:1px ${Math.round(fs*0.6)}px;border-radius:20px;white-space:nowrap;letter-spacing:0.02em;box-shadow:0 1px 4px rgba(0,0,0,0.5);">${escapeHtml(label)}</div>` +
+    `</div>`;
+  })();
 
   const photoHtml = bio.photoUrl
     ? `<img src="${bio.photoUrl}" style="width:64px;height:64px;border-radius:10px;object-fit:cover;border:1px solid var(--hairline);cursor:pointer;" onclick="showLightbox('${bio.photoUrl}')">`
@@ -3462,6 +3498,71 @@ function initTrophyCanvases(el) {
     return s;
   }
 
+  function mkBullseye() {
+    const g = new THREE.Group();
+    const RED  = new THREE.MeshStandardMaterial({color:0xFF4500,roughness:0.3,metalness:0.2,emissive:0xFF2200,emissiveIntensity:0.15});
+    const ORG  = new THREE.MeshStandardMaterial({color:0xFF8C00,roughness:0.3,metalness:0.2,emissive:0xFF6000,emissiveIntensity:0.1});
+    const WHT  = new THREE.MeshStandardMaterial({color:0xFFFFFF,roughness:0.6,metalness:0.0});
+    const GLD  = new THREE.MeshStandardMaterial({color:0xFFD700,roughness:0.1,metalness:0.9,emissive:0xD4A000,emissiveIntensity:0.3});
+    const BLK  = new THREE.MeshStandardMaterial({color:0x080808,roughness:0.4,metalness:0.5});
+
+    // Bullseye rings — flat cylinders (discs) stacked with slight z-offset
+    const rings = [
+      {r:1.5, h:0.08, mat:RED,  z:0.00},
+      {r:1.1, h:0.09, mat:WHT,  z:0.01},
+      {r:0.75,h:0.10, mat:RED,  z:0.02},
+      {r:0.45,h:0.11, mat:WHT,  z:0.03},
+      {r:0.20,h:0.12, mat:GLD,  z:0.04},
+    ];
+    rings.forEach(function(r) {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(r.r, r.r, r.h, 48), r.mat);
+      m.rotation.x = Math.PI / 2;
+      m.position.set(0, 0, r.z);
+      g.add(m);
+    });
+
+    // 3 arrows striking the bullseye
+    function mkArrow(ox, oy, oz, rx, ry, rz, mat) {
+      const ag = new THREE.Group();
+      // Shaft
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 1.2, 8), mat);
+      shaft.position.y = -0.3;
+      ag.add(shaft);
+      // Tip
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.35, 8), mat);
+      tip.position.y = 0.45;
+      ag.add(tip);
+      // Fletching
+      [-0.12, 0.12].forEach(function(dx) {
+        const f = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.28, 0.04), mat);
+        f.position.set(dx, -0.8, 0);
+        ag.add(f);
+      });
+      ag.position.set(ox, oy, oz);
+      ag.rotation.set(rx, ry, rz);
+      return ag;
+    }
+
+    // Arrow 1 — centre, straight in, hits gold
+    g.add(mkArrow(0, 0, 1.5, Math.PI*0.5, 0, 0, GLD));
+    // Arrow 2 — top left, angled
+    g.add(mkArrow(-0.9, 0.8, 1.0, Math.PI*0.4, 0, Math.PI*0.18, WHT));
+    // Arrow 3 — bottom right, angled
+    g.add(mkArrow(0.8, -0.75, 0.9, Math.PI*0.42, 0, -Math.PI*0.16, ORG));
+
+    // Black base
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.65, 0.38, 16), BLK);
+    base.position.set(0, -1.85, 0);
+    g.add(base);
+    const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.90, 0.18, 16), BLK);
+    foot.position.set(0, -2.1, 0);
+    g.add(foot);
+
+    // Tilt the whole group slightly so arrows are visible
+    g.rotation.x = -0.18;
+    return g;
+  }
+
   function mkCFP(pal) {
     const g = new THREE.Group();
     const bdy=mm(pal.body), mid=mm2(pal.mid), drk=mm2(pal.dark), fbm=mm(pal.fb);
@@ -3586,7 +3687,9 @@ function initTrophyCanvases(el) {
 
     row.forEach((item, ci) => {
       const pal = PAL[item.pos] || PAL[3];
-      const mesh = item.type === 'season' ? mkCFP(pal) : mkShield(pal, BLABEL[item.pos]||'3RD PLACE');
+      const mesh = item.type === 'perfect' ? mkBullseye() :
+                   item.type === 'season'  ? mkCFP(pal) :
+                                             mkShield(pal, BLABEL[item.pos]||'3RD PLACE');
       const worldX = -fhw + slotW * ci + slotW / 2;
       mesh.position.set(worldX, 0, 0);
       sc.add(mesh);
