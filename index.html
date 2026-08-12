@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v10.3';
-const BUILD_TIME = '2026-08-12T19:15:56Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v10.6';
+const BUILD_TIME = '2026-08-12T19:38:35Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbwpipxop4PEh117g3x8jN1ZoWBclD55PGU2SP9G3MkwYxSIzgdVB5ORlW4Zum8yrq2m/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbzx_ec1gOEL-9IDwOhzV5UZkkR3ZvSKL_aVOCmYo9A5QM4yyCC2GFpCaPhGC9P9Mgip/exec'
 };
 
 const State = {
@@ -1880,8 +1880,6 @@ function computeStandingsLocally() {
 
 function renderStandings(content) {
   const standings = computeStandingsLocally();
-  const week = currentWeek();
-
   const completedWeeks = [...new Set(
     (State.games || [])
       .filter(g => isGameFinal(g))
@@ -1895,8 +1893,7 @@ function renderStandings(content) {
       <button class="tab-btn ${activeTab === 'season' ? 'active' : ''}" data-tab="season">Season</button>
       <button class="tab-btn ${activeTab === 'weekly' ? 'active' : ''}" data-tab="weekly">By Week</button>
       <button class="tab-btn ${activeTab === 'mine' ? 'active' : ''}" data-tab="mine">My History</button>
-      <button class="tab-btn ${activeTab === 'career' ? 'active' : ''}" data-tab="career">Career</button>
-      <button class="tab-btn ${activeTab === 'alltime' ? 'active' : ''}" data-tab="alltime">🏆 All-Time</button>
+      <button class="tab-btn ${activeTab === 'history' ? 'active' : ''}" data-tab="history">🏆 History</button>
     </div>
     <div id="standings-tab-content"></div>
   `;
@@ -1909,18 +1906,10 @@ function renderStandings(content) {
   });
 
   const tabContent = document.getElementById('standings-tab-content');
-
-  if (activeTab === 'season') {
-    renderSeasonStandings(tabContent, standings, completedWeeks);
-  } else if (activeTab === 'weekly') {
-    renderWeeklyHistory(tabContent, standings, completedWeeks);
-  } else if (activeTab === 'career') {
-    renderCareerStandings(tabContent);
-  } else if (activeTab === 'alltime') {
-    renderAllTimeLeaderboard(tabContent);
-  } else {
-    renderMyHistory(tabContent, completedWeeks);
-  }
+  if (activeTab === 'season') renderSeasonStandings(tabContent, standings, completedWeeks);
+  else if (activeTab === 'weekly') renderWeeklyHistory(tabContent, standings, completedWeeks);
+  else if (activeTab === 'mine') renderMyHistory(tabContent, completedWeeks);
+  else renderHistoryTab(tabContent);
 }
 
 function renderSeasonStandings(el, standings, completedWeeks) {
@@ -2104,267 +2093,148 @@ function renderMyHistory(el, completedWeeks) {
   });
 }
 
-async function renderAllTimeLeaderboard(el) {
-  el.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading all-time records…</p></div>';
+async function renderHistoryTab(el) {
+  el.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading history…</p></div>';
+
+  // Load all-time leaderboard data
+  let lb = [];
   try {
-    const data = await api('getAllTimeLeaderboard', {});
-    const lb = data.leaderboard || [];
-    let sort = 'total';
-
-    function score(p){ return p.gold.length*4 + p.silver.length*2 + p.bronze.length + (p.perfectWeeks||[]).length; }
-    function total(p){ return p.gold.length + p.silver.length + p.bronze.length + (p.perfectWeeks||[]).length; }
-
-    function sorted(){
-      const d = lb.slice();
-      if (sort==='gold') d.sort((a,b) => (b.totalPts||0)-(a.totalPts||0));
-      else if (sort==='pw') d.sort((a,b) => (b.perfectWeeks||[]).length-(a.perfectWeeks||[]).length || score(b)-score(a));
-      else if (sort==='name') d.sort((a,b) => a.teamName.localeCompare(b.teamName));
-      else d.sort((a,b) => total(b)-total(a) || b.gold.length-a.gold.length || score(b)-score(a));
-      return d;
-    }
-
-    function render(){
-      const rows = sorted();
-      const isCareerView = sort === 'gold';
-      const isNameSort = sort === 'name';
-
-      const headerCols = isCareerView
-        ? `<div></div><div></div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Total</div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Avg</div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Best</div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Pod</div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Seas</div>`
-        : `<div></div><div></div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥇</div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥈</div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥉</div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">💯</div>
-           <div style="font-size:10px;font-weight:700;color:var(--text-accent);text-align:center;">Tot</div>`;
-
-      el.innerHTML = `
-        <div style="margin-bottom:10px;">
-          <div style="font-size:12px;color:var(--text-soft);margin-bottom:6px;">2016 – ${new Date().getFullYear()} · regular season · tap a name to view Trophy Room</div>
-          <div style="display:flex;gap:6px;flex-wrap:wrap;">
-            <button class="btn btn-sm ${sort==='total'?'btn-primary':'btn-ghost'}" id="srt-total">Most trophies</button>
-            <button class="btn btn-sm ${sort==='gold'?'btn-primary':'btn-ghost'}" id="srt-gold">Career stats</button>
-            <button class="btn btn-sm ${sort==='pw'?'btn-primary':'btn-ghost'}" id="srt-pw">10/10 weeks</button>
-            <button class="btn btn-sm ${sort==='name'?'btn-primary':'btn-ghost'}" id="srt-name">A – Z</button>
-          </div>
-        </div>
-        <div style="display:grid;grid-template-columns:26px 1fr 36px 40px 40px 40px 36px;gap:4px;padding:4px 0 6px;border-bottom:1px solid var(--hairline);margin-bottom:2px;">
-          ${headerCols}
-        </div>
-        ${rows.map((p, i) => {
-          const isMe = p.playerId && State.player && p.playerId === State.player.id;
-          const nameStyle = isMe ? 'color:var(--upset-gold);font-weight:700;' : 'color:var(--text);font-weight:600;';
-          const unlinked = !p.linked ? '<span style="font-size:10px;color:var(--text-soft);"> ⚠</span>' : '';
-          const champRingEl = p.gold.length > 0 && p.linked
-            ? '<span style="font-size:9px;font-weight:800;background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#1A0800;padding:1px 5px;border-radius:20px;margin-left:4px;white-space:nowrap;">' + p.gold.join(', ') + ' 👑</span>'
-            : '';
-          let dataCols;
-          if (isCareerView) {
-            const total = p.totalPts||'—', avg = p.avgPts||'—';
-            const best = p.bestPts||'—', pod = p.podiums||'—', seas = p.seasons||'—';
-            dataCols = '<div style="font-size:12px;color:var(--text-soft);text-align:center;">' + (isNameSort?'':i+1) + '</div>'
-              + '<div style="min-width:0;"><div style="font-size:13px;' + nameStyle + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(p.teamName) + champRingEl + unlinked + '</div>'
-              + '<div style="font-size:10px;color:var(--text-soft);margin-top:1px;">' + (p.seasons?p.seasons+' seasons played':'') + '</div></div>'
-              + '<div style="font-size:11px;font-weight:700;text-align:center;color:var(--text);">' + total + '</div>'
-              + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + avg + '</div>'
-              + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + best + '</div>'
-              + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + pod + '</div>'
-              + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + seas + '</div>';
-          } else {
-            const tot = p.gold.length+p.silver.length+p.bronze.length+(p.perfectWeeks||[]).length;
-            const pwCount = (p.perfectWeeks||[]).length;
-            const allYears = [...p.gold,...p.silver,...p.bronze].sort();
-            const sub = allYears.length?allYears.join(', '):(pwCount?'Perfect weeks only':'');
-            dataCols = '<div style="font-size:12px;color:var(--text-soft);text-align:center;">' + (isNameSort?'':i+1) + '</div>'
-              + '<div style="min-width:0;"><div style="font-size:13px;' + nameStyle + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(p.teamName) + champRingEl + unlinked + '</div>'
-              + '<div style="font-size:10px;color:var(--text-soft);margin-top:1px;">' + sub + '</div></div>'
-              + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (p.gold.length?'#B8860B':'var(--text-soft)') + ';">' + (p.gold.length||'—') + '</div>'
-              + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (p.silver.length?'var(--text)':'var(--text-soft)') + ';">' + (p.silver.length||'—') + '</div>'
-              + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (p.bronze.length?'#A05030':'var(--text-soft)') + ';">' + (p.bronze.length||'—') + '</div>'
-              + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (pwCount?'var(--loss)':'var(--text-soft)') + ';">' + (pwCount||'—') + '</div>'
-              + '<div style="font-size:13px;font-weight:800;text-align:center;color:var(--text-accent);">' + (tot||'—') + '</div>';
-          }
-          return '<div style="display:grid;grid-template-columns:26px 1fr 36px 40px 40px 40px 36px;gap:4px;align-items:center;padding:9px 0;border-bottom:0.5px solid var(--hairline);" data-player-id="' + escapeHtml(p.playerId||'') + '">' + dataCols + '</div>';
-        }).join('')}
-      `;
-      el.querySelector('#srt-total').onclick = () => { sort='total'; render(); };
-      el.querySelector('#srt-gold').onclick  = () => { sort='gold';  render(); };
-      el.querySelector('#srt-pw').onclick    = () => { sort='pw';    render(); };
-      el.querySelector('#srt-name').onclick  = () => { sort='name';  render(); };
-      wirePlayerNameTaps(el);
-    }
-    render();
+    const d = await api('getAllTimeLeaderboard', {}, true);
+    lb = d.leaderboard || [];
   } catch(e) {
-    el.innerHTML = `<div class="card"><p class="helptext">Could not load all-time records: ${escapeHtml(e.message)}</p></div>`;
-  }
-}
-
-async function renderCareerStandings(el) {
-  el.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading career data…</p></div>';
-
-  if (!State._careerHistory) {
-    try {
-      const data = await api('getCareerHistory');
-      State._careerHistory = data.history || [];
-    } catch(e) {
-      el.innerHTML = '<div class="empty-state"><p>Could not load career data.</p></div>';
-      return;
-    }
-  }
-
-  const history = State._careerHistory;
-  if (!history.length) {
-    el.innerHTML = '<div class="empty-state"><p>No career history loaded yet.</p></div>';
+    el.innerHTML = '<div class="card"><p class="helptext">Could not load history.</p></div>';
     return;
   }
 
-  const years = [...new Set(history.map(r => r.year))].sort((a, b) => a - b);
-  const selectedYear = State._careerYear || 'all';
+  // Load career history for year-by-year view
+  if (!State._careerHistory) {
+    try {
+      const d = await api('getCareerHistory', {}, true);
+      State._careerHistory = d.history || [];
+    } catch(e) {}
+  }
 
-  // --- compute season podiums (1st/2nd/3rd per year) ---
-  // key: playerId or teamName -> array of finish positions
-  const podiums = {}; // key -> {gold:0, silver:0, bronze:0}
-  years.forEach(yr => {
-    const yrRows = history.filter(r => r.year === yr);
-    const yrSorted = [...yrRows].sort((a, b) => b.points - a.points);
-    yrSorted.forEach((r, idx) => {
-      const key = r.playerId || r.teamName;
-      if (!podiums[key]) podiums[key] = { gold: 0, silver: 0, bronze: 0 };
-      if (idx === 0) podiums[key].gold++;
-      else if (idx === 1) podiums[key].silver++;
-      else if (idx === 2) podiums[key].bronze++;
-    });
-  });
+  let view = State._historyView || 'trophies';
 
-  // --- compute perfect weeks from current season's picks/games ---
-  // A perfect week = player picked all games correctly in a week
-  const perfectWeeks = {}; // playerId -> count
-  const completedWeeks = [...new Set(
-    (State.games || []).filter(g => isGameFinal(g)).map(g => Number(g.week))
-  )];
-  completedWeeks.forEach(wk => {
-    const wkGames = getGamesForWeek(wk).filter(g => isGameFinal(g));
-    if (!wkGames.length) return;
-    (State.players || []).forEach(p => {
-      const myPicks = (State.picks || []).filter(pk => pk.playerId === p.id && Number(pk.week) === wk);
-      const straight = myPicks.filter(pk => !(pk.isUpset === true || pk.isUpset === 'TRUE'));
-      let allCorrect = straight.length === wkGames.length;
-      if (allCorrect) {
-        wkGames.forEach(g => {
-          const result = computeGameResult(g);
-          const pick = straight.find(pk => pk.gameId === g.gameId);
-          if (!pick || result.winner !== pick.pickedTeam) allCorrect = false;
-        });
+  function score(p){ return p.gold.length*4 + p.silver.length*2 + p.bronze.length + (p.perfectWeeks||[]).length; }
+  function total(p){ return p.gold.length + p.silver.length + p.bronze.length + (p.perfectWeeks||[]).length; }
+
+  function sortedLb() {
+    const d = lb.slice();
+    if (view === 'stats')  d.sort((a,b) => (b.totalPts||0)-(a.totalPts||0));
+    else if (view === 'pw') d.sort((a,b) => (b.perfectWeeks||[]).length-(a.perfectWeeks||[]).length || score(b)-score(a));
+    else if (view === 'az') d.sort((a,b) => a.teamName.localeCompare(b.teamName));
+    else d.sort((a,b) => total(b)-total(a) || b.gold.length-a.gold.length || score(b)-score(a));
+    return d;
+  }
+
+  function renderView() {
+    const rows = sortedLb();
+    const isStats = view === 'stats';
+    const isAZ = view === 'az';
+
+    const hdrCols = isStats
+      ? `<div></div><div></div>
+         <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Total</div>
+         <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Avg</div>
+         <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Best</div>
+         <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Pod</div>
+         <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Seas</div>`
+      : `<div></div><div></div>
+         <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥇</div>
+         <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥈</div>
+         <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥉</div>
+         <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">💯</div>
+         <div style="font-size:10px;font-weight:700;color:var(--text-accent);text-align:center;">Tot</div>`;
+
+    const leaderboardHtml = rows.map((p, i) => {
+      const isMe = p.playerId && State.player && p.playerId === State.player.id;
+      const nameStyle = isMe ? 'color:var(--upset-gold);font-weight:700;' : 'color:var(--text);font-weight:600;';
+      const unlinked = !p.linked ? '<span style="font-size:10px;color:var(--text-soft);"> ⚠</span>' : '';
+      const champRingEl = p.gold.length > 0 && p.linked
+        ? '<span style="font-size:9px;font-weight:800;background:linear-gradient(135deg,#C8920A,#FFD700,#C8920A);color:#000;padding:1px 5px;border-radius:20px;margin-left:4px;white-space:nowrap;">' + p.gold.join(', ') + ' 👑</span>'
+        : '';
+      let dataCols;
+      if (isStats) {
+        const tot = p.totalPts||'—', avg = p.avgPts||'—', best = p.bestPts||'—';
+        const pod = p.podiums||'—', seas = p.seasons||'—';
+        const sub = p.seasons ? p.seasons + ' seasons' : '';
+        dataCols = '<div style="font-size:12px;color:var(--text-soft);text-align:center;">' + (isAZ?'':i+1) + '</div>'
+          + '<div style="min-width:0;"><div style="font-size:13px;' + nameStyle + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(p.teamName) + champRingEl + unlinked + '</div>'
+          + '<div style="font-size:10px;color:var(--text-soft);margin-top:1px;">' + sub + '</div></div>'
+          + '<div style="font-size:11px;font-weight:700;text-align:center;color:var(--text);">' + tot + '</div>'
+          + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + avg + '</div>'
+          + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + best + '</div>'
+          + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + pod + '</div>'
+          + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + seas + '</div>';
+      } else {
+        const tot = total(p), pwCount = (p.perfectWeeks||[]).length;
+        const allYears = [...p.gold,...p.silver,...p.bronze].sort();
+        const sub = allYears.length ? allYears.join(', ') : (pwCount ? 'Perfect weeks only' : '');
+        dataCols = '<div style="font-size:12px;color:var(--text-soft);text-align:center;">' + (isAZ?'':i+1) + '</div>'
+          + '<div style="min-width:0;"><div style="font-size:13px;' + nameStyle + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(p.teamName) + champRingEl + unlinked + '</div>'
+          + '<div style="font-size:10px;color:var(--text-soft);margin-top:1px;">' + sub + '</div></div>'
+          + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (p.gold.length?'#B8860B':'var(--text-soft)') + ';">' + (p.gold.length||'—') + '</div>'
+          + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (p.silver.length?'var(--text)':'var(--text-soft)') + ';">' + (p.silver.length||'—') + '</div>'
+          + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (p.bronze.length?'#A05030':'var(--text-soft)') + ';">' + (p.bronze.length||'—') + '</div>'
+          + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (pwCount?'var(--loss)':'var(--text-soft)') + ';">' + (pwCount||'—') + '</div>'
+          + '<div style="font-size:13px;font-weight:800;text-align:center;color:var(--text-accent);">' + (tot||'—') + '</div>';
       }
-      if (allCorrect) {
-        perfectWeeks[p.id] = (perfectWeeks[p.id] || 0) + 1;
-      }
-    });
-  });
+      return '<div style="display:grid;grid-template-columns:26px 1fr 36px 40px 40px 40px 36px;gap:4px;align-items:center;padding:9px 0;border-bottom:0.5px solid var(--hairline);" data-player-id="' + escapeHtml(p.playerId||'') + '">' + dataCols + '</div>';
+    }).join('');
 
-  // --- aggregate career totals ---
-  const totals = {};
-  history.forEach(r => {
-    if (selectedYear !== 'all' && r.year !== selectedYear) return;
-    const key = r.playerId || r.teamName;
-    if (!totals[key]) {
-      totals[key] = {
-        key, name: r.name, teamName: r.teamName,
-        playerId: r.playerId, matched: r.matched,
-        total: 0, seasons: {}, seasonCount: 0
-      };
+    // Year-by-year section
+    let yearByYearHtml = '';
+    if (State._careerHistory && State._careerHistory.length) {
+      const history = State._careerHistory;
+      const years = [...new Set(history.map(r => r.year))].filter(Boolean).sort((a,b) => b - a);
+      const selYear = State._historyYear || years[0];
+
+      const yearBtns = years.map(y =>
+        '<button class="btn btn-sm ' + (y === selYear ? 'btn-primary' : 'btn-ghost') + '" data-year="' + y + '" style="flex-shrink:0;">' + y + '</button>'
+      ).join('');
+
+      const yrRows = history.filter(r => r.year === selYear).sort((a,b) => b.points - a.points);
+      const yrHtml = yrRows.map((r, idx) => {
+        const medal = idx===0?'🥇':idx===1?'🥈':idx===2?'🥉':'';
+        const isMe = r.playerId && State.player && r.playerId === State.player.id;
+        const linked = r.playerId ? '' : ' <span style="font-size:10px;color:var(--text-soft);">(unlinked)</span>';
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:0.5px solid var(--hairline);">'
+          + '<div style="display:flex;align-items:center;gap:8px;">'
+          + '<span style="font-size:16px;width:24px;text-align:center;">' + (medal||'<span style="font-size:12px;color:var(--text-muted);">' + (idx+1) + '</span>') + '</span>'
+          + '<div style="font-size:13px;font-weight:' + (isMe?'700':'500') + ';color:' + (isMe?'var(--upset-gold)':'var(--text)') + ';">' + escapeHtml(r.teamName) + linked + '</div>'
+          + '</div>'
+          + '<div style="font-size:14px;font-weight:700;color:' + (isMe?'var(--upset-gold)':'var(--text)') + ';">' + r.points + '</div>'
+          + '</div>';
+      }).join('');
+
+      yearByYearHtml = '<div class="section-label" style="margin-top:16px;">Year by Year</div>'
+        + '<div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin-bottom:8px;">' + yearBtns + '</div>'
+        + '<div class="card" style="padding:0 12px;">' + yrHtml + '</div>';
     }
-    totals[key].total += r.points;
-    totals[key].seasons[r.year] = r.points;
-    totals[key].seasonCount++;
-  });
 
-  const rows = Object.values(totals).sort((a, b) => b.total - a.total);
+    el.innerHTML = '<div style="font-size:12px;color:var(--text-soft);margin-bottom:8px;">2016 – ' + new Date().getFullYear() + ' · regular season · tap a name to view Trophy Room</div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">'
+      + '<button class="btn btn-sm ' + (view==='trophies'?'btn-primary':'btn-ghost') + '" id="hv-trophies">Trophies</button>'
+      + '<button class="btn btn-sm ' + (view==='stats'?'btn-primary':'btn-ghost') + '" id="hv-stats">Career Stats</button>'
+      + '<button class="btn btn-sm ' + (view==='pw'?'btn-primary':'btn-ghost') + '" id="hv-pw">10/10 Weeks</button>'
+      + '<button class="btn btn-sm ' + (view==='az'?'btn-primary':'btn-ghost') + '" id="hv-az">A – Z</button>'
+      + '</div>'
+      + '<div style="display:grid;grid-template-columns:26px 1fr 36px 40px 40px 40px 36px;gap:4px;padding:4px 0 6px;border-bottom:1px solid var(--hairline);margin-bottom:2px;">' + hdrCols + '</div>'
+      + leaderboardHtml
+      + yearByYearHtml;
 
-  const fmtPts = p => p % 1 === 0 ? String(p) : p.toFixed(1);
-  const podiumBadge = (p) => {
-    if (!p) return '';
-    const parts = [];
-    if (p.gold)   parts.push(`<span style="font-size:11px;" title="${p.gold}x 1st place">🥇×${p.gold}</span>`);
-    if (p.silver) parts.push(`<span style="font-size:11px;" title="${p.silver}x 2nd place">🥈×${p.silver}</span>`);
-    if (p.bronze) parts.push(`<span style="font-size:11px;" title="${p.bronze}x 3rd place">🥉×${p.bronze}</span>`);
-    return parts.length ? `<span style="display:inline-flex; gap:4px; margin-left:4px;">${parts.join('')}</span>` : '';
-  };
+    el.querySelector('#hv-trophies').onclick = () => { view='trophies'; State._historyView='trophies'; renderView(); };
+    el.querySelector('#hv-stats').onclick    = () => { view='stats';    State._historyView='stats';    renderView(); };
+    el.querySelector('#hv-pw').onclick       = () => { view='pw';       State._historyView='pw';       renderView(); };
+    el.querySelector('#hv-az').onclick       = () => { view='az';       State._historyView='az';       renderView(); };
+    el.querySelectorAll('[data-year]').forEach(b => {
+      b.onclick = () => { State._historyYear = Number(b.dataset.year); renderView(); };
+    });
+    wirePlayerNameTaps(el);
+  }
 
-  el.innerHTML = `
-    <div class="card" style="padding:10px 14px;">
-      <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-        <button class="btn btn-sm ${selectedYear === 'all' ? 'btn-primary' : 'btn-ghost'}" data-year="all">All Time</button>
-        ${years.map(y => `<button class="btn btn-sm ${selectedYear === y ? 'btn-primary' : 'btn-ghost'}" data-year="${y}">${y}</button>`).join('')}
-      </div>
-    </div>
-
-    <div class="section-label">${selectedYear === 'all' ? 'All-Time Leaderboard' : selectedYear + ' Season'}</div>
-    <div class="card" style="padding:0; overflow:hidden;">
-      ${rows.length === 0 ? '<div style="padding:16px;" class="helptext">No data for this year.</div>' :
-        rows.map((r, i) => {
-          const isMe = r.playerId === State.player.id;
-          const avg = r.seasonCount > 0 ? (r.total / r.seasonCount) : 0;
-          const pod = podiums[r.key];
-          const perfCount = perfectWeeks[r.playerId] || 0;
-
-          // sparkline dots (all-time view only)
-          const spark = years.map(y => {
-            const p = r.seasons[y] || 0;
-            const color = p >= 120 ? 'var(--win)' : p >= 80 ? 'var(--gold)' : p > 0 ? 'var(--text-faint)' : 'rgba(255,255,255,0.08)';
-            const border = p === 0 ? '1px solid rgba(255,255,255,0.1)' : 'none';
-            return `<span title="${y}: ${p ? fmtPts(p) : '—'}" style="display:inline-block; width:7px; height:7px; border-radius:50%; background:${color}; border:${border}; margin:0 1px;"></span>`;
-          }).join('');
-
-          const rankColor = i === 0 ? 'var(--gold)' : i === 1 ? '#C0C0C0' : i === 2 ? '#cd7f32' : 'var(--text-faint)';
-          const rankLabel = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}`;
-
-          return `
-            <div style="padding:12px 14px; border-bottom:1px solid var(--hairline); ${isMe ? 'background:rgba(255,186,0,0.06);' : ''}">
-              <div style="display:flex; align-items:center; gap:10px;">
-                <div style="width:28px; text-align:center; font-size:${i < 3 ? '18px' : '13px'}; font-weight:700; color:${rankColor}; flex-shrink:0;">${rankLabel}</div>
-                <div style="flex:1; min-width:0;">
-                  <div style="font-size:13px; font-weight:700; color:${isMe ? 'var(--gold)' : 'var(--text)'}; display:flex; align-items:center; flex-wrap:wrap; gap:4px;">
-                    <span style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" data-player-id="${r.playerId || ''}" style="cursor:pointer;">${escapeHtml(r.teamName)}${isMe ? ' ★' : ''}</span>
-                    ${selectedYear === 'all' ? podiumBadge(pod) : ''}
-                    ${perfCount > 0 ? `<span style="font-size:11px;" title="${perfCount} perfect week${perfCount > 1 ? 's' : ''} this season">💯×${perfCount}</span>` : ''}
-                    ${!r.matched ? '<span style="color:var(--text-faint); font-size:10px; font-style:italic;">(unlinked)</span>' : ''}
-                  </div>
-                  <div class="helptext" style="margin-top:2px;">${escapeHtml(r.name)}</div>
-                  ${selectedYear === 'all' ? `
-                    <div style="display:flex; align-items:center; gap:8px; margin-top:5px;">
-                      <span class="helptext">Avg: <strong style="color:var(--text);">${fmtPts(avg)}</strong>/season</span>
-                      <span class="helptext">${r.seasonCount} season${r.seasonCount !== 1 ? 's' : ''}</span>
-                    </div>
-                    <div style="margin-top:5px;">${spark}</div>
-                  ` : `
-                    <div class="helptext" style="margin-top:2px;">${selectedYear} season</div>
-                  `}
-                </div>
-                <div style="text-align:right; flex-shrink:0;">
-                  <div class="mono" style="font-size:18px; font-weight:700; color:${isMe ? 'var(--gold)' : i === 0 ? 'var(--gold)' : 'var(--text)'};">${fmtPts(r.total)}</div>
-                  ${selectedYear === 'all' ? `<div class="helptext" style="font-size:10px;">pts total</div>` : ''}
-                </div>
-              </div>
-            </div>
-          `;
-        }).join('')}
-    </div>
-
-    ${!history.every(r => r.matched) ? '<p class="helptext" style="text-align:center; margin-top:8px; font-style:italic;">Some historical names aren\'t linked to current players yet.</p>' : ''}
-  `;
-
-  wirePlayerNameTaps(el);
-  el.querySelectorAll('[data-year]').forEach(btn => {
-    btn.onclick = () => {
-      State._careerYear = btn.dataset.year === 'all' ? 'all' : Number(btn.dataset.year);
-      renderCareerStandings(el);
-    };
-  });
+  renderView();
 }
 
 /* ============================================================
@@ -2399,7 +2269,7 @@ async function renderProfile(content) {
   const referMsg = `🏈 Hey! You should join our Upset Special fantasy college football league. $${entryFee} entry, weekly cash prizes, and a Bowl Bonanza postseason contest. Sign up here: https://acebuilds51.github.io/UpsetSpecial`;
 
   const avatarInner = p.avatar
-    ? `<img src="${p.avatar}" style="width:52px; height:52px; border-radius:50%; object-fit:cover;" alt="avatar">`
+    ? `<img src="${p.avatar}" style="width:100%; height:100%; border-radius:50%; object-fit:cover; display:block;" alt="avatar">`
     : `<div style="width:52px; height:52px; border-radius:50%; background:var(--upset-grad); display:flex; align-items:center; justify-content:center; font-family:var(--font-display); font-size:22px; font-weight:700; color:#1A1206;">${escapeHtml((p.teamName || p.name || '?')[0].toUpperCase())}</div>`;
   const avatarHtml = championRing(avatarInner, p.id, 52);
 
@@ -3374,7 +3244,7 @@ function renderTrophyRoomContent(el, data) {
   }
 
   const avatarInnerTR = p.avatar
-    ? `<img src="${p.avatar}" style="width:54px;height:54px;border-radius:50%;object-fit:cover;display:block;flex-shrink:0;" onclick="showLightbox('${p.avatar}')">`
+    ? `<img src="${p.avatar}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;" onclick="showLightbox('${p.avatar}')">`
     : `<div style="width:54px;height:54px;border-radius:50%;background:var(--upset-grad);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:22px;color:#1A1206;">${escapeHtml((p.teamName||'?')[0].toUpperCase())}</div>`;
   // Use server-computed champYears — avoids race condition with _careerHistory background load
   const avatarHtml = (function(){
@@ -3972,7 +3842,7 @@ function renderChatMessages() {
     const time = new Date(m.postedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     const player = State.players.find(pl => pl.id === m.playerId);
     const avatarInnerChat = player && player.avatar
-      ? `<img src="${player.avatar}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;">`
+      ? `<img src="${player.avatar}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;">`
       : `<div style="width:32px;height:32px;border-radius:50%;background:${isMe ? 'var(--upset-grad)' : 'var(--surface-2)'};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:${isMe ? '#1A1206' : 'var(--text)'};">${escapeHtml((m.teamName || '?')[0].toUpperCase())}</div>`;
     const avatar = player ? championRing(avatarInnerChat, player.id, 32) : avatarInnerChat;
 
