@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v11.0';
-const BUILD_TIME = '2026-08-12T20:16:56Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v11.1';
+const BUILD_TIME = '2026-08-12T20:29:06Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbzx_ec1gOEL-9IDwOhzV5UZkkR3ZvSKL_aVOCmYo9A5QM4yyCC2GFpCaPhGC9P9Mgip/exec'
@@ -2721,6 +2721,13 @@ async function renderProfile(content) {
       <button class="btn btn-secondary btn-block" id="claim-browse-btn" style="margin-top:8px;">Browse Claimable Team Names</button>
     </div>
 
+    <div class="section-label">Help &amp; Support</div>
+    <div class="card">
+      <p class="helptext" style="margin-bottom:12px;">Questions about how the app works? We've got you covered.</p>
+      <a href="https://acebuilds51.github.io/UpsetSpecial/help.html" target="_blank" class="btn btn-secondary btn-block" style="display:block;text-align:center;margin-bottom:8px;text-decoration:none;">📖 Player Guide &amp; FAQ</a>
+      <button class="btn btn-ghost btn-block" id="help-ai-btn">✨ Ask the AI a question</button>
+    </div>
+
     <div class="section-label">Account</div>
     <div class="card">
       <button class="btn btn-danger btn-block" id="profile-logout-btn">Log Out</button>
@@ -2904,6 +2911,8 @@ async function renderProfile(content) {
   }
 
   document.getElementById('view-my-trophy-btn').onclick = () => openTrophyRoom(p.id);
+
+  document.getElementById('help-ai-btn').onclick = () => showHelpAI();
 
   document.getElementById('profile-logout-btn').onclick = () => {
     if (confirm('Log out of your account?')) logout();
@@ -3968,6 +3977,104 @@ function initTrophyCanvases(el) {
     }
     loop();
   }
+}
+
+// ── In-app AI Help ────────────────────────────────────────────────────────────
+let _helpAiHistory = [];
+
+function showHelpAI() {
+  let modal = document.getElementById('help-ai-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'help-ai-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:flex-end;justify-content:center;';
+    modal.innerHTML = `
+      <div style="background:var(--surface-1);border-radius:20px 20px 0 0;width:100%;max-width:480px;padding:20px 16px 32px;max-height:75vh;display:flex;flex-direction:column;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;">
+          <div>
+            <div style="font-size:17px;font-weight:800;color:var(--upset-gold);">✨ Ask About the App</div>
+            <div style="font-size:12px;color:var(--text-soft);margin-top:2px;">I know the rules, scoring, and features</div>
+          </div>
+          <button id="help-ai-close" style="background:var(--surface-2);border:none;border-radius:50%;width:30px;height:30px;font-size:16px;cursor:pointer;color:var(--text);">✕</button>
+        </div>
+        <div id="help-ai-messages" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;min-height:80px;margin-bottom:10px;">
+          <div class="hai-msg assistant">Hi! Ask me anything about Upset Special — scoring, picks, trophies, how to use the app. 🏈</div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <input id="help-ai-input" type="text" placeholder="Type your question…" maxlength="300"
+            style="flex:1;padding:10px 14px;border-radius:20px;border:1px solid var(--hairline);background:var(--surface-2);color:var(--text);font-size:14px;outline:none;">
+          <button id="help-ai-send" style="background:var(--upset-gold);color:#000;border:none;border-radius:20px;padding:10px 16px;font-weight:800;font-size:14px;cursor:pointer;flex-shrink:0;">Send</button>
+        </div>
+        <div style="text-align:center;margin-top:8px;">
+          <a href="https://acebuilds51.github.io/UpsetSpecial/help.html" target="_blank" style="font-size:12px;color:var(--text-soft);text-decoration:none;">📖 View full Player Guide</a>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+
+    const closeBtn = document.getElementById('help-ai-close');
+    closeBtn.onclick = () => modal.remove();
+    modal.onclick = e => { if (e.target === modal) modal.remove(); };
+
+    const input = document.getElementById('help-ai-input');
+    const sendBtn = document.getElementById('help-ai-send');
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') sendHelpAI(); });
+    sendBtn.onclick = sendHelpAI;
+  } else {
+    modal.style.display = 'flex';
+  }
+  setTimeout(() => document.getElementById('help-ai-input')?.focus(), 100);
+}
+
+function addHelpMsg(role, text, isThinking) {
+  const msgs = document.getElementById('help-ai-messages');
+  if (!msgs) return null;
+  const div = document.createElement('div');
+  div.className = 'hai-msg ' + role;
+  div.style.cssText = `padding:10px 12px;border-radius:12px;font-size:14px;line-height:1.6;max-width:88%;` +
+    (role === 'user'
+      ? 'background:var(--upset-gold);color:#000;font-weight:600;align-self:flex-end;border-radius:12px 12px 2px 12px;'
+      : 'background:var(--surface-2);color:var(--text);align-self:flex-start;border-radius:12px 12px 12px 2px;' + (isThinking ? 'font-style:italic;color:var(--text-soft);' : ''));
+  div.textContent = text;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+
+async function sendHelpAI() {
+  const input = document.getElementById('help-ai-input');
+  const sendBtn = document.getElementById('help-ai-send');
+  const q = (input?.value || '').trim();
+  if (!q) return;
+  input.value = '';
+  addHelpMsg('user', q);
+  _helpAiHistory.push({ role: 'user', content: q });
+  const thinking = addHelpMsg('assistant', '…', true);
+  if (sendBtn) sendBtn.disabled = true;
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 500,
+        system: `You are the Upset Special League help assistant inside the app. Answer concisely (2-4 sentences max).
+
+Key facts: weekly college football pick'em since 2016, 43 players, $100 entry. Each week pick one Upset Special (underdog to win outright — you earn the point spread as bonus pts if correct). All other picks are 1 pt each against the spread. Perfect Week = 10/10 correct = bullseye trophy. Trophy Room shows 3D spinning trophies. App is a PWA installed from Safari (iOS) or Chrome (Android). Commissioner is Jeff Wilkerson. App built by Tony Edmonds. Standings → 🏆 History for all-time records. Profile → Claim Previous Team Names to link historical stats.`,
+        messages: _helpAiHistory
+      })
+    });
+    const data = await resp.json();
+    const answer = data.content?.[0]?.text || 'Sorry, try again in a moment.';
+    thinking?.remove();
+    addHelpMsg('assistant', answer);
+    _helpAiHistory.push({ role: 'assistant', content: answer });
+    if (_helpAiHistory.length > 16) _helpAiHistory = _helpAiHistory.slice(-16);
+  } catch(e) {
+    thinking?.remove();
+    addHelpMsg('assistant', 'Having trouble connecting — check the Player Guide link below or contact Jeff.');
+  }
+  if (sendBtn) sendBtn.disabled = false;
+  document.getElementById('help-ai-input')?.focus();
 }
 
 // Show a lightbox for avatar/photo expand

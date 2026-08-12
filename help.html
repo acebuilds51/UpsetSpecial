@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Upset Special — Player Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --void:        #161B27;
+    --surface:     #1E2433;
+    --surface2:    #262E40;
+    --surface3:    #2F384C;
+    --hairline:    #3A4459;
+    --text:        #E8EAED;
+    --text-soft:   #8C97AC;
+    --text-faint:  #6E7892;
+    --upset-grad:  linear-gradient(135deg, #F2B632 0%, #FF8A3D 55%, #FF4D5E 100%);
+    --upset-gold:  #D4AF37;
+    --font-display: 'Oswald', 'Arial Narrow', sans-serif;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--void); color: var(--text); line-height: 1.6; }
+
+  /* Header — matches app topbar exactly */
+  .topbar {
+    background: rgba(16,21,31,0.92);
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border-bottom: 1px solid var(--hairline);
+    padding: 18px 20px 16px;
+    position: sticky; top: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .topbar .brand { display: flex; flex-direction: column; gap: 2px; }
+  .topbar-emblem { display: inline-flex; vertical-align: middle; margin-right: 8px; width: 32px; height: 32px; flex-shrink: 0; }
+  .topbar-emblem img { width: 32px; height: 32px; border-radius: 6px; display: block; }
+  .topbar .brand-name {
+    font-family: var(--font-display);
+    font-size: 19px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--text);
+  }
+  .topbar .brand-name .accent {
+    background: var(--upset-grad);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .topbar .brand-sub { font-size: 11px; color: var(--text-faint); letter-spacing: 0.06em; text-transform: uppercase; margin-top: 1px; }
+  .topbar .open-app { font-size: 12px; color: var(--text-soft); text-decoration: none; background: var(--surface2); border: 1px solid var(--hairline); padding: 6px 12px; border-radius: 20px; white-space: nowrap; }
+  .topbar .open-app:hover { color: var(--text); border-color: var(--upset-gold); }
+
+  /* Search */
+  .search-wrap { padding: 16px; max-width: 680px; margin: 0 auto; }
+  .search-input { width: 100%; padding: 12px 16px; border-radius: 24px; border: 1px solid var(--hairline); background: var(--surface2); color: var(--text); font-size: 15px; outline: none; }
+  .search-input:focus { border-color: var(--upset-gold); }
+  .search-input::placeholder { color: var(--text-soft); }
+
+  /* Nav pills */
+  .nav { display: flex; gap: 8px; overflow-x: auto; padding: 0 16px 12px; max-width: 680px; margin: 0 auto; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav-pill { flex-shrink: 0; padding: 6px 14px; border-radius: 20px; border: 1px solid var(--hairline); background: transparent; color: var(--text-soft); font-size: 13px; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
+  .nav-pill.active, .nav-pill:hover { background: var(--upset-grad); color: #1A1206; border-color: transparent; font-weight: 700; }
+
+  /* Content */
+  .content { max-width: 680px; margin: 0 auto; padding: 0 16px 80px; }
+
+  /* Section */
+  .section { margin-bottom: 24px; }
+  .section-title { font-size: 13px; font-weight: 700; color: var(--upset-gold); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 10px; padding-left: 4px; font-family: var(--font-display); }
+
+  /* Accordion */
+  .faq { border: 1px solid var(--hairline); border-radius: var(--radius); overflow: hidden; margin-bottom: 8px; }
+  .faq-q { width: 100%; text-align: left; padding: 14px 16px; background: var(--surface); color: var(--text); font-size: 14px; font-weight: 600; border: none; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .faq-q:hover { background: var(--surface2); }
+  .faq-icon { flex-shrink: 0; font-size: 16px; transition: transform 0.2s; color: var(--upset-gold); }
+  .faq.open .faq-icon { transform: rotate(45deg); }
+  .faq-a { display: none; padding: 14px 16px; font-size: 14px; color: var(--text-soft); line-height: 1.7; background: var(--void); border-top: 1px solid var(--hairline); }
+  .faq.open .faq-a { display: block; }
+  .faq-a strong { color: var(--text); }
+  .faq-a ul { padding-left: 18px; margin: 8px 0; }
+  .faq-a li { margin-bottom: 4px; }
+  .faq-a .tip { background: rgba(212,175,55,0.1); border-left: 3px solid var(--upset-gold); padding: 10px 12px; border-radius: 4px; margin-top: 10px; font-size: 13px; color: var(--text); }
+
+  /* No results */
+  .no-results { text-align: center; padding: 40px 20px; color: var(--text-soft); display: none; }
+
+  /* Ask AI */
+  .ask-ai-float { position: fixed; bottom: 20px; right: 16px; z-index: 200; }
+  .ask-ai-btn { background: var(--upset-grad); color: #1A1206; border: none; border-radius: 28px; padding: 12px 20px; font-size: 14px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 20px rgba(242,182,50,0.35); display: flex; align-items: center; gap: 8px; }
+  .ask-ai-btn:hover { transform: scale(1.04); }
+
+  /* Ask AI modal */
+  .ai-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 300; display: none; align-items: flex-end; justify-content: center; }
+  .ai-modal.open { display: flex; }
+  .ai-panel { background: var(--surface); border-radius: 20px 20px 0 0; width: 100%; max-width: 480px; padding: 20px 16px 32px; max-height: 80vh; display: flex; flex-direction: column; }
+  .ai-panel h3 { font-size: 16px; font-weight: 800; color: var(--upset-gold); margin-bottom: 4px; font-family: var(--font-display); letter-spacing: 0.04em; }
+  .ai-panel p { font-size: 13px; color: var(--text-soft); margin-bottom: 14px; }
+  .ai-messages { flex: 1; overflow-y: auto; margin-bottom: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 80px; }
+  .ai-msg { padding: 10px 12px; border-radius: 12px; font-size: 14px; line-height: 1.6; max-width: 90%; }
+  .ai-msg.user { background: var(--upset-grad); color: #1A1206; font-weight: 600; align-self: flex-end; border-radius: 12px 12px 2px 12px; }
+  .ai-msg.assistant { background: var(--surface2); color: var(--text); align-self: flex-start; border-radius: 12px 12px 12px 2px; }
+  .ai-msg.thinking { color: var(--text-soft); font-style: italic; }
+  .ai-input-row { display: flex; gap: 8px; }
+  .ai-input { flex: 1; padding: 10px 14px; border-radius: 20px; border: 1px solid var(--hairline); background: var(--void); color: var(--text); font-size: 14px; outline: none; }
+  .ai-input:focus { border-color: var(--upset-gold); }
+  .ai-send { background: var(--upset-grad); color: #1A1206; border: none; border-radius: 20px; padding: 10px 16px; font-weight: 700; font-size: 14px; cursor: pointer; flex-shrink: 0; }
+  .ai-close { float: right; background: none; border: none; color: var(--text-soft); font-size: 20px; cursor: pointer; }
+
+  /* Highlight */
+  mark { background: rgba(242,182,50,0.2); color: var(--text); border-radius: 2px; }
+
+  @media (min-width: 600px) {
+    .topbar .brand-name { font-size: 22px; }
+    .faq-q { font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <div class="brand-name">
+      <span class="topbar-emblem"><img src="data:image/png;base64,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" alt="Upset Alert"></span>UPSET <span class="accent">SPECIAL</span>
+    </div>
+    <div class="brand-sub">Player Guide &amp; FAQ</div>
+  </div>
+  <a href="https://acebuilds51.github.io/UpsetSpecial" class="open-app">Open App →</a>
+</div>
+
+<div class="search-wrap">
+  <input class="search-input" id="search" type="text" placeholder="🔍  Search questions…">
+</div>
+
+<div class="nav" id="nav">
+  <button class="nav-pill active" data-cat="all">All</button>
+  <button class="nav-pill" data-cat="getting-started">Getting Started</button>
+  <button class="nav-pill" data-cat="picks">Making Picks</button>
+  <button class="nav-pill" data-cat="scoring">Scoring</button>
+  <button class="nav-pill" data-cat="trophies">Trophies &amp; History</button>
+  <button class="nav-pill" data-cat="account">Account</button>
+  <button class="nav-pill" data-cat="technical">Technical</button>
+</div>
+
+<div class="content">
+  <div class="no-results" id="no-results">No results for "<span id="search-term"></span>" — try different keywords or <button onclick="openAI()" style="background:none;border:none;color:var(--upset-gold);font-size:14px;cursor:pointer;text-decoration:underline;">ask the AI</button>.</div>
+
+  <!-- GETTING STARTED -->
+  <div class="section" data-cat="getting-started">
+    <div class="section-title">Getting Started</div>
+
+    <div class="faq">
+      <button class="faq-q">What is Upset Special? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Upset Special is a weekly college football pick'em league. Each week the commissioner posts a board of games with point spreads. You pick one team per game to win outright (the "upset special pick") and select straight winners for the rest. The player with the most points at the end of the regular season wins.<div class="tip">💡 The season runs alongside the college football regular season, typically Weeks 1–12/13.</div></div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">How do I install the app on my phone? <span class="faq-icon">+</span></button>
+      <div class="faq-a">
+        The app works as a <strong>Progressive Web App (PWA)</strong> — no app store needed.<br><br>
+        <strong>iPhone / iPad (Safari):</strong>
+        <ul>
+          <li>Open the app in Safari (not Chrome)</li>
+          <li>Tap the <strong>Share</strong> button ⬆ at the bottom</li>
+          <li>Scroll down and tap <strong>"Add to Home Screen"</strong></li>
+          <li>Tap <strong>Add</strong></li>
+        </ul>
+        <strong>Android (Chrome):</strong>
+        <ul>
+          <li>Open the app in Chrome</li>
+          <li>Tap the <strong>⋮</strong> menu in the top-right</li>
+          <li>Tap <strong>"Add to Home Screen"</strong> or look for an install banner at the bottom</li>
+          <li>Tap <strong>Add</strong></li>
+        </ul>
+        <div class="tip">💡 Once installed, the app opens full-screen like a native app and push notifications work automatically.</div>
+      </div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">How do I log in? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Enter your <strong>team name</strong> and <strong>PIN</strong> on the login screen. Your commissioner (Jeff) sets up your account and gives you your initial credentials. If you've forgotten your PIN, contact Jeff to reset it.<div class="tip">💡 Change your PIN right away via Profile → Change PIN. Use at least 4 digits.</div></div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">What should I do first after logging in? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Check the <strong>Getting Started</strong> checklist in your Profile tab. It walks you through:
+        <ul>
+          <li>Installing the app to your home screen</li>
+          <li>Changing your PIN</li>
+          <li>Uploading your avatar</li>
+          <li>Filling out your Trophy Room bio</li>
+          <li>Claiming any previous team names you've played under</li>
+          <li>Enabling push notifications</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAKING PICKS -->
+  <div class="section" data-cat="picks">
+    <div class="section-title">Making Picks</div>
+
+    <div class="faq">
+      <button class="faq-q">When can I make my picks? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Picks open when the commissioner posts the weekly board, typically early in the week. The board shows all available games with point spreads. You can change your picks any time until the <strong>pick deadline</strong>, which is usually Thursday night or Friday morning before the first game kicks off.</div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">What is the Upset Special pick? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Each week you designate one game as your <strong>Upset Special</strong>. For this game, instead of picking against the spread, you're picking the underdog to <strong>win outright</strong>. If the underdog wins, you earn bonus points equal to the point spread (so a +14 underdog winning earns you 14 extra points). If the underdog loses, you get nothing for that game.<div class="tip">💡 Choose wisely — a successful Upset Special can be the difference between first and second place.</div></div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">What happens if I miss the deadline? <span class="faq-icon">+</span></button>
+      <div class="faq-a">The commissioner may apply <strong>no-pick defaults</strong> — typically giving you the favorite for games you missed. Check with Jeff about your league's specific no-pick policy. Enable push notifications so you never miss a deadline reminder.</div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">Can I change my picks after submitting? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Yes — you can change your picks as many times as you want until the pick deadline. Once the deadline passes (or games kick off), picks are locked.</div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">How do I know if my picks were saved? <span class="faq-icon">+</span></button>
+      <div class="faq-a">After tapping <strong>Submit Picks</strong>, you'll see a green confirmation toast and your picks will appear in the "This Week" view. You can tap "This Week" in the bottom nav any time to review your current picks.</div>
+    </div>
+  </div>
+
+  <!-- SCORING -->
+  <div class="section" data-cat="scoring">
+    <div class="section-title">Scoring</div>
+
+    <div class="faq">
+      <button class="faq-q">How is scoring calculated? <span class="faq-icon">+</span></button>
+      <div class="faq-a">
+        <strong>Regular picks:</strong> 1 point for each correct pick against the spread.<br><br>
+        <strong>Upset Special pick:</strong> If your underdog wins outright, you earn the point spread as bonus points (e.g., +21.5 spread = 21.5 bonus points). If they lose, 0 points for that game.<br><br>
+        <strong>Perfect Week:</strong> If you go 10/10 on all picks in a week, it's recorded in your Trophy Room as a career achievement.
+        <div class="tip">💡 The Upset Special pick is the highest-variance move in the game — most championships are won by players who hit a big upset.</div>
+      </div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">What counts as a win against the spread? <span class="faq-icon">+</span></button>
+      <div class="faq-a">For straight picks, you need the team you picked to cover the spread. If you pick a team listed at -7.5, they need to win by 8 or more. If you pick the underdog at +7.5, they need to lose by 7 or fewer — or win outright — for you to earn the point.</div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">Where can I see the current standings? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Tap <strong>Standings</strong> in the bottom navigation. You'll see the current season standings, week-by-week history, and your personal pick history. The <strong>🏆 History</strong> tab shows all-time records across all seasons.</div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">What is a Perfect Week? <span class="faq-icon">+</span></button>
+      <div class="faq-a">A Perfect Week means you went <strong>10 for 10</strong> — every single pick in that week was correct. It's one of the rarest achievements in the league. Perfect Weeks are recorded in your Trophy Room with a spinning bullseye trophy, and appear on the All-Time leaderboard.</div>
+    </div>
+  </div>
+
+  <!-- TROPHIES -->
+  <div class="section" data-cat="trophies">
+    <div class="section-title">Trophies &amp; History</div>
+
+    <div class="faq">
+      <button class="faq-q">How do I view my Trophy Room? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Go to <strong>Profile → View My Trophy Room</strong>, or tap your name anywhere in the standings. Your Trophy Room shows your 3D spinning trophies for regular season finishes, Bowl Bonanza trophies, Perfect Week bullseyes, career stats, and your AI-generated bio.</div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">What do the different trophies mean? <span class="faq-icon">+</span></button>
+      <div class="faq-a">
+        <strong>🥇 Gold CFP Trophy</strong> — Regular season champion (1st place)<br>
+        <strong>🥈 Silver CFP Trophy</strong> — Runner-up (2nd place)<br>
+        <strong>🥉 Bronze CFP Trophy</strong> — 3rd place<br>
+        <strong>Bowl Shield (Gold/Silver/Bronze)</strong> — Bowl Bonanza finishes<br>
+        <strong>Bullseye</strong> — Perfect Week (10/10 correct picks)<br><br>
+        Champions also get a spinning gold ring around their avatar with their championship year(s).
+      </div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">I played under a different team name in previous seasons — how do I link my history? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Go to <strong>Profile → Claim Previous Team Names</strong>. Tap <strong>Browse Claimable Team Names</strong> to see all unlinked historical names. Find yours, enter a reason, and submit. The commissioner (Jeff) reviews and approves claims — once approved, your full history, trophies, and career stats merge automatically.</div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">How do I set up my Trophy Room bio? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Go to <strong>Profile → Trophy Room Bio</strong>. Fill in as many fields as you like (hometown, college, favorite team, etc.), then tap <strong>Generate Bio with AI</strong>. Claude will write a personalized player profile that other members see when they tap your name. You can also upload a personal photo that appears next to your bio.</div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">Where can I see all-time records and career stats? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Go to <strong>Standings → 🏆 History</strong>. You can view:
+        <ul>
+          <li><strong>Trophies</strong> — Gold/silver/bronze/perfect week counts, sorted by total trophies</li>
+          <li><strong>Career Stats</strong> — Total career points, average per season, best season, podium finishes</li>
+          <li><strong>10/10 Weeks</strong> — Perfect week leaderboard</li>
+          <li><strong>Year by Year</strong> — Full standings for any season 2016–present</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ACCOUNT -->
+  <div class="section" data-cat="account">
+    <div class="section-title">Account &amp; Profile</div>
+
+    <div class="faq">
+      <button class="faq-q">How do I change my PIN? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Go to <strong>Profile → Change PIN</strong>. Enter your current PIN, then your new PIN twice to confirm. Your PIN must be at least 4 digits. If you've forgotten your current PIN, contact the commissioner to have it reset.</div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">How do I upload or change my avatar? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Go to <strong>Profile</strong> and tap your avatar image (or the placeholder circle). Your camera roll will open — select a photo and it will be compressed and saved automatically. Your avatar appears next to your name in the standings, chat, and Trophy Room.</div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">How do I enable push notifications? <span class="faq-icon">+</span></button>
+      <div class="faq-a">The app must be installed on your home screen first. Then go to <strong>Profile → Notifications</strong> and tap <strong>Enable Push Notifications</strong>. Your browser will ask for permission — tap Allow. You'll get alerts when the weekly board is posted, when results are finalized, and for other league updates.<div class="tip">💡 Notifications only work when the app is installed as a PWA (added to home screen).</div></div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">Can I change my team name? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Team name changes are managed by the commissioner. Contact Jeff if you want to change your current team name. Note that your historical records are linked to your previous names — use the Name Claims feature to keep your history connected.</div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">How do I pay my entry fee? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Go to <strong>Profile → Payment</strong> to find the commissioner's Venmo and PayPal handles. Mark your payment as sent in the app after paying — the commissioner will confirm receipt and mark your account as paid.</div>
+    </div>
+  </div>
+
+  <!-- TECHNICAL -->
+  <div class="section" data-cat="technical">
+    <div class="section-title">Technical &amp; Troubleshooting</div>
+
+    <div class="faq">
+      <button class="faq-q">The app is loading slowly — what can I do? <span class="faq-icon">+</span></button>
+      <div class="faq-a">The app fetches live data from Google's servers, which can take 10–15 seconds on first load. Try:
+        <ul>
+          <li>Wait 15 seconds — a loading screen shows while data fetches</li>
+          <li>Check your internet connection</li>
+          <li>Force-close and reopen the app</li>
+          <li>Clear browser cache if using a browser (not the installed app)</li>
+        </ul>
+        <div class="tip">💡 The installed PWA version is faster than the browser version.</div>
+      </div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">I see an error message — what should I do? <span class="faq-icon">+</span></button>
+      <div class="faq-a">Most errors are temporary (server hiccups). Try:
+        <ul>
+          <li>Wait 30 seconds and try again</li>
+          <li>Close and reopen the app</li>
+          <li>Check if your picks are saved before closing</li>
+        </ul>
+        If the error persists, contact Tony (the app builder) or Jeff with a screenshot.
+      </div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">I'm not receiving push notifications <span class="faq-icon">+</span></button>
+      <div class="faq-a">Check these things in order:
+        <ul>
+          <li>The app is installed on your home screen (PWA) — not just a browser bookmark</li>
+          <li>Your phone's notification settings allow the app (check Settings → Notifications)</li>
+          <li>You enabled notifications in the app (Profile → Notifications)</li>
+          <li>Your device is not in Do Not Disturb mode</li>
+        </ul>
+        If still not working, try disabling and re-enabling notifications in the app.
+      </div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">My picks aren't showing up after I submitted them <span class="faq-icon">+</span></button>
+      <div class="faq-a">After tapping Submit, you should see a green confirmation. If you don't see it:
+        <ul>
+          <li>Check your internet connection and try submitting again</li>
+          <li>Tap "This Week" to verify your picks appear</li>
+          <li>If the deadline has passed, your picks may be locked — contact Jeff</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="faq">
+      <button class="faq-q">The app updated but I'm still seeing the old version <span class="faq-icon">+</span></button>
+      <div class="faq-a">The app will show an update banner at the top when a new version is available. Tap it to reload. If you don't see the banner, try force-closing and reopening. On iOS, fully swipe the app away and reopen.</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Ask AI Button -->
+<div class="ask-ai-float">
+  <button class="ask-ai-btn" onclick="openAI()">
+    <span style="font-size:18px;">✨</span> Ask a question
+  </button>
+</div>
+
+<!-- AI Modal -->
+<div class="ai-modal" id="ai-modal">
+  <div class="ai-panel">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;">
+      <div>
+        <h3>Ask About the App</h3>
+        <p>I know the rules, scoring, and how everything works.</p>
+      </div>
+      <button class="ai-close" onclick="closeAI()">✕</button>
+    </div>
+    <div class="ai-messages" id="ai-messages">
+      <div class="ai-msg assistant">Hi! I'm here to help you with Upset Special. Ask me anything about how the app works, scoring rules, your trophies, or anything else. 🏈</div>
+    </div>
+    <div class="ai-input-row">
+      <input class="ai-input" id="ai-input" type="text" placeholder="Type your question…" maxlength="300">
+      <button class="ai-send" id="ai-send" onclick="sendAI()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── FAQ Accordion ─────────────────────────────────────────────────────────────
+document.querySelectorAll('.faq-q').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    var faq = btn.parentElement;
+    var wasOpen = faq.classList.contains('open');
+    document.querySelectorAll('.faq.open').forEach(function(f) { f.classList.remove('open'); });
+    if (!wasOpen) faq.classList.add('open');
+  });
+});
+
+// ── Category Filter ────────────────────────────────────────────────────────────
+var activeCat = 'all';
+document.querySelectorAll('.nav-pill').forEach(function(pill) {
+  pill.addEventListener('click', function() {
+    document.querySelectorAll('.nav-pill').forEach(function(p) { p.classList.remove('active'); });
+    pill.classList.add('active');
+    activeCat = pill.dataset.cat;
+    applyFilter();
+  });
+});
+
+// ── Search ─────────────────────────────────────────────────────────────────────
+var searchInput = document.getElementById('search');
+searchInput.addEventListener('input', applyFilter);
+
+function applyFilter() {
+  var query = searchInput.value.toLowerCase().trim();
+  var sections = document.querySelectorAll('.section');
+  var totalVisible = 0;
+
+  sections.forEach(function(section) {
+    var cat = section.dataset.cat;
+    var catMatch = activeCat === 'all' || cat === activeCat;
+    if (!catMatch) { section.style.display = 'none'; return; }
+
+    var faqs = section.querySelectorAll('.faq');
+    var sectionVisible = 0;
+
+    faqs.forEach(function(faq) {
+      var qText = faq.querySelector('.faq-q').textContent;
+      var aText = faq.querySelector('.faq-a').textContent;
+      var combined = (qText + ' ' + aText).toLowerCase();
+
+      if (!query || combined.includes(query)) {
+        faq.style.display = '';
+        sectionVisible++;
+        // Highlight matches
+        if (query) {
+          highlightText(faq, query);
+        } else {
+          removeHighlight(faq);
+        }
+      } else {
+        faq.style.display = 'none';
+        removeHighlight(faq);
+      }
+    });
+
+    section.style.display = sectionVisible > 0 ? '' : 'none';
+    if (sectionVisible > 0 && query) {
+      // Auto-open faqs that match in the answer
+      faqs.forEach(function(faq) {
+        if (faq.style.display !== 'none') {
+          var aText = faq.querySelector('.faq-a').textContent.toLowerCase();
+          if (aText.includes(query)) faq.classList.add('open');
+        }
+      });
+    }
+    totalVisible += sectionVisible;
+  });
+
+  var noResults = document.getElementById('no-results');
+  document.getElementById('search-term').textContent = searchInput.value;
+  noResults.style.display = totalVisible === 0 && query ? 'block' : 'none';
+}
+
+function highlightText(el, query) {
+  removeHighlight(el);
+  var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null, false);
+  var nodes = [];
+  while (walker.nextNode()) { nodes.push(walker.currentNode); }
+  nodes.forEach(function(node) {
+    if (!node.parentNode || node.parentNode.tagName === 'MARK') return;
+    var idx = node.textContent.toLowerCase().indexOf(query);
+    if (idx >= 0) {
+      var range = document.createRange();
+      range.setStart(node, idx);
+      range.setEnd(node, idx + query.length);
+      var mark = document.createElement('mark');
+      try { range.surroundContents(mark); } catch(e) {}
+    }
+  });
+}
+
+function removeHighlight(el) {
+  el.querySelectorAll('mark').forEach(function(mark) {
+    var parent = mark.parentNode;
+    parent.replaceChild(document.createTextNode(mark.textContent), mark);
+    parent.normalize();
+  });
+}
+
+// ── AI Chat ────────────────────────────────────────────────────────────────────
+var aiHistory = [];
+
+function openAI() {
+  document.getElementById('ai-modal').classList.add('open');
+  document.getElementById('ai-input').focus();
+}
+function closeAI() {
+  document.getElementById('ai-modal').classList.remove('open');
+}
+document.getElementById('ai-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeAI();
+});
+document.getElementById('ai-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') sendAI();
+});
+
+async function sendAI() {
+  var input = document.getElementById('ai-input');
+  var q = input.value.trim();
+  if (!q) return;
+
+  addMsg('user', q);
+  input.value = '';
+  aiHistory.push({ role: 'user', content: q });
+
+  var thinking = addMsg('assistant', '…', true);
+  document.getElementById('ai-send').disabled = true;
+
+  try {
+    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 600,
+        system: `You are the Upset Special League help assistant. Answer questions about this fantasy college football pick'em app concisely and helpfully.
+
+Key facts:
+- Upset Special is a weekly college football pick'em league running since 2016
+- Each week players pick one game as their Upset Special (underdog to win outright — if they win, you earn the point spread as bonus points)
+- All other picks are straight picks against the spread (1 point each for correct)
+- Perfect Week = 10/10 correct picks — earns a bullseye trophy in your Trophy Room
+- Seasons run alongside the college football regular season (approx Weeks 1–13)
+- The app is a PWA (Progressive Web App) — installed from Safari on iOS or Chrome on Android
+- Trophy Room shows 3D spinning trophies for regular season finishes (1st/2nd/3rd) and Bowl Bonanza
+- Players can claim previous team names to merge historical stats
+- AI bios are generated via Claude in the Trophy Room Bio section
+- Commissioner is Jeff Wilkerson; app is built and maintained by Tony Edmonds
+- Entry fee is $100; prizes for regular season and Bowl Bonanza
+- Push notifications require the app to be installed as a PWA first
+
+Keep answers short (2-4 sentences). If you don't know something specific to this league, say so and suggest contacting the commissioner (Jeff).`,
+        messages: aiHistory
+      })
+    });
+
+    var data = await resp.json();
+    var answer = data.content && data.content[0] ? data.content[0].text : 'Sorry, I couldn\'t get a response. Try again.';
+    thinking.remove();
+    addMsg('assistant', answer);
+    aiHistory.push({ role: 'assistant', content: answer });
+    // Keep history manageable
+    if (aiHistory.length > 20) aiHistory = aiHistory.slice(-20);
+  } catch(e) {
+    thinking.remove();
+    addMsg('assistant', 'Sorry, I\'m having trouble connecting right now. Check the FAQ above or contact Jeff.');
+  }
+  document.getElementById('ai-send').disabled = false;
+}
+
+function addMsg(role, text, isThinking) {
+  var msgs = document.getElementById('ai-messages');
+  var div = document.createElement('div');
+  div.className = 'ai-msg ' + role + (isThinking ? ' thinking' : '');
+  div.textContent = text;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+  return div;
+}
+</script>
+</body>
+</html>
