@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v7.5';
-const BUILD_TIME = '2026-08-11T00:37:13Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v7.6';
+const BUILD_TIME = '2026-08-11T00:44:35Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbwbUYsSxIlHhDVid_7m1uo85CkfIfw8BWlt8d4rru51PBRbRsdNfjNNwzFS61MB5e3k/exec'
@@ -1928,6 +1928,7 @@ function renderSeasonStandings(el, standings, completedWeeks) {
       </div>
       <p class="helptext" style="text-align:center; margin-top:8px;">1 pt per correct pick &middot; Upset Special pays the spread if underdog wins outright</p>
     `;
+  wirePlayerNameTaps(el);
 }
 
 function renderWeeklyHistory(el, standings, completedWeeks) {
@@ -2423,6 +2424,12 @@ async function renderProfile(content) {
       </div>
     </div>
 
+    <div class="section-label">Trophy Room</div>
+    <div class="card">
+      <p class="helptext" style="margin-bottom:10px;">View your trophies, career stats, and bio — the same view other players see when they tap your name.</p>
+      <button class="btn btn-primary btn-block" id="view-my-trophy-btn">🏆 View My Trophy Room</button>
+    </div>
+
     <div class="section-label">Trophy Room Bio</div>
     <div class="card">
       <p class="helptext" style="margin-bottom:12px; line-height:1.6;">Fill this in and tap Generate Bio — Claude will write your Trophy Room profile. Other players can tap your name anywhere in the app to see your Trophy Room.</p>
@@ -2609,6 +2616,8 @@ async function renderProfile(content) {
   }
 
   // --- Log out ---
+  document.getElementById('view-my-trophy-btn').onclick = () => openTrophyRoom(p.id);
+
   document.getElementById('profile-logout-btn').onclick = () => {
     if (confirm('Log out of your account?')) logout();
   };
