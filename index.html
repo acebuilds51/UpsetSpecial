@@ -411,7 +411,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
 const VERSION = 'v7.4';
-const BUILD_TIME = '2026-08-11T00:20:09Z'; // auto-identifies this exact build -- never edit manually
+const BUILD_TIME = '2026-08-11T00:28:14Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbwbUYsSxIlHhDVid_7m1uo85CkfIfw8BWlt8d4rru51PBRbRsdNfjNNwzFS61MB5e3k/exec'
@@ -3173,12 +3173,12 @@ function renderTrophyRoomContent(el, data) {
     : `<div style="width:64px;height:64px;border-radius:10px;background:var(--surface-2);border:1px dashed var(--hairline);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-faint);text-align:center;line-height:1.4;">${isMe ? 'Add<br>Photo' : 'No<br>Photo'}</div>`;
 
   // Trophy case
-  const hasTrophies = (data.trophies && data.trophies.length > 0) || (data.bowlTrophies && data.bowlTrophies.length > 0);
+  const hasTrophiesModal = (data.trophies && data.trophies.length > 0) || (data.bowlTrophies && data.bowlTrophies.length > 0);
   const allTrophies = [
     ...(data.trophies || []).map(t => ({...t, type: 'season'})),
     ...(data.bowlTrophies || []).map(t => ({...t, type: 'bowl'}))
   ].sort((a, b) => a.year - b.year);
-  const trophyHtml = hasTrophies ? `
+  const trophyHtml = hasTrophiesModal ? `
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       ${allTrophies.map((t, i) => `
         <div style="display:flex;flex-direction:column;align-items:center;gap:5px;background:rgba(255,215,0,0.07);border:1px solid rgba(200,150,12,0.35);border-radius:10px;padding:12px 10px;animation:float 4s ease-in-out infinite;animation-delay:${i*0.3}s">
