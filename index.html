@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v11.1';
-const BUILD_TIME = '2026-08-12T20:29:06Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v11.2';
+const BUILD_TIME = '2026-08-12T20:44:15Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbzx_ec1gOEL-9IDwOhzV5UZkkR3ZvSKL_aVOCmYo9A5QM4yyCC2GFpCaPhGC9P9Mgip/exec'
@@ -1066,6 +1066,9 @@ function render() {
     </div>
     <div class="content" id="content"></div>
     <div class="bottomnav" id="bottomnav"></div>
+    <!-- Floating help button -->
+    <button id="global-help-btn" onclick="showHelpAI()" title="Help"
+      style="position:fixed;bottom:76px;right:14px;z-index:900;width:38px;height:38px;border-radius:50%;background:var(--surface-2);border:1px solid var(--hairline);color:var(--text-soft);font-size:17px;cursor:pointer;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.3);transition:all 0.15s;">?</button>
   `;
   document.getElementById('logout-btn').onclick = logout;
   renderBottomNav();
@@ -1394,6 +1397,14 @@ function renderHome(content) {
           <button class="btn btn-gold" style="flex:1;" id="refer-share-btn">📤 Share</button>
         </div>
       </div>
+
+    <!-- Help footer -->
+    <div style="display:flex;justify-content:center;gap:24px;padding:16px 0 8px;border-top:1px solid var(--hairline);margin-top:4px;">
+      <a href="https://acebuilds51.github.io/UpsetSpecial/help.html" target="_blank"
+         style="font-size:13px;color:var(--text-soft);text-decoration:none;display:flex;align-items:center;gap:5px;">📖 Player Guide</a>
+      <button onclick="showHelpAI()"
+         style="font-size:13px;color:var(--text-soft);background:none;border:none;cursor:pointer;display:flex;align-items:center;gap:5px;padding:0;">✨ Ask a question</button>
+    </div>
     `;
 
     document.getElementById('go-to-slate-btn').onclick = () => { State.view = 'slate'; renderContent(); };
