@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v10.6';
-const BUILD_TIME = '2026-08-12T19:38:35Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v10.8';
+const BUILD_TIME = '2026-08-12T19:50:46Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbzx_ec1gOEL-9IDwOhzV5UZkkR3ZvSKL_aVOCmYo9A5QM4yyCC2GFpCaPhGC9P9Mgip/exec'
@@ -984,22 +984,73 @@ function getChampionYearsForPlayer(playerId) {
   return champYears.sort((a,b) => a - b);
 }
 
-// Wraps an avatar with a spinning gold ring + "YYYY, YYYY Champion(s)" label
+// Wraps an avatar with a spinning gold ring that has the champion text ON the ring
 function championRing(avatarHtml, playerId, size) {
   const years = getChampionYearsForPlayer(playerId);
-  const inner = `<div style="width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;display:flex;align-items:center;justify-content:center;flex-shrink:0;">${avatarHtml}</div>`;
+  const inner = `<div style="width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;flex-shrink:0;">${avatarHtml}</div>`;
   if (!years.length) return inner;
   const label = years.join(', ') + (years.length === 1 ? ' Champion' : ' Champions');
-  const pad = Math.max(3, Math.round(size * 0.09));
-  const fs = Math.max(7, Math.round(size * 0.13));
-  return `<div style="position:relative;display:inline-flex;flex-direction:column;align-items:center;flex-shrink:0;" title="${escapeHtml(label)}">` +
-    `<div style="position:relative;width:${size}px;height:${size}px;">` +
-      `<div style="position:absolute;inset:-${pad}px;border-radius:50%;background:conic-gradient(#FFD700 0deg,#FFF5A0 45deg,#C8960C 90deg,#FFD700 135deg,#FFF5A0 180deg,#C8960C 225deg,#FFD700 270deg,#FFF5A0 315deg,#C8960C 360deg);box-shadow:0 0 ${pad*3}px rgba(212,160,0,0.8);animation:champSpin 6s linear infinite;"></div>` +
-      `<div style="position:absolute;inset:${Math.round(pad*0.3)}px;border-radius:50%;background:var(--surface-1);z-index:1;"></div>` +
-      `<div style="position:absolute;inset:${pad}px;border-radius:50%;overflow:hidden;z-index:2;">${avatarHtml}</div>` +
-    `</div>` +
-    `<div style="margin-top:2px;background:linear-gradient(135deg,#C8920A,#FFD700,#C8920A);color:#000000;font-size:${fs}px;font-weight:900;padding:2px ${Math.round(fs*0.7)}px;border-radius:20px;white-space:nowrap;letter-spacing:0.03em;box-shadow:0 1px 4px rgba(0,0,0,0.5);text-shadow:none;">${escapeHtml(label)}</div>` +
-  `</div>`;
+  const pad = Math.max(4, Math.round(size * 0.12));
+  const total = size + pad * 2;
+  const ringId = 'cr-' + Math.random().toString(36).slice(2,8);
+  // Canvas draws the ring with text; avatar sits on top via z-index
+  // drawChampionRing() is called after DOM insertion
+  setTimeout(function(){ drawChampionRing(ringId, label, size, pad); }, 50);
+  return `<div style="position:relative;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:${total}px;height:${total}px;" title="${escapeHtml(label)}">
+    <canvas id="${ringId}" width="${total*2}" height="${total*2}" style="position:absolute;inset:0;width:${total}px;height:${total}px;animation:champSpin 6s linear infinite;border-radius:50%;"></canvas>
+    <div style="position:relative;z-index:2;width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;">${avatarHtml}</div>
+  </div>`;
+}
+
+function drawChampionRing(id, label, size, pad) {
+  var cv = document.getElementById(id);
+  if (!cv) return;
+  var S = cv.width, cx = S/2, cy = S/2;
+  var ctx = cv.getContext('2d');
+  var outerR = S/2 - 1;
+  var innerR = outerR - pad * 2;
+
+  // Gold ring gradient
+  var grd = ctx.createRadialGradient(cx, cy, innerR, cx, cy, outerR);
+  grd.addColorStop(0, '#9A6A00');
+  grd.addColorStop(0.3, '#FFD700');
+  grd.addColorStop(0.6, '#FFF5A0');
+  grd.addColorStop(1, '#9A6A00');
+  ctx.beginPath();
+  ctx.arc(cx, cy, outerR, 0, Math.PI*2);
+  ctx.arc(cx, cy, innerR, 0, Math.PI*2, true);
+  ctx.closePath();
+  ctx.fillStyle = grd;
+  ctx.fill();
+
+  // Glow
+  ctx.shadowColor = 'rgba(212,160,0,0.6)';
+  ctx.shadowBlur = 8;
+  ctx.strokeStyle = 'rgba(255,220,50,0.5)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(cx, cy, (outerR+innerR)/2, 0, Math.PI*2); ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // Text curved along top of ring
+  var text = label.toUpperCase();
+  var textR = (outerR + innerR) / 2;
+  var fontSize = Math.max(9, Math.round(pad * 1.6));
+  ctx.font = 'bold ' + fontSize + 'px Arial Black, sans-serif';
+  ctx.fillStyle = '#000000';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  // Measure total text width and fit to arc
+  var totalWidth = ctx.measureText(text).width;
+  var totalAngle = Math.min(Math.PI * 1.7, totalWidth / textR);
+  var startAngle = -Math.PI/2 - totalAngle/2;
+  for (var i = 0; i < text.length; i++) {
+    var charAngle = startAngle + (i + 0.5) * totalAngle / text.length;
+    ctx.save();
+    ctx.translate(cx + textR * Math.cos(charAngle), cy + textR * Math.sin(charAngle));
+    ctx.rotate(charAngle + Math.PI/2);
+    ctx.fillText(text[i], 0, 0);
+    ctx.restore();
+  }
 }
 
 
@@ -3249,23 +3300,20 @@ function renderTrophyRoomContent(el, data) {
   // Use server-computed champYears — avoids race condition with _careerHistory background load
   const avatarHtml = (function(){
     const years = data.champYears && data.champYears.length ? data.champYears : getChampionYearsForPlayer(p.id || p.playerId);
-    const inner = avatarInnerTR;
-    if (!years.length) return `<div style="width:54px;height:54px;border-radius:50%;overflow:hidden;flex-shrink:0;">${inner}</div>`;
+    if (!years.length) return `<div style="width:54px;height:54px;border-radius:50%;overflow:hidden;flex-shrink:0;">${avatarInnerTR}</div>`;
     const label = years.join(', ') + (years.length === 1 ? ' Champion' : ' Champions');
-    const pad = 5, fs = 8;
-    return `<div style="position:relative;display:inline-flex;flex-direction:column;align-items:center;flex-shrink:0;" title="${escapeHtml(label)}">` +
-      `<div style="position:relative;width:54px;height:54px;">` +
-        `<div style="position:absolute;inset:-${pad}px;border-radius:50%;background:conic-gradient(#FFD700 0deg,#FFF5A0 45deg,#C8960C 90deg,#FFD700 135deg,#FFF5A0 180deg,#C8960C 225deg,#FFD700 270deg,#FFF5A0 315deg,#C8960C 360deg);box-shadow:0 0 ${pad*3}px rgba(212,160,0,0.8);animation:champSpin 6s linear infinite;"></div>` +
-        `<div style="position:absolute;inset:${Math.round(pad*0.3)}px;border-radius:50%;background:var(--surface-1);z-index:1;"></div>` +
-        `<div style="position:absolute;inset:${pad}px;border-radius:50%;overflow:hidden;z-index:2;">${inner}</div>` +
-      `</div>` +
-      `<div style="margin-top:2px;background:linear-gradient(135deg,#C8920A,#FFD700,#C8920A);color:#000000;font-size:${fs}px;font-weight:900;padding:2px ${Math.round(fs*0.7)}px;border-radius:20px;white-space:nowrap;letter-spacing:0.03em;box-shadow:0 1px 4px rgba(0,0,0,0.5);text-shadow:none;">${escapeHtml(label)}</div>` +
-    `</div>`;
+    const size = 54, pad = 7, total = size + pad*2;
+    const ringId = 'cr-modal-' + Math.random().toString(36).slice(2,8);
+    setTimeout(function(){ drawChampionRing(ringId, label, size, pad); }, 80);
+    return `<div style="position:relative;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:${total}px;height:${total}px;" title="${escapeHtml(label)}">
+      <canvas id="${ringId}" width="${total*2}" height="${total*2}" style="position:absolute;inset:0;width:${total}px;height:${total}px;animation:champSpin 6s linear infinite;border-radius:50%;"></canvas>
+      <div style="position:relative;z-index:2;width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;">${avatarInnerTR}</div>
+    </div>`;
   })();
 
   const photoHtml = bio.photoUrl
-    ? `<img src="${bio.photoUrl}" style="width:64px;height:64px;border-radius:10px;object-fit:cover;border:1px solid var(--hairline);cursor:pointer;" onclick="showLightbox('${bio.photoUrl}')">`
-    : `<div style="width:64px;height:64px;border-radius:10px;background:var(--surface-2);border:1px dashed var(--hairline);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-faint);text-align:center;line-height:1.4;">${isMe ? 'Add<br>Photo' : 'No<br>Photo'}</div>`;
+    ? `<div style="width:64px;height:64px;border-radius:10px;overflow:hidden;border:1px solid var(--hairline);cursor:pointer;flex-shrink:0;" onclick="showLightbox('${bio.photoUrl}')"><img src="${bio.photoUrl}" style="width:100%;height:100%;object-fit:cover;display:block;"></div>`
+    : `<div style="width:64px;height:64px;border-radius:10px;background:var(--surface-2);border:1px dashed var(--hairline);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-faint);text-align:center;line-height:1.4;flex-shrink:0;">${isMe ? 'Add<br>Photo' : 'No<br>Photo'}</div>`;
 
   // Trophy case
   const hasTrophiesModal = (data.trophies && data.trophies.length > 0) || (data.bowlTrophies && data.bowlTrophies.length > 0);
@@ -3451,100 +3499,79 @@ function initTrophyCanvases(el) {
   }
 
   function mkBullseye() {
-    const g = new THREE.Group();
-    const RED  = new THREE.MeshStandardMaterial({color:0xCC0000,roughness:0.3,metalness:0.1,emissive:0x660000,emissiveIntensity:0.15});
-    const WHT  = new THREE.MeshStandardMaterial({color:0xDDDDDD,roughness:0.5,metalness:0.0});
-    const GLD  = new THREE.MeshStandardMaterial({color:0xFFD700,roughness:0.1,metalness:0.9,emissive:0xD4A000,emissiveIntensity:0.4});
-    const BLK  = new THREE.MeshStandardMaterial({color:0x111111,roughness:0.4,metalness:0.3});
-    const WOOD = new THREE.MeshStandardMaterial({color:0x8B5A2B,roughness:0.8,metalness:0.0});
-    const ACOLS = [
+    var g = new THREE.Group();
+    var RED  = new THREE.MeshStandardMaterial({color:0xCC0000,roughness:0.3,metalness:0.1,emissive:0x440000,emissiveIntensity:0.1});
+    var WHT  = new THREE.MeshStandardMaterial({color:0xDDDDDD,roughness:0.5,metalness:0.0});
+    var GLD  = new THREE.MeshStandardMaterial({color:0xFFD700,roughness:0.1,metalness:0.9,emissive:0xD4A000,emissiveIntensity:0.4});
+    var BLK  = new THREE.MeshStandardMaterial({color:0x111111,roughness:0.4,metalness:0.3});
+    var WOOD = new THREE.MeshStandardMaterial({color:0x8B5A2B,roughness:0.8,metalness:0.0});
+    var ACOLS = [
       new THREE.MeshStandardMaterial({color:0xFF6B00,roughness:0.2,metalness:0.4}),
-      new THREE.MeshStandardMaterial({color:0xFFD700,roughness:0.1,metalness:0.7}),
-      new THREE.MeshStandardMaterial({color:0xDDDDDD,roughness:0.4,metalness:0.1}),
+      new THREE.MeshStandardMaterial({color:0xFFD700,roughness:0.1,metalness:0.7,emissive:0xAA7700,emissiveIntensity:0.2}),
+      new THREE.MeshStandardMaterial({color:0xCCCCCC,roughness:0.4,metalness:0.1}),
     ];
 
-    // The target group — rings in XZ plane (face points along +Y)
-    // We rotate the whole target group so the face points toward camera (+Z)
-    const target = new THREE.Group();
+    // Backing board — rotation.x = PI/2 makes cap face +Z (toward camera)
+    var board = new THREE.Mesh(new THREE.CylinderGeometry(2.1, 2.1, 0.3, 48), WOOD);
+    board.rotation.x = Math.PI / 2;
+    board.position.z = -0.2;
+    g.add(board);
 
-    // Backing board — thick cylinder in XZ plane
-    const board = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.2, 0.35, 48), WOOD);
-    target.add(board);
-
-    // Rings — disc slices stacked along Y axis (face of cylinder faces +Y)
-    const ringDefs = [
-      {r:2.0, mat:BLK,  y:0.18},
-      {r:1.75,mat:WHT,  y:0.19},
-      {r:1.45,mat:BLK,  y:0.20},
-      {r:1.15,mat:RED,  y:0.21},
-      {r:0.85,mat:RED,  y:0.22},
-      {r:0.58,mat:BLK,  y:0.23},
-      {r:0.38,mat:WHT,  y:0.24},
-      {r:0.20,mat:RED,  y:0.25},
-      {r:0.09,mat:GLD,  y:0.26},
+    // Rings — each rotated PI/2 around X so face points +Z (toward camera)
+    var rings = [
+      {r:2.0,mat:BLK},{r:1.75,mat:WHT},{r:1.45,mat:BLK},
+      {r:1.15,mat:RED},{r:0.85,mat:RED},{r:0.58,mat:BLK},
+      {r:0.38,mat:WHT},{r:0.20,mat:RED},{r:0.09,mat:GLD},
     ];
-    ringDefs.forEach(function(rd) {
-      const disc = new THREE.Mesh(new THREE.CylinderGeometry(rd.r, rd.r, 0.06, 48), rd.mat);
-      disc.position.y = rd.y;
-      target.add(disc);
+    rings.forEach(function(rd, i) {
+      var disc = new THREE.Mesh(new THREE.CylinderGeometry(rd.r, rd.r, 0.07, 48), rd.mat);
+      disc.rotation.x = Math.PI / 2;
+      disc.position.z = -0.05 + i * 0.018;
+      g.add(disc);
     });
 
-    // Arrows — shafts along Y axis, pointing from above down into face (+Y direction)
-    // After target group is rotated, they'll appear stuck into the face
-    function mkArrow(x, z, colIdx) {
-      const mat = ACOLS[colIdx % 3];
-      const ag = new THREE.Group();
-      // Shaft
-      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.4, 8), mat);
-      shaft.position.y = -0.7; // shaft centred, tip at y=0
+    // 10 arrows pointing INTO the target face from in front
+    // Built along +Y, then rotation.x = -PI/2 makes them point along -Z
+    function mkArrow(x, y, colIdx) {
+      var mat = ACOLS[colIdx % 3];
+      var ag = new THREE.Group();
+      var shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.6, 8), mat);
       ag.add(shaft);
-      // Tip at y=0 (pointing down into face)
-      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.25, 8), mat);
-      tip.position.y = -1.45;
-      tip.rotation.z = Math.PI; // cone points downward
+      var tip = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.3, 8), mat);
+      tip.position.y = 0.95;
       ag.add(tip);
-      // Fletching at top
-      [0, Math.PI/2].forEach(function(rot) {
-        const f = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.28, 0.02), mat);
-        f.position.y = 0.2;
+      [0, Math.PI / 2].forEach(function(rot) {
+        var f = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.3, 0.02), mat);
+        f.position.y = -0.85;
         f.rotation.y = rot;
         ag.add(f);
       });
-      ag.position.set(x, 1.5, z); // positioned above face, will stick through
+      ag.rotation.x = -Math.PI / 2; // now tip points along -Z into face
+      ag.position.set(x, y, 0.85);  // shaft behind, tip at face
       return ag;
     }
 
-    // 5 arrows left side, 5 right side — all near bullseye
-    const arrowDefs = [
-      // left side
-      [-0.05, -0.04, 1], [-0.22,  0.15, 0], [-0.38, -0.10, 2], [-0.12, -0.25, 1], [-0.48,  0.28, 0],
-      // right side
-      [ 0.07,  0.06, 2], [ 0.25, -0.18, 1], [ 0.40,  0.14, 0], [ 0.14,  0.32, 2], [ 0.52, -0.26, 1],
+    var arrowDefs = [
+      [-0.05,  0.04, 1],[-0.20,  0.18, 0],[-0.38, -0.10, 2],
+      [-0.12, -0.28, 1],[-0.52,  0.32, 0],
+      [ 0.07, -0.05, 2],[ 0.24,  0.20, 1],[ 0.40, -0.14, 0],
+      [ 0.14,  0.36, 2],[ 0.54, -0.28, 1],
     ];
-    arrowDefs.forEach(function(a) { target.add(mkArrow(a[0], a[1], a[2])); });
+    arrowDefs.forEach(function(a){ g.add(mkArrow(a[0],a[1],a[2])); });
 
-    // Rotate target group so face (+Y) points toward camera (+Z)
-    target.rotation.x = -Math.PI / 2;
-    target.position.y = 0.2; // centre vertically
-    g.add(target);
-
-    // Stand
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 1.5, 8), BLK);
-    post.position.set(0, -1.15, -0.2);
+    var post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1.5, 8), BLK);
+    post.position.set(0, -1.75, -0.2);
     g.add(post);
-    const base = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.2, 0.5), BLK);
-    base.position.set(0, -1.95, -0.2);
+    var base = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.2, 0.5), BLK);
+    base.position.set(0, -2.55, -0.2);
     g.add(base);
     [-0.65, 0.65].forEach(function(x) {
-      const foot = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 0.75), BLK);
-      foot.position.set(x, -2.08, -0.2);
+      var foot = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.12, 0.75), BLK);
+      foot.position.set(x, -2.68, -0.2);
       g.add(foot);
     });
-
     return g;
   }
-
-
   function mkCFP(pal) {
     const g = new THREE.Group();
     const bdy=mm(pal.body), mid=mm2(pal.mid), drk=mm2(pal.dark), fbm=mm(pal.fb);
