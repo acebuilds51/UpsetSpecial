@@ -522,6 +522,7 @@ function removeHighlight(el) {
 }
 
 // ── AI Chat ────────────────────────────────────────────────────────────────────
+var GAS_URL = 'https://script.google.com/macros/s/AKfycbzE8j8RlHfv3nFRvJx0M0TW06nQMZ-bjhhrmte_PawVnevCeMv49sP_kbo9YWQZmsLJ/exec';
 var aiHistory = [];
 
 function openAI() {
@@ -551,43 +552,19 @@ async function sendAI() {
   document.getElementById('ai-send').disabled = true;
 
   try {
-    var resp = await fetch('https://api.anthropic.com/v1/messages', {
+    var resp = await fetch(GAS_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 600,
-        system: `You are the Upset Special League help assistant. Answer questions about this fantasy college football pick'em app concisely and helpfully.
-
-Key facts:
-- Upset Special is a weekly college football pick'em league running since 2016
-- Each week players pick one game as their Upset Special (underdog to win outright — if they win, you earn the point spread as bonus points)
-- All other picks are straight picks against the spread (1 point each for correct)
-- Perfect Week = 10/10 correct picks — earns a bullseye trophy in your Trophy Room
-- Seasons run alongside the college football regular season (approx Weeks 1–13)
-- The app is a PWA (Progressive Web App) — installed from Safari on iOS or Chrome on Android
-- Trophy Room shows 3D spinning trophies for regular season finishes (1st/2nd/3rd) and Bowl Bonanza
-- Players can claim previous team names to merge historical stats
-- AI bios are generated via Claude in the Trophy Room Bio section
-- Commissioner is Jeff Wilkerson; app is built and maintained by Tony Edmonds
-- Entry fee is $100; prizes for regular season and Bowl Bonanza
-- Push notifications require the app to be installed as a PWA first
-
-Keep answers short (2-4 sentences). If you don't know something specific to this league, say so and suggest contacting the commissioner (Jeff).`,
-        messages: aiHistory
-      })
+      body: JSON.stringify({ action: 'helpChat', messages: aiHistory })
     });
-
     var data = await resp.json();
-    var answer = data.content && data.content[0] ? data.content[0].text : 'Sorry, I couldn\'t get a response. Try again.';
+    var answer = data.ok && data.answer ? data.answer : 'Sorry, try again in a moment.';
     thinking.remove();
     addMsg('assistant', answer);
     aiHistory.push({ role: 'assistant', content: answer });
-    // Keep history manageable
     if (aiHistory.length > 20) aiHistory = aiHistory.slice(-20);
   } catch(e) {
     thinking.remove();
-    addMsg('assistant', 'Sorry, I\'m having trouble connecting right now. Check the FAQ above or contact Jeff.');
+    addMsg('assistant', 'Having trouble connecting — check the FAQ above or contact Jeff.');
   }
   document.getElementById('ai-send').disabled = false;
 }

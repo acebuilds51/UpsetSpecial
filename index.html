@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v11.2';
-const BUILD_TIME = '2026-08-12T20:44:15Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v11.4';
+const BUILD_TIME = '2026-08-12T20:55:08Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbzx_ec1gOEL-9IDwOhzV5UZkkR3ZvSKL_aVOCmYo9A5QM4yyCC2GFpCaPhGC9P9Mgip/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbzE8j8RlHfv3nFRvJx0M0TW06nQMZ-bjhhrmte_PawVnevCeMv49sP_kbo9YWQZmsLJ/exec'
 };
 
 const State = {
@@ -4062,27 +4062,15 @@ async function sendHelpAI() {
   const thinking = addHelpMsg('assistant', '…', true);
   if (sendBtn) sendBtn.disabled = true;
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 500,
-        system: `You are the Upset Special League help assistant inside the app. Answer concisely (2-4 sentences max).
-
-Key facts: weekly college football pick'em since 2016, 43 players, $100 entry. Each week pick one Upset Special (underdog to win outright — you earn the point spread as bonus pts if correct). All other picks are 1 pt each against the spread. Perfect Week = 10/10 correct = bullseye trophy. Trophy Room shows 3D spinning trophies. App is a PWA installed from Safari (iOS) or Chrome (Android). Commissioner is Jeff Wilkerson. App built by Tony Edmonds. Standings → 🏆 History for all-time records. Profile → Claim Previous Team Names to link historical stats.`,
-        messages: _helpAiHistory
-      })
-    });
-    const data = await resp.json();
-    const answer = data.content?.[0]?.text || 'Sorry, try again in a moment.';
+    const res = await api('helpChat', { messages: _helpAiHistory }, true);
     thinking?.remove();
+    const answer = res.answer || 'Sorry, try again in a moment.';
     addHelpMsg('assistant', answer);
     _helpAiHistory.push({ role: 'assistant', content: answer });
     if (_helpAiHistory.length > 16) _helpAiHistory = _helpAiHistory.slice(-16);
   } catch(e) {
     thinking?.remove();
-    addHelpMsg('assistant', 'Having trouble connecting — check the Player Guide link below or contact Jeff.');
+    addHelpMsg('assistant', 'Having trouble — check the Player Guide or contact Jeff.');
   }
   if (sendBtn) sendBtn.disabled = false;
   document.getElementById('help-ai-input')?.focus();
