@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v9.0';
-const BUILD_TIME = '2026-08-11T14:46:12Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v9.2';
+const BUILD_TIME = '2026-08-11T15:00:28Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbzfipqgASs9LDVMzA8b0XU_3JUC1VY1W1a6358AyOP0DzlEQEk4fUU4kb8yGOrKCwoR/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbzYk2dKfqyL3_03grcKMzrtoqG6dc6g14XCLBwmB6qi2s87lXDcJy2_fYsA7tC1w69b/exec'
 };
 
 const State = {
@@ -3506,13 +3506,13 @@ function initTrophyCanvases(el) {
     const GLD  = new THREE.MeshStandardMaterial({color:0xFFD700,roughness:0.1,metalness:0.9,emissive:0xD4A000,emissiveIntensity:0.3});
     const BLK  = new THREE.MeshStandardMaterial({color:0x080808,roughness:0.4,metalness:0.5});
 
-    // Bullseye rings — flat cylinders (discs) stacked with slight z-offset
+    // Bullseye rings — flat cylinders scaled up to fill the cubby
     const rings = [
-      {r:1.5, h:0.08, mat:RED,  z:0.00},
-      {r:1.1, h:0.09, mat:WHT,  z:0.01},
-      {r:0.75,h:0.10, mat:RED,  z:0.02},
-      {r:0.45,h:0.11, mat:WHT,  z:0.03},
-      {r:0.20,h:0.12, mat:GLD,  z:0.04},
+      {r:1.8, h:0.10, mat:RED,  z:0.00},
+      {r:1.35,h:0.11, mat:WHT,  z:0.02},
+      {r:0.95,h:0.12, mat:RED,  z:0.04},
+      {r:0.58,h:0.13, mat:WHT,  z:0.06},
+      {r:0.25,h:0.14, mat:GLD,  z:0.08},
     ];
     rings.forEach(function(r) {
       const m = new THREE.Mesh(new THREE.CylinderGeometry(r.r, r.r, r.h, 48), r.mat);
@@ -3521,21 +3521,18 @@ function initTrophyCanvases(el) {
       g.add(m);
     });
 
-    // 3 arrows striking the bullseye
+    // 3 arrows striking the bullseye — scaled up
     function mkArrow(ox, oy, oz, rx, ry, rz, mat) {
       const ag = new THREE.Group();
-      // Shaft
-      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 1.2, 8), mat);
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.6, 8), mat);
       shaft.position.y = -0.3;
       ag.add(shaft);
-      // Tip
-      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.35, 8), mat);
-      tip.position.y = 0.45;
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.45, 8), mat);
+      tip.position.y = 0.65;
       ag.add(tip);
-      // Fletching
-      [-0.12, 0.12].forEach(function(dx) {
-        const f = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.28, 0.04), mat);
-        f.position.set(dx, -0.8, 0);
+      [-0.15, 0.15].forEach(function(dx) {
+        const f = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.35, 0.05), mat);
+        f.position.set(dx, -1.05, 0);
         ag.add(f);
       });
       ag.position.set(ox, oy, oz);
@@ -3543,22 +3540,18 @@ function initTrophyCanvases(el) {
       return ag;
     }
 
-    // Arrow 1 — centre, straight in, hits gold
-    g.add(mkArrow(0, 0, 1.5, Math.PI*0.5, 0, 0, GLD));
-    // Arrow 2 — top left, angled
-    g.add(mkArrow(-0.9, 0.8, 1.0, Math.PI*0.4, 0, Math.PI*0.18, WHT));
-    // Arrow 3 — bottom right, angled
-    g.add(mkArrow(0.8, -0.75, 0.9, Math.PI*0.42, 0, -Math.PI*0.16, ORG));
+    g.add(mkArrow(0,    0,    2.2, Math.PI*0.5,  0,  0,             GLD));
+    g.add(mkArrow(-1.1, 1.0,  1.6, Math.PI*0.4,  0,  Math.PI*0.18, WHT));
+    g.add(mkArrow(1.0, -0.9,  1.4, Math.PI*0.42, 0, -Math.PI*0.16, ORG));
 
-    // Black base
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.65, 0.38, 16), BLK);
-    base.position.set(0, -1.85, 0);
+    // Base
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.78, 0.45, 16), BLK);
+    base.position.set(0, -2.2, 0);
     g.add(base);
-    const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.90, 0.18, 16), BLK);
-    foot.position.set(0, -2.1, 0);
+    const foot = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.05, 0.20, 16), BLK);
+    foot.position.set(0, -2.52, 0);
     g.add(foot);
 
-    // Tilt the whole group slightly so arrows are visible
     g.rotation.x = -0.18;
     return g;
   }
