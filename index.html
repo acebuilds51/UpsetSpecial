@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v7.9';
-const BUILD_TIME = '2026-08-11T01:13:08Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v8.6';
+const BUILD_TIME = '2026-08-11T13:46:23Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbwbUYsSxIlHhDVid_7m1uo85CkfIfw8BWlt8d4rru51PBRbRsdNfjNNwzFS61MB5e3k/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbzbmSAi8hCm-F0e3bVoOaLWYz5EnpnvApNA0M9jRgzmi3cYlD5SIaY3jEJR11EAODzY/exec'
 };
 
 const State = {
@@ -949,6 +949,8 @@ function escapeHtml(s) {
 }
 
 // Returns championship years for a player (highest points each year in CareerHistory)
+// Uses ALL rows including unlinked — so an unlinked winner doesn't falsely give
+// the trophy to the next-highest linked player
 function getChampionYearsForPlayer(playerId) {
   if (!playerId || !State._careerHistory) return [];
   const byYear = {};
@@ -959,7 +961,11 @@ function getChampionYearsForPlayer(playerId) {
   const champYears = [];
   Object.entries(byYear).forEach(([year, rows]) => {
     const sorted = rows.slice().sort((a,b) => Number(b.points) - Number(a.points));
-    if (sorted.length && String(sorted[0].playerId) === String(playerId)) champYears.push(Number(year));
+    // Only award the trophy if this player actually had the highest points
+    // AND they are the top row (linked or unlinked)
+    if (sorted.length && String(sorted[0].playerId) === String(playerId)) {
+      champYears.push(Number(year));
+    }
   });
   return champYears.sort((a,b) => a - b);
 }
@@ -1862,7 +1868,6 @@ function renderStandings(content) {
   const standings = computeStandingsLocally();
   const week = currentWeek();
 
-  // find all completed weeks from games data
   const completedWeeks = [...new Set(
     (State.games || [])
       .filter(g => isGameFinal(g))
@@ -1877,6 +1882,7 @@ function renderStandings(content) {
       <button class="tab-btn ${activeTab === 'weekly' ? 'active' : ''}" data-tab="weekly">By Week</button>
       <button class="tab-btn ${activeTab === 'mine' ? 'active' : ''}" data-tab="mine">My History</button>
       <button class="tab-btn ${activeTab === 'career' ? 'active' : ''}" data-tab="career">Career</button>
+      <button class="tab-btn ${activeTab === 'alltime' ? 'active' : ''}" data-tab="alltime">🏆 All-Time</button>
     </div>
     <div id="standings-tab-content"></div>
   `;
@@ -1896,6 +1902,8 @@ function renderStandings(content) {
     renderWeeklyHistory(tabContent, standings, completedWeeks);
   } else if (activeTab === 'career') {
     renderCareerStandings(tabContent);
+  } else if (activeTab === 'alltime') {
+    renderAllTimeLeaderboard(tabContent);
   } else {
     renderMyHistory(tabContent, completedWeeks);
   }
@@ -2080,6 +2088,87 @@ function renderMyHistory(el, completedWeeks) {
   el.querySelectorAll('[data-week]').forEach(btn => {
     btn.onclick = () => { State._myHistoryWeek = Number(btn.dataset.week); renderMyHistory(el, completedWeeks); };
   });
+}
+
+async function renderAllTimeLeaderboard(el) {
+  el.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading all-time records…</p></div>';
+  try {
+    const data = await api('getAllTimeLeaderboard', {});
+    const lb = data.leaderboard || [];
+    let sort = 'total';
+
+    function score(p){ return p.gold.length*4 + p.silver.length*2 + p.bronze.length + (p.perfectWeeks||[]).length; }
+
+    function sorted(){
+      const d = lb.slice();
+      if (sort==='gold') d.sort((a,b) => b.gold.length-a.gold.length || score(b)-score(a));
+      else if (sort==='pw') d.sort((a,b) => (b.perfectWeeks||[]).length-(a.perfectWeeks||[]).length || score(b)-score(a));
+      else if (sort==='name') d.sort((a,b) => a.teamName.localeCompare(b.teamName));
+      else d.sort((a,b) => score(b)-score(a) || b.gold.length-a.gold.length);
+      return d;
+    }
+
+    function render(){
+      const rows = sorted();
+      const isNameSort = sort==='name';
+      el.innerHTML = `
+        <div style="margin-bottom:10px;">
+          <div style="font-size:12px;color:var(--text-soft);margin-bottom:6px;">2016 – ${new Date().getFullYear()} · regular season · tap a name to view Trophy Room</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-sm ${sort==='total'?'btn-primary':'btn-ghost'}" id="srt-total">Most trophies</button>
+            <button class="btn btn-sm ${sort==='gold'?'btn-primary':'btn-ghost'}" id="srt-gold">Most wins</button>
+            <button class="btn btn-sm ${sort==='pw'?'btn-primary':'btn-ghost'}" id="srt-pw">10/10 weeks</button>
+            <button class="btn btn-sm ${sort==='name'?'btn-primary':'btn-ghost'}" id="srt-name">A – Z</button>
+          </div>
+        </div>
+
+        <!-- header row -->
+        <div style="display:grid;grid-template-columns:26px 1fr 32px 32px 32px 32px 36px;gap:4px;padding:4px 0 6px;border-bottom:1px solid var(--hairline);margin-bottom:2px;">
+          <div></div><div></div>
+          <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥇</div>
+          <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥈</div>
+          <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥉</div>
+          <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">💯</div>
+          <div style="font-size:10px;font-weight:700;color:var(--text-accent);text-align:center;">Tot</div>
+        </div>
+
+        ${rows.map((p, i) => {
+          const tot = p.gold.length + p.silver.length + p.bronze.length + (p.perfectWeeks||[]).length;
+          const pwCount = (p.perfectWeeks||[]).length;
+          const allYears = [...p.gold, ...p.silver, ...p.bronze].sort();
+          const sub = allYears.length ? allYears.join(', ') : (pwCount ? 'Perfect weeks only' : '');
+          const isMe = p.playerId && State.player && p.playerId === State.player.id;
+          const nameStyle = isMe ? 'color:var(--upset-gold);font-weight:700;' : 'color:var(--text);font-weight:600;';
+          const unlinked = !p.linked ? '<span style="font-size:10px;color:var(--text-soft);"> ⚠ unlinked</span>' : '';
+          const champRingEl = p.gold.length > 0 && p.linked
+            ? `<span style="font-size:9px;font-weight:800;background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#1A0800;padding:1px 5px;border-radius:20px;margin-left:4px;white-space:nowrap;">${p.gold.map(y=>y).join(', ')} 👑</span>`
+            : '';
+          return `<div style="display:grid;grid-template-columns:26px 1fr 32px 32px 32px 32px 36px;gap:4px;align-items:center;padding:9px 0;border-bottom:0.5px solid var(--hairline);" data-player-id="${escapeHtml(p.playerId||'')}">
+            <div style="font-size:12px;color:var(--text-soft);text-align:center;">${isNameSort?'':i+1}</div>
+            <div style="min-width:0;">
+              <div style="font-size:13px;${nameStyle}white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(p.teamName)}${champRingEl}${unlinked}</div>
+              <div style="font-size:10px;color:var(--text-soft);margin-top:1px;">${sub}</div>
+            </div>
+            <div style="font-size:12px;font-weight:700;text-align:center;color:${p.gold.length?'#B8860B':'var(--text-soft)'};">${p.gold.length||'—'}</div>
+            <div style="font-size:12px;font-weight:700;text-align:center;color:${p.silver.length?'var(--text)':'var(--text-soft)'};">${p.silver.length||'—'}</div>
+            <div style="font-size:12px;font-weight:700;text-align:center;color:${p.bronze.length?'#A05030':'var(--text-soft)'};">${p.bronze.length||'—'}</div>
+            <div style="font-size:12px;font-weight:700;text-align:center;color:${pwCount?'var(--loss)':'var(--text-soft)'};">${pwCount||'—'}</div>
+            <div style="font-size:13px;font-weight:800;text-align:center;color:var(--text-accent);">${tot||'—'}</div>
+          </div>`;
+        }).join('')}
+      `;
+
+      el.querySelector('#srt-total').onclick = () => { sort='total'; render(); };
+      el.querySelector('#srt-gold').onclick  = () => { sort='gold';  render(); };
+      el.querySelector('#srt-pw').onclick    = () => { sort='pw';    render(); };
+      el.querySelector('#srt-name').onclick  = () => { sort='name';  render(); };
+      wirePlayerNameTaps(el);
+    }
+
+    render();
+  } catch(e) {
+    el.innerHTML = `<div class="card"><p class="helptext">Could not load all-time records: ${escapeHtml(e.message)}</p></div>`;
+  }
 }
 
 async function renderCareerStandings(el) {
@@ -3152,7 +3241,9 @@ function renderTrophyRoomContent(el, data) {
   }
 
   let trophyCaseHtml = '';
-  if (!hasAny) {
+  const hasPerfect = data.perfectWeeks && data.perfectWeeks.length > 0;
+  const hasAnything = hasAny || hasPerfect;
+  if (!hasAnything) {
     trophyCaseHtml = caseWrap(`
       <div style="border:1.5px dashed rgba(200,150,12,0.3);border-radius:10px;padding:1.5rem;text-align:center;margin:8px 0;">
         <div style="font-size:11px;color:rgba(200,150,12,0.5);">Trophy case is empty</div>
@@ -3168,6 +3259,13 @@ function renderTrophyRoomContent(el, data) {
       inner += `<div style="height:1px;background:linear-gradient(90deg,transparent,rgba(200,150,12,.4),transparent);margin:5px 0;"></div>`;
       inner += sectionLabel('Bowl Bonanza');
       inner += buildCubbies(bowlTrophies, 'bowl');
+    }
+    if (hasPerfect) {
+      inner += `<div style="height:1px;background:linear-gradient(90deg,transparent,rgba(200,150,12,.4),transparent);margin:5px 0;"></div>`;
+      inner += sectionLabel('Perfect Weeks');
+      inner += `<div style="padding:8px 8px 4px;">` +
+        data.perfectWeeks.map(pw => mkPerfectBadge(pw)).join('') +
+      `</div>`;
     }
     trophyCaseHtml = caseWrap(inner);
   }
@@ -3205,7 +3303,7 @@ function renderTrophyRoomContent(el, data) {
       <div style="font-size:11px;color:var(--text-faint);margin-top:4px;">No podium finishes yet — this could be the year.</div>
     </div>`;
 
-  // Perfect week banner
+  // Perfect week badge builder used inside trophy case
   function mkPerfectBadge(pw) {
     const historyLine = data.leaguePerfectCount > 0
       ? `<div style="font-size:11px;color:rgba(255,255,255,0.65);margin-top:4px;">One of only ${data.leaguePerfectCount} ever in league history</div>`
@@ -3234,10 +3332,6 @@ function renderTrophyRoomContent(el, data) {
       </div>
     </div>`;
   }
-  const perfectHtml = data.perfectWeeks && data.perfectWeeks.length > 0
-    ? data.perfectWeeks.map(pw => mkPerfectBadge(pw)).join('')
-    : '';
-
   // About table
   const aboutRows = [
     ['Lives in', bio.hometown],
@@ -3285,9 +3379,6 @@ function renderTrophyRoomContent(el, data) {
 
     <!-- Trophy Case -->
     ${trophyCaseHtml}
-
-    <!-- Perfect Week -->
-    ${perfectHtml}
 
     <!-- Upset Stats -->
     <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-bottom:10px;">
@@ -4201,7 +4292,8 @@ function renderAdmin(content) {
     { id: 'season', label: 'Season' },
     { id: 'bowladmin', label: 'Bowl' },
     { id: 'career', label: 'Career' },
-    { id: 'nameclaims', label: 'Name Claims' }
+    { id: 'nameclaims', label: 'Name Claims' },
+    { id: 'audit', label: '🔍 Audit' }
   ];
   content.innerHTML = `
     <div class="tab-row" style="flex-wrap:wrap;">${tabs.map(t => `<button data-tab="${t.id}" class="${_adminTab === t.id ? 'active' : ''}" style="flex:1 1 30%;">${t.label}</button>`).join('')}</div>
@@ -4216,6 +4308,103 @@ function renderAdmin(content) {
   if (_adminTab === 'bowladmin') renderAdminBowl(tabContent);
   if (_adminTab === 'career') renderAdminCareer(tabContent);
   if (_adminTab === 'nameclaims') renderAdminNameClaims(tabContent);
+  if (_adminTab === 'audit') renderAdminAudit(tabContent);
+}
+
+async function renderAdminAudit(el) {
+  el.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Running audit — this may take a moment...</p></div>';
+  try {
+    const data = await api('adminAuditCareerHistory', { playerId: State.player.id });
+    const s = data.summary;
+
+    const statusColor = s.mismatches > 0 ? 'var(--loss)' : 'var(--win)';
+    const statusLabel = s.mismatches === 0 ? '✅ All Clear' : '⚠️ Real Mismatches Found';
+
+    el.innerHTML = `
+      <div class="section-label">Career History Audit</div>
+      <div class="card" style="margin-bottom:8px;background:var(--surface-2);border-radius:var(--radius-sm);padding:8px 12px;">
+        <div style="font-size:11px;color:var(--text-soft);">2025 (current season, ${s.currentSeason} rows) excluded — no UpsetHistory yet. UH Format Errors = comma-vs-period issue in source spreadsheet; CareerHistory (authoritative) is trusted.</div>
+      </div>
+      <div class="card" style="margin-bottom:12px;">
+        <div style="font-size:18px;font-weight:800;color:${statusColor};margin-bottom:10px;">${statusLabel}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+          <div style="background:var(--surface-2);border-radius:var(--radius-sm);padding:10px;text-align:center;">
+            <div style="font-size:22px;font-weight:800;color:var(--win);">${s.ok}</div>
+            <div style="font-size:11px;color:var(--text-soft);">Rows OK</div>
+          </div>
+          <div style="background:var(--surface-2);border-radius:var(--radius-sm);padding:10px;text-align:center;">
+            <div style="font-size:22px;font-weight:800;color:${s.mismatches>0?'var(--loss)':'var(--win)'};">${s.mismatches}</div>
+            <div style="font-size:11px;color:var(--text-soft);">Real Mismatches</div>
+          </div>
+          <div style="background:var(--surface-2);border-radius:var(--radius-sm);padding:10px;text-align:center;">
+            <div style="font-size:22px;font-weight:800;color:var(--text-soft);">${s.formatErrors||0}</div>
+            <div style="font-size:11px;color:var(--text-soft);">UH Format Errors</div>
+          </div>
+          <div style="background:var(--surface-2);border-radius:var(--radius-sm);padding:10px;text-align:center;">
+            <div style="font-size:22px;font-weight:800;color:${s.unlinkedChampions>0?'var(--upset-gold)':'var(--win)'};">${s.unlinkedChampions}</div>
+            <div style="font-size:11px;color:var(--text-soft);">Unlinked Champs</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Year by year -->
+      <div class="section-label">Year by Year — Top 3</div>
+      ${data.yearSummary.map(y => {
+        const hasIssue = y.mismatches > 0;
+        const hasUnlinked = [y.champion, y.runnerUp, y.third].some(r => r && !r.linked);
+        const borderColor = hasIssue ? 'var(--loss)' : hasUnlinked ? 'var(--upset-gold)' : 'var(--hairline)';
+        return `<div class="card" style="margin-bottom:8px;border:1px solid ${borderColor};">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <div style="font-size:15px;font-weight:800;color:var(--text);">${y.year}</div>
+            <div style="font-size:11px;">
+              ${hasIssue ? `<span style="color:var(--loss);font-weight:700;">⚠️ ${y.mismatches} mismatch${y.mismatches>1?'es':''}</span>` : ''}
+              ${hasUnlinked && !hasIssue ? `<span style="color:var(--upset-gold);font-weight:700;">👑 Unlinked winner</span>` : ''}
+              ${!hasIssue && !hasUnlinked ? `<span style="color:var(--win);font-weight:700;">✓ Clean</span>` : ''}
+            </div>
+          </div>
+          ${[{r:y.champion,label:'🥇',place:'Champion'},{r:y.runnerUp,label:'🥈',place:'Runner-up'},{r:y.third,label:'🥉',place:'3rd Place'}].map(({r,label,place}) => {
+            if (!r) return '';
+            const mismatch = r.status === 'MISMATCH';
+            const linked = r.linked;
+            return `<div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--hairline);">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:16px;">${label}</span>
+                <div>
+                  <div style="font-size:13px;font-weight:600;color:${mismatch?'var(--loss)':linked?'var(--text)':'var(--upset-gold)'};">${escapeHtml(r.teamName)}</div>
+                  <div style="font-size:11px;color:var(--text-soft);">${linked ? '✓ linked' : '⚠️ unlinked'}</div>
+                </div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:13px;font-weight:700;color:${mismatch?'var(--loss)':'var(--text)'};">${r.chPts} pts</div>
+                ${mismatch ? `<div style="font-size:10px;color:var(--loss);">UH: ${r.uhPts} (diff: ${r.diff > 0 ? '+' : ''}${r.diff})</div>` : ''}
+              </div>
+            </div>`;
+          }).join('')}
+        </div>`;
+      }).join('')}
+
+      <!-- All mismatches detail -->
+      ${data.allRows.filter(r => r.status === 'MISMATCH').length > 0 ? `
+        <div class="section-label">All Mismatches — Full Detail</div>
+        ${data.allRows.filter(r => r.status === 'MISMATCH').map(r => `
+          <div class="card" style="margin-bottom:6px;border:1px solid var(--loss);">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div>
+                <div style="font-size:13px;font-weight:700;color:var(--text);">${r.year} &middot; ${escapeHtml(r.teamName)}</div>
+                <div style="font-size:11px;color:var(--text-soft);">${r.linked ? 'Linked' : 'Unlinked'}</div>
+              </div>
+              <div style="text-align:right;">
+                <div style="font-size:12px;color:var(--text-soft);">CareerHistory: <span style="color:var(--loss);font-weight:700;">${r.chPts}</span></div>
+                <div style="font-size:12px;color:var(--text-soft);">UpsetHistory: <span style="font-weight:700;color:var(--text);">${r.uhPts}</span></div>
+                <div style="font-size:11px;font-weight:800;color:var(--loss);">Diff: ${r.diff > 0 ? '+' : ''}${r.diff}</div>
+              </div>
+            </div>
+          </div>`).join('')}
+      ` : ''}
+    `;
+  } catch(e) {
+    el.innerHTML = `<div class="card"><p class="helptext">Audit failed: ${escapeHtml(e.message)}</p></div>`;
+  }
 }
 
 async function renderAdminNameClaims(el) {
