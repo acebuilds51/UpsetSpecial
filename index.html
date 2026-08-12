@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v10.8';
-const BUILD_TIME = '2026-08-12T19:50:46Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v11.0';
+const BUILD_TIME = '2026-08-12T20:16:56Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbzx_ec1gOEL-9IDwOhzV5UZkkR3ZvSKL_aVOCmYo9A5QM4yyCC2GFpCaPhGC9P9Mgip/exec'
@@ -570,6 +570,7 @@ async function registerForPushNotifications(playerId) {
       if (!existingTokens.includes(token)) existingTokens.push(token);
       State.player.fcmToken = existingTokens.join(',');
       showToast('Push notifications enabled ✓', 'success');
+      setOnboardStep('notifications', true);
       console.log('FCM: saved. Total tokens now:', existingTokens.length);
     } catch(e) {
       console.error('FCM: failed to save token:', e.message, e);
@@ -617,6 +618,8 @@ async function boot() {
     const overlay = document.getElementById('boot-overlay');
     if (overlay) { overlay.style.opacity='0'; overlay.style.transition='opacity 0.3s'; setTimeout(()=>overlay.remove(),300); }
     startBackgroundPolling();
+    // Show onboarding welcome modal once for new/incomplete users
+    if (shouldShowWelcomeModal()) setTimeout(showWelcomeModal, 800);
   } else {
     renderLogin();
   }
@@ -680,6 +683,194 @@ function seasonArrToObj(arr) {
   const o = {};
   (arr || []).forEach(r => o[r.key] = r.value);
   return o;
+}
+
+// ── PWA Install Prompt ────────────────────────────────────────────────────────
+window._installPrompt = null;
+window.addEventListener('beforeinstallprompt', function(e) {
+  e.preventDefault();
+  window._installPrompt = e;
+  // If onboarding modal is open, refresh the install button
+  const btn = document.getElementById('onboard-install-btn');
+  if (btn) {
+    btn.textContent = '📲 Add to Home Screen';
+    btn.disabled = false;
+    btn.style.opacity = '1';
+  }
+});
+window.addEventListener('appinstalled', function() {
+  window._installPrompt = null;
+  setOnboardStep('install', true);
+  const btn = document.getElementById('onboard-install-btn');
+  if (btn) { btn.textContent = '✅ Installed!'; btn.disabled = true; }
+});
+
+// ── Onboarding Helpers ────────────────────────────────────────────────────────
+function getOnboardState() {
+  try { return JSON.parse(localStorage.getItem('onboardState') || '{}'); } catch(e) { return {}; }
+}
+function setOnboardStep(step, val) {
+  const s = getOnboardState(); s[step] = val;
+  localStorage.setItem('onboardState', JSON.stringify(s));
+}
+function isOnboardComplete() {
+  const s = getOnboardState();
+  return s.install && s.pin && s.avatar && s.bio && s.notifications;
+}
+function shouldShowWelcomeModal() {
+  // Show once per version if not completed
+  const shown = localStorage.getItem('welcomeShown_v10');
+  return !shown && !isOnboardComplete();
+}
+
+function showWelcomeModal() {
+  localStorage.setItem('welcomeShown_v10', '1');
+  const overlay = document.createElement('div');
+  overlay.id = 'welcome-overlay';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:10000;display:flex;align-items:flex-end;justify-content:center;';
+  overlay.innerHTML = buildOnboardingHTML(true);
+  document.body.appendChild(overlay);
+  wireOnboarding(overlay, true);
+}
+
+function buildOnboardingHTML(isModal) {
+  const s = getOnboardState();
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isAndroid = /android/i.test(navigator.userAgent);
+  const isChrome = /chrome/i.test(navigator.userAgent) && !/edge|edg/i.test(navigator.userAgent);
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  const canInstall = !isStandalone && (window._installPrompt || isIOS);
+
+  const androidFallbackDesc = isAndroid && !window._installPrompt
+    ? 'Tap the ⋮ menu in Chrome → "Add to Home Screen"'
+    : isAndroid
+    ? 'Tap below to install — Chrome will prompt you'
+    : '';
+
+  const steps = [
+    {
+      id: 'install',
+      icon: '📲',
+      title: 'Add to Home Screen',
+      desc: isStandalone ? 'Already installed — you\'re running as an app!' :
+            isIOS ? 'Tap the Share button in Safari, then "Add to Home Screen"' :
+            isAndroid ? androidFallbackDesc :
+            'Open in Chrome on Android or Safari on iPhone and install from there',
+      done: isStandalone || s.install,
+      action: isStandalone ? null : 'install'
+    },
+    { id: 'pin',      icon: '🔐', title: 'Change Your PIN',         desc: 'Set a personal PIN to keep your account secure',       done: s.pin,           action: 'pin' },
+    { id: 'avatar',   icon: '🖼️', title: 'Upload Your Avatar',      desc: 'Add a photo so teammates recognize you',               done: s.avatar,        action: 'avatar' },
+    { id: 'bio',      icon: '✍️', title: 'Fill Out Your Trophy Room Bio', desc: 'Let Claude write your player profile',           done: s.bio,           action: 'bio' },
+    { id: 'claim',    icon: '🏷️', title: 'Claim Previous Team Names', desc: 'Link your historical stats and trophies',           done: s.claim,         action: 'claim' },
+    { id: 'notifications', icon: '🔔', title: 'Enable Notifications', desc: 'Get alerts when picks open or results are posted',  done: s.notifications, action: 'notifications' },
+  ];
+
+  const stepsHTML = steps.map(st => `
+    <div class="onboard-step ${st.done ? 'done' : ''}" data-action="${st.action || ''}" style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:10px;margin-bottom:6px;background:${st.done ? 'rgba(34,197,94,0.1)' : 'var(--surface-2)'};border:1px solid ${st.done ? 'rgba(34,197,94,0.3)' : 'var(--hairline)'};cursor:${st.action && !st.done ? 'pointer' : 'default'};">
+      <div style="font-size:22px;flex-shrink:0;">${st.icon}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:14px;font-weight:700;color:${st.done ? 'var(--win)' : 'var(--text)'};">${st.title}</div>
+        <div style="font-size:12px;color:var(--text-soft);margin-top:1px;">${st.desc}</div>
+      </div>
+      <div style="flex-shrink:0;font-size:18px;">${st.done ? '✅' : (st.action ? '›' : '')}</div>
+    </div>`).join('');
+
+  const done = steps.filter(s => s.done).length;
+  const pct = Math.round(done / steps.length * 100);
+
+  const iosInstructions = isIOS && !isStandalone ? `
+    <div id="ios-install-hint" style="display:none;background:var(--surface-2);border:1px solid var(--hairline);border-radius:10px;padding:12px;margin-bottom:8px;font-size:13px;color:var(--text-soft);line-height:1.6;">
+      1. Tap the <strong>Share</strong> button <span style="font-size:16px;">⬆</span> at the bottom of Safari<br>
+      2. Scroll down and tap <strong>"Add to Home Screen"</strong><br>
+      3. Tap <strong>Add</strong> — then reopen from your home screen
+    </div>` : '';
+
+  const androidFallbackInstructions = isAndroid && !window._installPrompt ? `
+    <div id="android-install-hint" style="display:none;background:var(--surface-2);border:1px solid var(--hairline);border-radius:10px;padding:12px;margin-bottom:8px;font-size:13px;color:var(--text-soft);line-height:1.6;">
+      <strong>In Chrome:</strong><br>
+      1. Tap the <strong>⋮</strong> menu in the top-right corner<br>
+      2. Tap <strong>"Add to Home Screen"</strong><br>
+      3. Tap <strong>Add</strong> to confirm<br><br>
+      <strong>Not using Chrome?</strong> Open this page in Chrome for the best install experience.
+    </div>` : '';
+
+  const installBtn = canInstall && !isStandalone ? `
+    ${iosInstructions}
+    ${androidFallbackInstructions}
+    <button id="onboard-install-btn" class="btn btn-gold btn-block" style="margin-bottom:12px;">
+      ${isIOS ? '📲 Show Me How to Install' : isAndroid && !window._installPrompt ? '📲 Show Me How to Install' : '📲 Add to Home Screen'}
+    </button>` : '';
+
+  return `
+    <div style="background:var(--surface-1);border-radius:${isModal ? '20px 20px 0 0' : '14px'};padding:20px 16px ${isModal ? '32px' : '16px'};width:100%;max-width:480px;max-height:90vh;overflow-y:auto;">
+      ${isModal ? `<div style="width:36px;height:4px;background:var(--hairline);border-radius:2px;margin:0 auto 16px;"></div>` : ''}
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <div>
+          <div style="font-size:18px;font-weight:800;color:var(--text);">Getting Started</div>
+          <div style="font-size:12px;color:var(--text-soft);margin-top:2px;">${done} of ${steps.length} complete</div>
+        </div>
+        ${isModal ? `<button onclick="document.getElementById('welcome-overlay').remove();" style="background:var(--surface-2);border:none;border-radius:50%;width:30px;height:30px;font-size:16px;cursor:pointer;color:var(--text);">✕</button>` : ''}
+      </div>
+      <!-- Progress bar -->
+      <div style="height:6px;background:var(--surface-2);border-radius:3px;margin-bottom:16px;overflow:hidden;">
+        <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--upset-gold),#FFD700);border-radius:3px;transition:width 0.3s;"></div>
+      </div>
+      ${installBtn}
+      ${stepsHTML}
+      ${isModal && done >= steps.length - 1 ? `<button onclick="document.getElementById('welcome-overlay').remove();" class="btn btn-primary btn-block" style="margin-top:12px;">Explore the App →</button>` : ''}
+    </div>`;
+}
+
+function wireOnboarding(container, isModal) {
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+  const installBtn = container.querySelector('#onboard-install-btn');
+  if (installBtn) {
+    installBtn.onclick = async function() {
+      if (isIOS) {
+        const hint = container.querySelector('#ios-install-hint');
+        if (hint) hint.style.display = hint.style.display === 'none' ? 'block' : 'none';
+        setOnboardStep('install', true);
+      } else if (isAndroid && !window._installPrompt) {
+        const hint = container.querySelector('#android-install-hint');
+        if (hint) hint.style.display = hint.style.display === 'none' ? 'block' : 'none';
+        setOnboardStep('install', true);
+      } else if (window._installPrompt) {
+        window._installPrompt.prompt();
+        const result = await window._installPrompt.userChoice;
+        if (result.outcome === 'accepted') {
+          setOnboardStep('install', true);
+          installBtn.textContent = '✅ Installing…';
+        }
+        window._installPrompt = null;
+      }
+    };
+  }
+
+  container.querySelectorAll('.onboard-step[data-action]').forEach(function(el) {
+    const action = el.dataset.action;
+    if (!action || el.classList.contains('done')) return;
+    el.onclick = function() {
+      if (isModal) document.getElementById('welcome-overlay')?.remove();
+      switch(action) {
+        case 'pin':
+          State.view = 'profile'; State._profileSection = 'pin'; renderContent(); break;
+        case 'avatar':
+          State.view = 'profile'; State._profileSection = 'avatar'; renderContent();
+          setTimeout(function(){ document.getElementById('avatar-wrapper')?.click(); }, 300); break;
+        case 'bio':
+          State.view = 'profile'; State._profileSection = 'bio'; renderContent();
+          setTimeout(function(){ document.getElementById('bio-hometown')?.focus(); }, 300); break;
+        case 'claim':
+          State.view = 'profile'; State._profileSection = 'claim'; renderContent();
+          setTimeout(function(){ document.getElementById('claim-browse-btn')?.click(); }, 300); break;
+        case 'notifications':
+          State.view = 'profile'; State._profileSection = 'notifications'; renderContent();
+          setTimeout(function(){ document.getElementById('notif-enable-btn')?.click(); }, 300); break;
+      }
+    };
+  });
 }
 
 document.addEventListener('DOMContentLoaded', boot);
@@ -1031,15 +1222,13 @@ function drawChampionRing(id, label, size, pad) {
   ctx.beginPath(); ctx.arc(cx, cy, (outerR+innerR)/2, 0, Math.PI*2); ctx.stroke();
   ctx.shadowBlur = 0;
 
-  // Text curved along top of ring
+  // Text curved along top of ring — white outline behind black text for contrast
   var text = label.toUpperCase();
   var textR = (outerR + innerR) / 2;
   var fontSize = Math.max(9, Math.round(pad * 1.6));
   ctx.font = 'bold ' + fontSize + 'px Arial Black, sans-serif';
-  ctx.fillStyle = '#000000';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  // Measure total text width and fit to arc
   var totalWidth = ctx.measureText(text).width;
   var totalAngle = Math.min(Math.PI * 1.7, totalWidth / textR);
   var startAngle = -Math.PI/2 - totalAngle/2;
@@ -1048,6 +1237,13 @@ function drawChampionRing(id, label, size, pad) {
     ctx.save();
     ctx.translate(cx + textR * Math.cos(charAngle), cy + textR * Math.sin(charAngle));
     ctx.rotate(charAngle + Math.PI/2);
+    // White outline first
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = fontSize * 0.35;
+    ctx.lineJoin = 'round';
+    ctx.strokeText(text[i], 0, 0);
+    // Black fill on top
+    ctx.fillStyle = '#000000';
     ctx.fillText(text[i], 0, 0);
     ctx.restore();
   }
@@ -2466,6 +2662,12 @@ async function renderProfile(content) {
       </div>
     </div>
 
+    <div class="section-label">Getting Started</div>
+    <div class="card" style="padding:0;">
+      <div id="onboarding-section"></div>
+      <button class="btn btn-ghost btn-block btn-sm" id="onboard-toggle-btn" style="border-radius:0 0 var(--radius) var(--radius);border-top:1px solid var(--hairline);">Show checklist ▾</button>
+    </div>
+
     <div class="section-label">Trophy Room</div>
     <div class="card">
       <p class="helptext" style="margin-bottom:10px;">View your trophies, career stats, and bio — the same view other players see when they tap your name.</p>
@@ -2603,6 +2805,7 @@ async function renderProfile(content) {
     try {
       await api('changePin', { playerId: p.id, currentPin: current, newPin });
       showToast('PIN updated successfully', 'success');
+      setOnboardStep('pin', true);
       ['pin-current','pin-new','pin-confirm'].forEach(id => document.getElementById(id).value = '');
       btn.textContent = 'Update PIN';
     } catch(e) { showToast(e.message || 'Could not update PIN', 'error'); btn.textContent = 'Update PIN'; }
@@ -2670,6 +2873,36 @@ async function renderProfile(content) {
   }
 
   // --- Log out ---
+  // Getting Started / Onboarding section
+  const onboardSection = document.getElementById('onboarding-section');
+  const onboardToggle = document.getElementById('onboard-toggle-btn');
+  let onboardOpen = !isOnboardComplete();
+
+  function renderOnboardSection() {
+    if (onboardOpen) {
+      onboardSection.innerHTML = buildOnboardingHTML(false);
+      wireOnboarding(onboardSection, false);
+      onboardToggle.textContent = 'Hide checklist ▴';
+    } else {
+      const done = Object.values(getOnboardState()).filter(Boolean).length;
+      onboardSection.innerHTML = `<div style="padding:12px 16px;font-size:13px;color:var(--text-soft);">${isOnboardComplete() ? '✅ All set! App fully configured.' : done + ' of 6 steps complete — tap to continue setup'}</div>`;
+      onboardToggle.textContent = 'Show checklist ▾';
+    }
+  }
+  renderOnboardSection();
+  onboardToggle.onclick = function() { onboardOpen = !onboardOpen; renderOnboardSection(); };
+
+  // Track avatar upload completion for onboarding
+  const origAvatarChange = document.getElementById('avatar-file-input')?.onchange;
+  if (document.getElementById('avatar-file-input')) {
+    const origChange = document.getElementById('avatar-file-input').onchange;
+    document.getElementById('avatar-file-input').onchange = async function(e) {
+      if (origChange) await origChange.call(this, e);
+      setOnboardStep('avatar', true);
+      renderOnboardSection();
+    };
+  }
+
   document.getElementById('view-my-trophy-btn').onclick = () => openTrophyRoom(p.id);
 
   document.getElementById('profile-logout-btn').onclick = () => {
@@ -2864,6 +3097,7 @@ async function renderProfile(content) {
       await api('saveBio', payload);
       _trophyRoomCache = {}; // clear cache so trophy room reloads fresh
       showToast('Bio saved ✓', 'success');
+      setOnboardStep('bio', true);
       btn.textContent = 'Save Bio';
     } catch(e) {
       showToast('Could not save bio', 'error');
