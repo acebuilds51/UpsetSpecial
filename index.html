@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v7.3';
-const BUILD_TIME = '2026-08-11T17:53:29Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v7.4';
+const BUILD_TIME = '2026-08-11T00:20:09Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbwbUYsSxIlHhDVid_7m1uo85CkfIfw8BWlt8d4rru51PBRbRsdNfjNNwzFS61MB5e3k/exec'
@@ -432,6 +432,12 @@ const State = {
   view: 'home',        // home | slate | standings | money | bowl | admin
   bowlSubView: 'round1' // round1 | quarter | semi | champion | standings
 };
+
+// Chat state — declared here so renderChat can reference them at any call time
+let _chatTab = 'general';
+let _chatMessages = { general: [], commissioner: [] };
+let _chatPollTimer = null;
+let _chatUnread = { general: 0, commissioner: 0 };
 
 async function api(action, payload) {
   payload = payload || {};
@@ -898,7 +904,7 @@ async function renderContent() {
     case 'scores': renderLiveScores(content); break;
     case 'bowl': renderBowl(content); break;
     case 'admin': renderAdmin(content); break;
-    case 'chat': renderChat(content); break;
+    case 'chat': renderChat(content).catch(e => { content.innerHTML = '<div class="empty-state"><p class="helptext">Could not load chat: ' + e.message + '</p></div>'; }); break;
     case 'rules': renderRules(content); break;
     case 'profile': renderProfile(content); break;
     case 'info': renderInfo(content); break;
@@ -3541,11 +3547,6 @@ function renderInfo(content) {
 /* ============================================================
    CHAT / MESSAGE BOARD VIEW
    ============================================================ */
-let _chatTab = 'general';
-let _chatMessages = { general: [], commissioner: [] };
-let _chatPollTimer = null;
-let _chatUnread = { general: 0, commissioner: 0 };
-
 async function renderChat(content) {
   const isAdmin = State.player && State.player.isAdmin;
   const p = State.player;
