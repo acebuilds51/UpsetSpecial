@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v9.5';
-const BUILD_TIME = '2026-08-11T15:29:39Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v9.7';
+const BUILD_TIME = '2026-08-12T18:07:12Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbzk2RO_qg408rVOlQaxiqfJ8Qy02YqK6yIUTncEKJmLdZSBx81qZaqhoTA7MfeT294W/exec'
@@ -439,16 +439,25 @@ let _chatMessages = { general: [], commissioner: [] };
 let _chatPollTimer = null;
 let _chatUnread = { general: 0, commissioner: 0 };
 
-async function api(action, payload) {
+async function api(action, payload, silent) {
   payload = payload || {};
   payload.action = action;
   try {
     const resp = await fetch(CONFIG.API_URL, { method: 'POST', body: JSON.stringify(payload) });
-    const data = await resp.json();
+    let data;
+    try {
+      data = await resp.json();
+    } catch(parseErr) {
+      // GAS returned an HTML error page instead of JSON — treat as transient error
+      if (!silent) showToast('Server error — try again in a moment', 'error');
+      throw new Error('Server returned non-JSON response');
+    }
     if (!data.ok) throw new Error(data.error || 'Request failed');
     return data;
   } catch (err) {
-    showToast(err.message || 'Network error', 'error');
+    if (!silent && err.message !== 'Server returned non-JSON response') {
+      showToast(err.message || 'Network error', 'error');
+    }
     throw err;
   }
 }
@@ -657,7 +666,7 @@ async function refreshState() {
   State.snapshotCount = data.snapshotCount || 0;
   // pre-load career history in the background so champion rings work everywhere
   if (!State._careerHistory) {
-    api('getCareerHistory', {}).then(d => { State._careerHistory = d.history || []; }).catch(()=>{});
+    api('getCareerHistory', {}, true).then(d => { State._careerHistory = d.history || []; }).catch(()=>{});
   }
   // refresh logged-in player's own record (team name may have changed elsewhere)
   const me = State.players.find(p => p.id === State.player.id);
@@ -2103,13 +2112,14 @@ async function renderAllTimeLeaderboard(el) {
     let sort = 'total';
 
     function score(p){ return p.gold.length*4 + p.silver.length*2 + p.bronze.length + (p.perfectWeeks||[]).length; }
+    function total(p){ return p.gold.length + p.silver.length + p.bronze.length + (p.perfectWeeks||[]).length; }
 
     function sorted(){
       const d = lb.slice();
       if (sort==='gold') d.sort((a,b) => b.gold.length-a.gold.length || score(b)-score(a));
       else if (sort==='pw') d.sort((a,b) => (b.perfectWeeks||[]).length-(a.perfectWeeks||[]).length || score(b)-score(a));
       else if (sort==='name') d.sort((a,b) => a.teamName.localeCompare(b.teamName));
-      else d.sort((a,b) => score(b)-score(a) || b.gold.length-a.gold.length);
+      else d.sort((a,b) => total(b)-total(a) || b.gold.length-a.gold.length || score(b)-score(a));
       return d;
     }
 
@@ -2138,8 +2148,7 @@ async function renderAllTimeLeaderboard(el) {
         </div>
 
         ${rows.map((p, i) => {
-          const tot = p.gold.length + p.silver.length + p.bronze.length + (p.perfectWeeks||[]).length;
-          const pwCount = (p.perfectWeeks||[]).length;
+          const tot = p.gold.length + p.silver.length + p.bronze.length + (p.perfectWeeks||[]).length;          const pwCount = (p.perfectWeeks||[]).length;
           const allYears = [...p.gold, ...p.silver, ...p.bronze].sort();
           const sub = allYears.length ? allYears.join(', ') : (pwCount ? 'Perfect weeks only' : '');
           const isMe = p.playerId && State.player && p.playerId === State.player.id;
@@ -3321,7 +3330,7 @@ function renderTrophyRoomContent(el, data) {
       let pi = 0;
       while (pi < sortedPW.length) {
         const rem = sortedPW.length - pi;
-        const perRow = rem <= 4 ? Math.max(rem, 3) : 4;
+        const perRow = Math.min(rem, 4); // don't pad perfect weeks to 3 — show actual count
         const pwRow = sortedPW.slice(pi, pi + perRow);
         const n = pwRow.length;
         const pct = 100 / n;
@@ -3555,93 +3564,141 @@ function initTrophyCanvases(el) {
 
   function mkBullseye() {
     const g = new THREE.Group();
-    const RED = new THREE.MeshStandardMaterial({color:0xCC1100,roughness:0.3,metalness:0.1,emissive:0x880000,emissiveIntensity:0.2});
-    const WHT = new THREE.MeshStandardMaterial({color:0xEEEEEE,roughness:0.5,metalness:0.0});
+    const RED = new THREE.MeshStandardMaterial({color:0xCC0000,roughness:0.3,metalness:0.1,emissive:0x660000,emissiveIntensity:0.2});
+    const WHT = new THREE.MeshStandardMaterial({color:0xDDDDDD,roughness:0.5,metalness:0.0});
     const GLD = new THREE.MeshStandardMaterial({color:0xFFD700,roughness:0.1,metalness:0.9,emissive:0xD4A000,emissiveIntensity:0.4});
     const BLK = new THREE.MeshStandardMaterial({color:0x111111,roughness:0.4,metalness:0.3});
-    const ARR = [
-      new THREE.MeshStandardMaterial({color:0xFF6B00,roughness:0.3,metalness:0.3,emissive:0xCC4400,emissiveIntensity:0.15}),
-      new THREE.MeshStandardMaterial({color:0xFFD700,roughness:0.2,metalness:0.6,emissive:0xAA8800,emissiveIntensity:0.2}),
-      new THREE.MeshStandardMaterial({color:0xEEEEEE,roughness:0.5,metalness:0.0}),
+    const WOOD = new THREE.MeshStandardMaterial({color:0x8B5A2B,roughness:0.8,metalness:0.0});
+    const ARR_COLS = [
+      new THREE.MeshStandardMaterial({color:0xFF6B00,roughness:0.2,metalness:0.4}),
+      new THREE.MeshStandardMaterial({color:0xFFD700,roughness:0.1,metalness:0.7}),
+      new THREE.MeshStandardMaterial({color:0xEEEEEE,roughness:0.4,metalness:0.1}),
     ];
 
-    // Target face — concentric rings, face-on (in XY plane)
+    // Backing board (circular, wood)
+    const boardMat = WOOD;
+    const board = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.2, 0.35, 48), boardMat);
+    board.rotation.x = Math.PI / 2;
+    board.position.z = -0.28;
+    g.add(board);
+
+    // Bullseye rings — from outside in
     const rings = [
-      {r:1.9, mat:BLK},
-      {r:1.7, mat:WHT},
-      {r:1.4, mat:BLK},
-      {r:1.1, mat:RED},
-      {r:0.8, mat:RED},
-      {r:0.55,mat:BLK},
-      {r:0.35,mat:WHT},
-      {r:0.18,mat:RED},
-      {r:0.09,mat:GLD},
+      {r:2.0, mat:BLK},  // outer black
+      {r:1.75,mat:WHT},  // white
+      {r:1.45,mat:BLK},  // black
+      {r:1.15,mat:RED},  // outer red
+      {r:0.85,mat:RED},  // inner red
+      {r:0.58,mat:BLK},  // black
+      {r:0.38,mat:WHT},  // white
+      {r:0.20,mat:RED},  // inner red
+      {r:0.09,mat:GLD},  // gold bullseye
     ];
     rings.forEach(function(r, i) {
-      const disc = new THREE.Mesh(new THREE.CylinderGeometry(r.r, r.r, 0.06, 48), r.mat);
+      const disc = new THREE.Mesh(new THREE.CylinderGeometry(r.r, r.r, 0.07, 48), r.mat);
       disc.rotation.x = Math.PI / 2;
-      disc.position.z = -0.1 + i * 0.015; // slight z-stacking so rings don't z-fight
+      disc.position.z = -0.08 + i * 0.018;
       g.add(disc);
     });
 
-    // Target backing board
-    const board = new THREE.Mesh(new THREE.CylinderGeometry(1.95, 1.95, 0.25, 48),
-      new THREE.MeshStandardMaterial({color:0x4A2800,roughness:0.7,metalness:0.1}));
-    board.rotation.x = Math.PI / 2;
-    board.position.z = -0.22;
-    g.add(board);
+    // "PERFECT" text on outer ring via canvas texture
+    (function() {
+      const tc = document.createElement('canvas'); tc.width=512; tc.height=512;
+      const ctx = tc.getContext('2d');
+      ctx.clearRect(0,0,512,512);
+      // Draw text in a circle on the outer ring
+      ctx.save();
+      ctx.translate(256,256);
+      ctx.font = 'bold 52px Arial Black, sans-serif';
+      ctx.fillStyle = '#FFD700';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      // Arc text "PERFECT" around the ring
+      const text = 'PERFECT';
+      const radius = 220;
+      const totalAngle = Math.PI * 0.85;
+      const startAngle = -Math.PI/2 - totalAngle/2;
+      for (let i=0; i<text.length; i++) {
+        const angle = startAngle + (i / (text.length-1)) * totalAngle;
+        ctx.save();
+        ctx.rotate(angle + Math.PI/2);
+        ctx.translate(0, -radius);
+        ctx.rotate(-Math.PI/2);
+        ctx.fillText(text[i], 0, 0);
+        ctx.restore();
+      }
+      ctx.restore();
+      const tex = new THREE.CanvasTexture(tc);
+      const ring = new THREE.Mesh(
+        new THREE.CylinderGeometry(2.15, 2.15, 0.08, 48),
+        new THREE.MeshStandardMaterial({map:tex, transparent:true, alphaTest:0.1, roughness:0.3})
+      );
+      ring.rotation.x = Math.PI/2;
+      ring.position.z = 0.03;
+      g.add(ring);
+    })();
 
-    // 10 arrows — all pointing INTO the face (along -Z axis), spread across the target
-    // Positions: clustered near bullseye with spread to represent a perfect game
-    const arrowPositions = [
-      [0,     0,    0,    0],      // dead centre — gold
-      [0.18,  0.12, 0,    1],      // inner ring
-      [-0.15, 0.20, 0,    2],
-      [0.10, -0.18, 0,    0],
-      [-0.22, 0.05, 0,    1],
-      [0.28,  0.30, 0,    2],      // outer ring hits
-      [-0.30, -0.22,0,    0],
-      [0.35, -0.15, 0,    1],
-      [-0.18, -0.35,0,    2],
-      [0.05,  0.40, 0,    0],
-    ];
-
-    arrowPositions.forEach(function(ap) {
-      const ax = ap[0], ay = ap[1], az = ap[2], mi = ap[3];
-      const mat = ARR[mi];
+    // Arrow builder — points along +Z (into the target)
+    function mkArrow(x, y, col) {
+      const mat = ARR_COLS[col % ARR_COLS.length];
       const ag = new THREE.Group();
-
-      // Shaft pointing in +Y direction, will be rotated to point into target
-      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.2, 8), mat);
-      shaft.position.y = 0.6; // centre of shaft
+      // Shaft: cylinder along Y axis, rotated to Z
+      const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.4, 8), mat);
+      shaft.position.y = 0; // centred
       ag.add(shaft);
-
-      // Tip (arrowhead) at top
-      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.22, 8), mat);
-      tip.position.y = 1.31;
+      // Tip (point) at +Y end
+      const tip = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.28, 8), mat);
+      tip.position.y = 0.84;
       ag.add(tip);
-
-      // Fletching at tail
-      [-0.05, 0.05].forEach(function(dx) {
-        const f = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.22, 0.02), mat);
-        f.position.set(dx, -0.04, 0);
+      // Fletching at -Y end
+      [0, Math.PI/2].forEach(function(rot) {
+        const f = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.28, 0.02), mat);
+        f.position.y = -0.72;
+        f.rotation.y = rot;
         ag.add(f);
       });
+      // Rotate group so it points along +Z (into the face)
+      ag.rotation.x = Math.PI / 2;
+      // Place: tip at z=0 (face), shaft extends behind into z=1.4
+      ag.position.set(x, y, 0.7);
+      return ag;
+    }
 
-      // Rotate so arrow points along -Z (into the target face)
-      ag.rotation.x = Math.PI / 2;  // now pointing in -Z direction
-      // Position: tip at z=0 (face surface), shaft extends behind
-      ag.position.set(ax, ay, 0.8 + Math.random() * 0.3);
-      g.add(ag);
+    // 5 arrows left side, 5 arrows right side — all hitting the bullseye face
+    // Left side: positions spread across left half of target
+    const leftArrows = [
+      [-0.05,  0.05, 1],  // near centre
+      [-0.22,  0.18, 0],
+      [-0.38, -0.12, 2],
+      [-0.12, -0.28, 1],
+      [-0.52,  0.30, 0],
+    ];
+    // Right side: mirror positions
+    const rightArrows = [
+      [ 0.08, -0.06, 2],
+      [ 0.25,  0.20, 1],
+      [ 0.42, -0.15, 0],
+      [ 0.15,  0.35, 2],
+      [ 0.55, -0.28, 1],
+    ];
+    [...leftArrows, ...rightArrows].forEach(function(a) {
+      g.add(mkArrow(a[0], a[1], a[2]));
     });
 
-    // Base/stand
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1.2, 8), BLK);
-    post.position.set(0, -1.65, -0.22);
+    // Stand post
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 1.4, 8), BLK);
+    post.position.set(0, -1.8, -0.18);
     g.add(post);
-    const base = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.18, 0.5), BLK);
-    base.position.set(0, -2.3, -0.22);
+    // Base
+    const base = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.22, 0.55), BLK);
+    base.position.set(0, -2.55, -0.18);
     g.add(base);
+    // Feet
+    [-0.7, 0.7].forEach(function(x) {
+      const foot = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.12, 0.8), BLK);
+      foot.position.set(x, -2.7, -0.18);
+      g.add(foot);
+    });
 
     return g;
   }
