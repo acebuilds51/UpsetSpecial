@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v9.9';
-const BUILD_TIME = '2026-08-12T18:29:24Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v10.1';
+const BUILD_TIME = '2026-08-12T18:53:37Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbyEirXEJHLZtVtvUIf6DQqNExxkR9xU5Cu7id1y9-cozjTobUukfTdihgg9Dy74x65y/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbzS2RqHyHpCpKzPI7JQ7qXuf_eZp7qkIiC4sUuzhjFgC6Fg0jXQFrMCaVZUTR-HrNRg/exec'
 };
 
 const State = {
@@ -2116,7 +2116,7 @@ async function renderAllTimeLeaderboard(el) {
 
     function sorted(){
       const d = lb.slice();
-      if (sort==='gold') d.sort((a,b) => b.gold.length-a.gold.length || score(b)-score(a));
+      if (sort==='gold') d.sort((a,b) => (b.wins||0)-(a.wins||0) || (b.winPct||0)-(a.winPct||0));
       else if (sort==='pw') d.sort((a,b) => (b.perfectWeeks||[]).length-(a.perfectWeeks||[]).length || score(b)-score(a));
       else if (sort==='name') d.sort((a,b) => a.teamName.localeCompare(b.teamName));
       else d.sort((a,b) => total(b)-total(a) || b.gold.length-a.gold.length || score(b)-score(a));
@@ -2125,60 +2125,78 @@ async function renderAllTimeLeaderboard(el) {
 
     function render(){
       const rows = sorted();
-      const isNameSort = sort==='name';
+      const isCareerView = sort === 'gold';
+      const isNameSort = sort === 'name';
+
+      const headerCols = isCareerView
+        ? `<div></div><div></div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Wins</div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Win%</div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Avg</div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Best</div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">Seas</div>`
+        : `<div></div><div></div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥇</div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥈</div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥉</div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">💯</div>
+           <div style="font-size:10px;font-weight:700;color:var(--text-accent);text-align:center;">Tot</div>`;
+
       el.innerHTML = `
         <div style="margin-bottom:10px;">
           <div style="font-size:12px;color:var(--text-soft);margin-bottom:6px;">2016 – ${new Date().getFullYear()} · regular season · tap a name to view Trophy Room</div>
           <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button class="btn btn-sm ${sort==='total'?'btn-primary':'btn-ghost'}" id="srt-total">Most trophies</button>
-            <button class="btn btn-sm ${sort==='gold'?'btn-primary':'btn-ghost'}" id="srt-gold">Most wins</button>
+            <button class="btn btn-sm ${sort==='gold'?'btn-primary':'btn-ghost'}" id="srt-gold">Career stats</button>
             <button class="btn btn-sm ${sort==='pw'?'btn-primary':'btn-ghost'}" id="srt-pw">10/10 weeks</button>
             <button class="btn btn-sm ${sort==='name'?'btn-primary':'btn-ghost'}" id="srt-name">A – Z</button>
           </div>
         </div>
-
-        <!-- header row -->
-        <div style="display:grid;grid-template-columns:26px 1fr 32px 32px 32px 32px 36px;gap:4px;padding:4px 0 6px;border-bottom:1px solid var(--hairline);margin-bottom:2px;">
-          <div></div><div></div>
-          <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥇</div>
-          <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥈</div>
-          <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">🥉</div>
-          <div style="font-size:10px;font-weight:700;color:var(--text-soft);text-align:center;">💯</div>
-          <div style="font-size:10px;font-weight:700;color:var(--text-accent);text-align:center;">Tot</div>
+        <div style="display:grid;grid-template-columns:26px 1fr 36px 40px 40px 40px 36px;gap:4px;padding:4px 0 6px;border-bottom:1px solid var(--hairline);margin-bottom:2px;">
+          ${headerCols}
         </div>
-
         ${rows.map((p, i) => {
-          const tot = p.gold.length + p.silver.length + p.bronze.length + (p.perfectWeeks||[]).length;          const pwCount = (p.perfectWeeks||[]).length;
-          const allYears = [...p.gold, ...p.silver, ...p.bronze].sort();
-          const sub = allYears.length ? allYears.join(', ') : (pwCount ? 'Perfect weeks only' : '');
           const isMe = p.playerId && State.player && p.playerId === State.player.id;
           const nameStyle = isMe ? 'color:var(--upset-gold);font-weight:700;' : 'color:var(--text);font-weight:600;';
-          const unlinked = !p.linked ? '<span style="font-size:10px;color:var(--text-soft);"> ⚠ unlinked</span>' : '';
+          const unlinked = !p.linked ? '<span style="font-size:10px;color:var(--text-soft);"> ⚠</span>' : '';
           const champRingEl = p.gold.length > 0 && p.linked
-            ? `<span style="font-size:9px;font-weight:800;background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#1A0800;padding:1px 5px;border-radius:20px;margin-left:4px;white-space:nowrap;">${p.gold.map(y=>y).join(', ')} 👑</span>`
+            ? '<span style="font-size:9px;font-weight:800;background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#1A0800;padding:1px 5px;border-radius:20px;margin-left:4px;white-space:nowrap;">' + p.gold.join(', ') + ' 👑</span>'
             : '';
-          return `<div style="display:grid;grid-template-columns:26px 1fr 32px 32px 32px 32px 36px;gap:4px;align-items:center;padding:9px 0;border-bottom:0.5px solid var(--hairline);" data-player-id="${escapeHtml(p.playerId||'')}">
-            <div style="font-size:12px;color:var(--text-soft);text-align:center;">${isNameSort?'':i+1}</div>
-            <div style="min-width:0;">
-              <div style="font-size:13px;${nameStyle}white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(p.teamName)}${champRingEl}${unlinked}</div>
-              <div style="font-size:10px;color:var(--text-soft);margin-top:1px;">${sub}</div>
-            </div>
-            <div style="font-size:12px;font-weight:700;text-align:center;color:${p.gold.length?'#B8860B':'var(--text-soft)'};">${p.gold.length||'—'}</div>
-            <div style="font-size:12px;font-weight:700;text-align:center;color:${p.silver.length?'var(--text)':'var(--text-soft)'};">${p.silver.length||'—'}</div>
-            <div style="font-size:12px;font-weight:700;text-align:center;color:${p.bronze.length?'#A05030':'var(--text-soft)'};">${p.bronze.length||'—'}</div>
-            <div style="font-size:12px;font-weight:700;text-align:center;color:${pwCount?'var(--loss)':'var(--text-soft)'};">${pwCount||'—'}</div>
-            <div style="font-size:13px;font-weight:800;text-align:center;color:var(--text-accent);">${tot||'—'}</div>
-          </div>`;
+          let dataCols;
+          if (isCareerView) {
+            const wins = p.wins||0, winPct = p.winPct!=null?p.winPct+'%':'—';
+            const avg = p.avgPts||'—', best = p.bestPts||'—', seas = p.seasons||'—';
+            dataCols = '<div style="font-size:12px;color:var(--text-soft);text-align:center;">' + (isNameSort?'':i+1) + '</div>'
+              + '<div style="min-width:0;"><div style="font-size:13px;' + nameStyle + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(p.teamName) + champRingEl + unlinked + '</div>'
+              + '<div style="font-size:10px;color:var(--text-soft);margin-top:1px;">' + (p.seasons?p.seasons+' seasons played':'') + '</div></div>'
+              + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (wins?'#B8860B':'var(--text-soft)') + ';">' + (wins||'—') + '</div>'
+              + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + winPct + '</div>'
+              + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + avg + '</div>'
+              + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + best + '</div>'
+              + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + seas + '</div>';
+          } else {
+            const tot = p.gold.length+p.silver.length+p.bronze.length+(p.perfectWeeks||[]).length;
+            const pwCount = (p.perfectWeeks||[]).length;
+            const allYears = [...p.gold,...p.silver,...p.bronze].sort();
+            const sub = allYears.length?allYears.join(', '):(pwCount?'Perfect weeks only':'');
+            dataCols = '<div style="font-size:12px;color:var(--text-soft);text-align:center;">' + (isNameSort?'':i+1) + '</div>'
+              + '<div style="min-width:0;"><div style="font-size:13px;' + nameStyle + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(p.teamName) + champRingEl + unlinked + '</div>'
+              + '<div style="font-size:10px;color:var(--text-soft);margin-top:1px;">' + sub + '</div></div>'
+              + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (p.gold.length?'#B8860B':'var(--text-soft)') + ';">' + (p.gold.length||'—') + '</div>'
+              + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (p.silver.length?'var(--text)':'var(--text-soft)') + ';">' + (p.silver.length||'—') + '</div>'
+              + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (p.bronze.length?'#A05030':'var(--text-soft)') + ';">' + (p.bronze.length||'—') + '</div>'
+              + '<div style="font-size:12px;font-weight:700;text-align:center;color:' + (pwCount?'var(--loss)':'var(--text-soft)') + ';">' + (pwCount||'—') + '</div>'
+              + '<div style="font-size:13px;font-weight:800;text-align:center;color:var(--text-accent);">' + (tot||'—') + '</div>';
+          }
+          return '<div style="display:grid;grid-template-columns:26px 1fr 36px 40px 40px 40px 36px;gap:4px;align-items:center;padding:9px 0;border-bottom:0.5px solid var(--hairline);" data-player-id="' + escapeHtml(p.playerId||'') + '">' + dataCols + '</div>';
         }).join('')}
       `;
-
       el.querySelector('#srt-total').onclick = () => { sort='total'; render(); };
       el.querySelector('#srt-gold').onclick  = () => { sort='gold';  render(); };
       el.querySelector('#srt-pw').onclick    = () => { sort='pw';    render(); };
       el.querySelector('#srt-name').onclick  = () => { sort='name';  render(); };
       wirePlayerNameTaps(el);
     }
-
     render();
   } catch(e) {
     el.innerHTML = `<div class="card"><p class="helptext">Could not load all-time records: ${escapeHtml(e.message)}</p></div>`;
@@ -3356,7 +3374,7 @@ function renderTrophyRoomContent(el, data) {
   }
 
   const avatarInnerTR = p.avatar
-    ? `<img src="${p.avatar}" style="width:54px;height:54px;border-radius:50%;object-fit:cover;" onclick="showLightbox('${p.avatar}')">`
+    ? `<img src="${p.avatar}" style="width:54px;height:54px;border-radius:50%;object-fit:cover;display:block;flex-shrink:0;" onclick="showLightbox('${p.avatar}')">`
     : `<div style="width:54px;height:54px;border-radius:50%;background:var(--upset-grad);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:22px;color:#1A1206;">${escapeHtml((p.teamName||'?')[0].toUpperCase())}</div>`;
   // Use server-computed champYears — avoids race condition with _careerHistory background load
   const avatarHtml = (function(){
