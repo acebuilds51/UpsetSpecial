@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.15';
-const BUILD_TIME = '2026-08-13T05:06:52Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.18';
+const BUILD_TIME = '2026-08-13T13:49:19Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbxBywbx3X3fyyBr3wCjtzsQPfLPUi_hiGxqbBXpRHROEWCW_gxByeZuoAMmZQW_5Tby/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbwBBEWU3RBjOSFJWRv6xZD5gj6l91CbDVWQ6em-eDJwBGIMNOl91xHjgB2VRHNwEpgy/exec'
 };
 
 const State = {
@@ -620,6 +620,10 @@ async function boot() {
   const saved = loadSession();
   if (saved) {
     State.player = saved;
+    // Ensure per-player avatar store is populated from existing session
+    if (saved.id && saved.avatar) {
+      try { localStorage.setItem('usl_avatar_' + saved.id, saved.avatar); } catch(e) {}
+    }
 
     // Load localStorage cache into State immediately — render right away with stale data
     const cached = localStorage.getItem('cachedState');
@@ -750,8 +754,8 @@ async function refreshState() {
   // State.players only carries avatarThumb (stripped for cache size)
   const me = State.players.find(p => p.id === State.player.id);
   if (me) {
-    const existingAvatar = State.player.avatar || '';
-    State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, avatar: existingAvatar, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif, chatNotif: me.chatNotif };
+    const existingAvatar = State.player.avatar || loadSavedAvatar(State.player.id) || '';
+    State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, email: me.email || State.player.email || '', avatar: existingAvatar, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif, chatNotif: me.chatNotif };
     saveSession(State.player);
   }
 }
@@ -3758,23 +3762,20 @@ function renderTrophyRoomContent(el, data) {
       @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
     </style>
 
-    <!-- Header -->
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;background:var(--surface-2);border:1px solid var(--hairline);border-radius:12px;padding:14px;margin-bottom:10px;">
-      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
-        ${avatarHtml}
-        <span style="font-size:10px;color:var(--text-faint);">Avatar</span>
+    <!-- Header: photo hero → big centered avatar → name/info -->
+    ${bio.photoUrl ? `
+    <div style="width:100%;height:200px;border-radius:12px 12px 0 0;overflow:hidden;cursor:pointer;margin-bottom:0;" onclick="showLightbox('${bio.photoUrl}')">
+      <img src="${bio.photoUrl}" style="width:100%;height:100%;object-fit:cover;object-position:center top;display:block;">
+    </div>` : ''}
+    <div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:${bio.photoUrl ? '0 0 12px 12px' : '12px'};padding:14px;margin-bottom:10px;text-align:center;">
+      <div style="display:flex;justify-content:center;margin-top:${bio.photoUrl ? '-44px' : '0'};margin-bottom:12px;position:relative;z-index:2;">
+        ${avatarHtml.replace('width:54px;height:54px', 'width:80px;height:80px').replace('font-size:22px', 'font-size:32px').replace('width:${total}px;height:${total}px', 'width:94px;height:94px')}
       </div>
-      <div style="flex:1;text-align:center;padding:0 12px;">
-        <div style="font-size:16px;font-weight:700;color:var(--text);">${escapeHtml(p.teamName)}</div>
-        <div style="font-size:12px;color:var(--text-faint);margin-top:2px;">${escapeHtml(p.name)}</div>
-        ${bio.hometown ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.hometown)}</div>` : ''}
-        ${bio.college ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.college)}</div>` : ''}
-        <div style="font-size:11px;color:var(--text-faint);margin-top:2px;">In league since ${p.joinedSeason || ''}</div>
-      </div>
-      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;">
-        ${photoHtml}
-        <span style="font-size:10px;color:var(--text-faint);">Photo</span>
-      </div>
+      <div style="font-size:18px;font-weight:800;color:var(--text);letter-spacing:0.01em;">${escapeHtml(p.teamName)}</div>
+      <div style="font-size:13px;color:var(--text-faint);margin-top:2px;">${escapeHtml(p.name)}</div>
+      ${bio.hometown ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.hometown)}</div>` : ''}
+      ${bio.college ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.college)}</div>` : ''}
+      <div style="font-size:11px;color:var(--text-faint);margin-top:3px;">In league since ${p.joinedSeason || ''}</div>
     </div>
 
     <!-- Bio -->
@@ -4179,7 +4180,8 @@ async function sendHelpAI() {
   const thinking = addHelpMsg('assistant', '…', true);
   if (sendBtn) sendBtn.disabled = true;
   try {
-    const res = await api('helpChat', { messages: _helpAiHistory }, true);
+    // Route through GAS which holds the API key securely
+    const res = await api('helpChat', { messages: _helpAiHistory.slice(-6) }, true);
     thinking?.remove();
     const answer = res.answer || 'Sorry, try again in a moment.';
     addHelpMsg('assistant', answer);
@@ -4187,7 +4189,10 @@ async function sendHelpAI() {
     if (_helpAiHistory.length > 16) _helpAiHistory = _helpAiHistory.slice(-16);
   } catch(e) {
     thinking?.remove();
-    addHelpMsg('assistant', 'Having trouble — check the Player Guide or contact Jeff.');
+    const msg = e && e.message && e.message.includes('timeout')
+      ? 'Taking too long — try a shorter question or tap ? again.'
+      : 'Having trouble connecting — check the Player Guide or tap ? again.';
+    addHelpMsg('assistant', msg);
   }
   if (sendBtn) sendBtn.disabled = false;
   document.getElementById('help-ai-input')?.focus();
