@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.13';
-const BUILD_TIME = '2026-08-13T04:54:02Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.15';
+const BUILD_TIME = '2026-08-13T05:06:52Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbxBywbx3X3fyyBr3wCjtzsQPfLPUi_hiGxqbBXpRHROEWCW_gxByeZuoAMmZQW_5Tby/exec'
@@ -475,9 +475,18 @@ function showToast(msg, type) {
   window._toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
 }
 
-function saveSession(player) { try { localStorage.setItem('usl_player', JSON.stringify(player)); } catch(e) {} }
+function saveSession(player) {
+  try {
+    localStorage.setItem('usl_player', JSON.stringify(player));
+    // Store avatar separately keyed by player ID so it survives logout
+    if (player && player.id && player.avatar) {
+      localStorage.setItem('usl_avatar_' + player.id, player.avatar);
+    }
+  } catch(e) {}
+}
 function loadSession() { try { return JSON.parse(localStorage.getItem('usl_player') || 'null'); } catch(e) { return null; } }
 function clearSession() { try { localStorage.removeItem('usl_player'); } catch(e) {} }
+function loadSavedAvatar(playerId) { try { return localStorage.getItem('usl_avatar_' + playerId) || ''; } catch(e) { return ''; } }
 
 /* ============================================================
    FIREBASE PUSH NOTIFICATIONS
@@ -983,10 +992,9 @@ async function doLogin() {
   btn.innerHTML = '<span class="spinner"></span>';
   try {
     const data = await api('login', { name, pin });
-    // Preserve avatar from previous session if login response doesn't include one
-    const prevSession = loadSession();
-    if (prevSession && prevSession.avatar && !data.player.avatar) {
-      data.player.avatar = prevSession.avatar;
+    // Restore avatar from per-player localStorage store (survives logout)
+    if (data.player && data.player.id && !data.player.avatar) {
+      data.player.avatar = loadSavedAvatar(data.player.id);
     }
     State.player = data.player;
     saveSession(data.player);
@@ -2466,15 +2474,15 @@ async function renderHistoryTab(el) {
 
   let view = State._historyView || 'trophies';
 
-  function score(p){ return p.gold.length*4 + p.silver.length*2 + p.bronze.length + (p.perfectWeeks||[]).length; }
-  function total(p){ return p.gold.length + p.silver.length + p.bronze.length + (p.perfectWeeks||[]).length; }
+  function score(p){ return (p.gold||[]).length*4 + (p.silver||[]).length*2 + (p.bronze||[]).length + (p.perfectWeeks||[]).length; }
+  function total(p){ return (p.gold||[]).length + (p.silver||[]).length + (p.bronze||[]).length + (p.perfectWeeks||[]).length; }
 
   function sortedLb() {
     const d = lb.slice();
     if (view === 'stats')  d.sort((a,b) => (b.totalPts||0)-(a.totalPts||0));
     else if (view === 'pw') d.sort((a,b) => (b.perfectWeeks||[]).length-(a.perfectWeeks||[]).length || score(b)-score(a));
     else if (view === 'az') d.sort((a,b) => (a.teamName||'').localeCompare(b.teamName||''));
-    else d.sort((a,b) => total(b)-total(a) || b.gold.length-a.gold.length || score(b)-score(a));
+    else d.sort((a,b) => total(b)-total(a) || (b.gold||[]).length-(a.gold||[]).length || score(b)-score(a));
     return d;
   }
 
@@ -2857,6 +2865,7 @@ async function renderProfile(content) {
         try {
           await api('updateProfile', { playerId: p.id, avatar: b64 });
           State.player.avatar = b64;
+          saveSession(State.player); // persists avatar in session AND per-player store
           // update the avatar wrapper in place
           document.getElementById('avatar-wrapper').innerHTML = `
             <img src="${b64}" style="width:52px; height:52px; border-radius:50%; object-fit:cover;" alt="avatar">
@@ -3482,7 +3491,13 @@ async function loadTrophyRoom(playerId) {
     _trophyRoomCache[playerId] = data;
     renderTrophyRoomContent(inner, data);
   } catch(e) {
-    inner.innerHTML = `<div class="empty-state"><p>Could not load Trophy Room.</p><p class="helptext" style="margin-top:8px;font-size:12px;">${e.message || 'Unknown error'}</p></div>`;
+    const errMsg = e && e.message ? e.message : 'Unknown error';
+    console.error('Trophy room error:', errMsg, 'playerId:', playerId);
+    inner.innerHTML = `<div class="empty-state">
+      <p style="color:var(--loss);font-weight:700;">Could not load Trophy Room</p>
+      <p class="helptext" style="margin-top:8px;font-size:12px;font-family:monospace;background:var(--surface-2);padding:8px;border-radius:6px;text-align:left;word-break:break-all;">${escapeHtml(errMsg)}</p>
+      <p class="helptext" style="margin-top:8px;">Player ID: <code>${escapeHtml(playerId)}</code></p>
+    </div>`;
   }
 }
 
@@ -4323,8 +4338,11 @@ function renderChatMessages() {
     const isComm = _chatTab === 'commissioner';
     const time = new Date(m.postedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
     const player = State.players.find(pl => pl.id === m.playerId);
-    const avatarInnerChat = player && player.avatar
-      ? `<img src="${player.avatar}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;">`
+    // Use full avatar for own messages (from State.player), avatarThumb for others
+    // avatarThumb is only 200 chars — not a real image — so fall back to initials for non-self
+    const avatarSrc = isMe ? (State.player.avatar || '') : '';
+    const avatarInnerChat = avatarSrc
+      ? `<img src="${avatarSrc}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;">`
       : `<div style="width:32px;height:32px;border-radius:50%;background:${isMe ? 'var(--upset-grad)' : 'var(--surface-2)'};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:${isMe ? '#1A1206' : 'var(--text)'};">${escapeHtml((m.teamName || '?')[0].toUpperCase())}</div>`;
     const avatar = player ? championRing(avatarInnerChat, player.id, 32) : avatarInnerChat;
 
