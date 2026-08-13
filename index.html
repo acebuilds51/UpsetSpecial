@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.18';
-const BUILD_TIME = '2026-08-13T13:49:19Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.20';
+const BUILD_TIME = '2026-08-13T13:56:25Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbwBBEWU3RBjOSFJWRv6xZD5gj6l91CbDVWQ6em-eDJwBGIMNOl91xHjgB2VRHNwEpgy/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbw5mQYHLhFNncPMtASmvAnScOQ2TMLbK7WSWIbnljHBZdGaEg8z5P28DnmEctB-1hKh/exec'
 };
 
 const State = {
@@ -442,9 +442,11 @@ let _chatUnread = { general: 0, commissioner: 0 };
 async function api(action, payload, silent) {
   payload = payload || {};
   payload.action = action;
-  // 25-second timeout — GAS has a 30s limit; fail fast so users see an error not an infinite spinner
+  // Per-action timeouts — trophy room needs more time for heavy players
+  const timeouts = { getTrophyRoom: 55000, helpChat: 40000 };
+  const ms = timeouts[action] || 25000;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 25000);
+  const timer = setTimeout(() => controller.abort(), ms);
   try {
     const resp = await fetch(CONFIG.API_URL, { method: 'POST', body: JSON.stringify(payload), signal: controller.signal });
     clearTimeout(timer);
