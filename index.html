@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.3';
-const BUILD_TIME = '2026-08-12T02:46:46Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.6';
+const BUILD_TIME = '2026-08-12T03:11:00Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbwMmyZ4khaUUe0sZhDyQXNYx3ypQxHdQx1hKdc4f1Fv8PxyH-5tIjTYd5VxUcWpql4_/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbyHh9lYFhr8v1k68W0Zq8cHDt2tDwR4gm0LzP08AVS07Z9Th6mtHwf6kii6esjLBYGc/exec'
 };
 
 const State = {
@@ -3442,7 +3442,7 @@ async function loadTrophyRoom(playerId) {
     _trophyRoomCache[playerId] = data;
     renderTrophyRoomContent(inner, data);
   } catch(e) {
-    inner.innerHTML = `<div class="empty-state"><p>Could not load Trophy Room.</p></div>`;
+    inner.innerHTML = `<div class="empty-state"><p>Could not load Trophy Room.</p><p class="helptext" style="margin-top:8px;font-size:12px;">${e.message || 'Unknown error'}</p></div>`;
   }
 }
 
