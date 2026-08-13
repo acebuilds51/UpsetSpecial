@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.12';
-const BUILD_TIME = '2026-08-12T04:35:28Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.13';
+const BUILD_TIME = '2026-08-13T04:54:02Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbxBywbx3X3fyyBr3wCjtzsQPfLPUi_hiGxqbBXpRHROEWCW_gxByeZuoAMmZQW_5Tby/exec'
@@ -983,6 +983,11 @@ async function doLogin() {
   btn.innerHTML = '<span class="spinner"></span>';
   try {
     const data = await api('login', { name, pin });
+    // Preserve avatar from previous session if login response doesn't include one
+    const prevSession = loadSession();
+    if (prevSession && prevSession.avatar && !data.player.avatar) {
+      data.player.avatar = prevSession.avatar;
+    }
     State.player = data.player;
     saveSession(data.player);
     // render immediately so the player isn't stuck on the login screen while
@@ -1000,6 +1005,12 @@ async function doLogin() {
     }
   } catch (e) {
     btn.innerHTML = 'Log In';
+    const msg = e && e.message ? e.message : '';
+    if (msg.includes('Name/team name') || msg.includes('not recognized') || msg.includes('pending')) {
+      showToast(msg, 'error');
+    } else {
+      showToast('Login timed out — tap Log In again', 'error');
+    }
   }
 }
 
@@ -4126,12 +4137,16 @@ function showHelpAI() {
 function addHelpMsg(role, text, isThinking) {
   const msgs = document.getElementById('help-ai-messages');
   if (!msgs) return null;
+  // Ensure the container is a flex column so align-self works on children
+  msgs.style.display = 'flex';
+  msgs.style.flexDirection = 'column';
   const div = document.createElement('div');
   div.className = 'hai-msg ' + role;
-  div.style.cssText = `padding:10px 12px;border-radius:12px;font-size:14px;line-height:1.6;max-width:88%;` +
-    (role === 'user'
-      ? 'background:var(--upset-gold);color:#000;font-weight:600;align-self:flex-end;border-radius:12px 12px 2px 12px;'
-      : 'background:var(--surface-2);color:var(--text);align-self:flex-start;border-radius:12px 12px 12px 2px;' + (isThinking ? 'font-style:italic;color:var(--text-soft);' : ''));
+  if (role === 'user') {
+    div.style.cssText = 'padding:10px 12px;border-radius:12px 12px 2px 12px;font-size:14px;line-height:1.6;max-width:88%;background:#F2B632;color:#1A1206;font-weight:600;align-self:flex-end;margin-left:auto;word-break:break-word;';
+  } else {
+    div.style.cssText = 'padding:10px 12px;border-radius:12px 12px 12px 2px;font-size:14px;line-height:1.6;max-width:88%;background:var(--surface-2);color:var(--text);align-self:flex-start;word-break:break-word;' + (isThinking ? 'font-style:italic;color:var(--text-soft);' : '');
+  }
   div.textContent = text;
   msgs.appendChild(div);
   msgs.scrollTop = msgs.scrollHeight;
