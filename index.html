@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.20';
-const BUILD_TIME = '2026-08-13T13:56:25Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.22';
+const BUILD_TIME = '2026-08-13T14:06:19Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbw5mQYHLhFNncPMtASmvAnScOQ2TMLbK7WSWIbnljHBZdGaEg8z5P28DnmEctB-1hKh/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbw6CXCpxyKPl1HNAemsxpGwLihYm-a76cVl5zfIb3qq_xarpP5EqPXhZ_jeNLUFWLIp/exec'
 };
 
 const State = {
@@ -3764,20 +3764,47 @@ function renderTrophyRoomContent(el, data) {
       @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
     </style>
 
-    <!-- Header: photo hero → big centered avatar → name/info -->
-    ${bio.photoUrl ? `
-    <div style="width:100%;height:200px;border-radius:12px 12px 0 0;overflow:hidden;cursor:pointer;margin-bottom:0;" onclick="showLightbox('${bio.photoUrl}')">
-      <img src="${bio.photoUrl}" style="width:100%;height:100%;object-fit:cover;object-position:center top;display:block;">
-    </div>` : ''}
-    <div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:${bio.photoUrl ? '0 0 12px 12px' : '12px'};padding:14px;margin-bottom:10px;text-align:center;">
-      <div style="display:flex;justify-content:center;margin-top:${bio.photoUrl ? '-44px' : '0'};margin-bottom:12px;position:relative;z-index:2;">
-        ${avatarHtml.replace('width:54px;height:54px', 'width:80px;height:80px').replace('font-size:22px', 'font-size:32px').replace('width:${total}px;height:${total}px', 'width:94px;height:94px')}
+    <!-- Header: photo left of name, large avatar floating below with champ ring -->
+    <div style="background:var(--surface-2);border:1px solid var(--hairline);border-radius:12px;padding:14px;margin-bottom:0px;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        ${bio.photoUrl
+          ? `<div style="width:72px;height:72px;border-radius:10px;overflow:hidden;flex-shrink:0;cursor:pointer;border:2px solid var(--hairline);" onclick="showLightbox('${bio.photoUrl}')">
+               <img src="${bio.photoUrl}" style="width:100%;height:100%;object-fit:cover;object-position:center top;display:block;">
+             </div>`
+          : `<div style="width:72px;height:72px;border-radius:10px;background:var(--surface-3);border:1px dashed var(--hairline);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-faint);text-align:center;flex-shrink:0;">${isMe ? 'Add<br>Photo' : ''}</div>`
+        }
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:18px;font-weight:800;color:var(--text);letter-spacing:0.01em;line-height:1.2;">${escapeHtml(p.teamName)}</div>
+          <div style="font-size:13px;color:var(--text-faint);margin-top:3px;">${escapeHtml(p.name)}</div>
+          ${bio.hometown ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.hometown)}</div>` : ''}
+          ${bio.college ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.college)}</div>` : ''}
+          <div style="font-size:11px;color:var(--text-faint);margin-top:2px;">In league since ${p.joinedSeason || ''}</div>
+        </div>
       </div>
-      <div style="font-size:18px;font-weight:800;color:var(--text);letter-spacing:0.01em;">${escapeHtml(p.teamName)}</div>
-      <div style="font-size:13px;color:var(--text-faint);margin-top:2px;">${escapeHtml(p.name)}</div>
-      ${bio.hometown ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.hometown)}</div>` : ''}
-      ${bio.college ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.college)}</div>` : ''}
-      <div style="font-size:11px;color:var(--text-faint);margin-top:3px;">In league since ${p.joinedSeason || ''}</div>
+    </div>
+
+    <!-- Large avatar with champion ring, floating below the name card -->
+    <div style="display:flex;justify-content:center;margin-top:-1px;margin-bottom:14px;padding:20px 0 8px;background:var(--surface-2);border:1px solid var(--hairline);border-top:none;border-radius:0 0 16px 16px;">
+      ${(function(){
+        const champYrs = data.champYears && data.champYears.length ? data.champYears : getChampionYearsForPlayer(p.id || p.playerId);
+        const label = champYrs.length ? champYrs.join(', ') + (champYrs.length === 1 ? ' Champ' : ' Champs') : '';
+        const size = 110, pad = champYrs.length ? 10 : 0, total = size + pad*2;
+        const ringId = 'cr-modal-' + Math.random().toString(36).slice(2,8);
+        const avatarInner = p.avatar
+          ? `<img src="${p.avatar}" style="width:${size}px;height:${size}px;border-radius:50%;object-fit:cover;display:block;cursor:pointer;" onclick="showLightbox('${p.avatar}')">`
+          : `<div style="width:${size}px;height:${size}px;border-radius:50%;background:var(--upset-grad);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:44px;color:#1A1206;">${escapeHtml((p.teamName||'?')[0].toUpperCase())}</div>`;
+        if (!champYrs.length) {
+          return `<div style="width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.5);">${avatarInner}</div>`;
+        }
+        setTimeout(function(){ drawChampionRing(ringId, label, size, pad); }, 80);
+        return `<div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+          <div style="position:relative;width:${total}px;height:${total}px;display:flex;align-items:center;justify-content:center;">
+            <canvas id="${ringId}" width="${total*2}" height="${total*2}" style="position:absolute;inset:0;width:${total}px;height:${total}px;animation:champSpin 6s linear infinite;border-radius:50%;"></canvas>
+            <div style="position:relative;z-index:2;width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;box-shadow:0 4px 20px rgba(0,0,0,0.5);">${avatarInner}</div>
+          </div>
+          <div style="background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#000;font-size:11px;font-weight:900;padding:3px 12px;border-radius:20px;white-space:nowrap;letter-spacing:0.03em;box-shadow:0 1px 6px rgba(0,0,0,0.4);">👑 ${escapeHtml(label)}</div>
+        </div>`;
+      })()}
     </div>
 
     <!-- Bio -->
