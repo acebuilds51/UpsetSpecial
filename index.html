@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v11.9';
-const BUILD_TIME = '2026-08-12T02:08:35Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.1';
+const BUILD_TIME = '2026-08-12T02:29:10Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbyER_Ps1tQ0S5LIsI0MYPHq3GXuCj_p1Q8gGStOsJzbgSKRdfo9CcHq6pKRrYpFTLHm/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbxCp0mqxBk2a_O13mU3oQw_P4FaSUJbewAY-6a-htUSwX13FoXOhSp8Sl9AVCIJkB_Y/exec'
 };
 
 const State = {
@@ -442,21 +442,26 @@ let _chatUnread = { general: 0, commissioner: 0 };
 async function api(action, payload, silent) {
   payload = payload || {};
   payload.action = action;
+  // 25-second timeout — GAS has a 30s limit; fail fast so users see an error not an infinite spinner
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 25000);
   try {
-    const resp = await fetch(CONFIG.API_URL, { method: 'POST', body: JSON.stringify(payload) });
+    const resp = await fetch(CONFIG.API_URL, { method: 'POST', body: JSON.stringify(payload), signal: controller.signal });
+    clearTimeout(timer);
     let data;
     try {
       data = await resp.json();
     } catch(parseErr) {
-      // GAS returned an HTML error page instead of JSON — treat as transient error
       if (!silent) showToast('Server error — try again in a moment', 'error');
       throw new Error('Server returned non-JSON response');
     }
     if (!data.ok) throw new Error(data.error || 'Request failed');
     return data;
   } catch (err) {
+    clearTimeout(timer);
+    const msg = err.name === 'AbortError' ? 'Request timed out — try again' : (err.message || 'Network error');
     if (!silent && err.message !== 'Server returned non-JSON response') {
-      showToast(err.message || 'Network error', 'error');
+      showToast(msg, 'error');
     }
     throw err;
   }
@@ -4205,9 +4210,22 @@ async function renderChat(content) {
 }
 
 async function loadChatMessages(type) {
+  // Show cached messages instantly, then refresh in background
+  const cacheKey = 'chat_' + type;
+  try {
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Date.now() - (parsed._ts || 0) < 60000) { // 60s local cache
+        _chatMessages[type] = parsed.messages || [];
+        renderChatMessages();
+      }
+    }
+  } catch(e) {}
   try {
     const data = await api('getMessages', { type });
     _chatMessages[type] = data.messages || [];
+    try { localStorage.setItem(cacheKey, JSON.stringify({ messages: data.messages, _ts: Date.now() })); } catch(e) {}
   } catch(e) {
     console.log('Chat load error:', e.message);
   }
