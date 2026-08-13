@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.1';
-const BUILD_TIME = '2026-08-12T02:29:10Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.2';
+const BUILD_TIME = '2026-08-12T02:37:06Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbxCp0mqxBk2a_O13mU3oQw_P4FaSUJbewAY-6a-htUSwX13FoXOhSp8Sl9AVCIJkB_Y/exec'
@@ -611,19 +611,51 @@ async function boot() {
   const saved = loadSession();
   if (saved) {
     State.player = saved;
-    // Show loading overlay while data fetches
-    document.body.insertAdjacentHTML('beforeend', `
-      <div id="boot-overlay" style="position:fixed;inset:0;background:var(--surface-0);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
-        <div style="font-family:var(--font-display,sans-serif);font-size:22px;font-weight:800;color:var(--upset-gold,#D4AF37);letter-spacing:0.05em;">UPSET SPECIAL</div>
-        <span class="spinner" style="width:32px;height:32px;border-width:3px;"></span>
-        <div style="font-size:13px;color:var(--text-soft);margin-top:4px;" id="boot-msg">Loading your league data…</div>
-      </div>`);
+
+    // Load localStorage cache into State immediately — render right away with stale data
+    const cached = localStorage.getItem('cachedState');
+    let hasCachedState = false;
+    if (cached) {
+      try {
+        const c = JSON.parse(cached);
+        if (c && c.players) {
+          State.players  = c.players  || [];
+          State.season   = seasonArrToObj(c.season || []);
+          State.rotation = c.rotation || [];
+          State.games    = c.games    || [];
+          State.picks    = c.picks    || [];
+          State.ledger   = c.ledger   || [];
+          State.bowlGames    = c.bowlGames    || [];
+          State.bowlPicks    = c.bowlPicks    || [];
+          State.bowlChampion = c.bowlChampion || [];
+          State.bowlLedger   = c.bowlLedger   || [];
+          State.snapshotCount = c.snapshotCount || 0;
+          hasCachedState = true;
+        }
+      } catch(e) {}
+    }
+
     render();
-    try { await refreshState(); renderContent(); } catch(e) { renderContent(); }
+
+    if (hasCachedState) {
+      // Render immediately from cache, then fetch fresh data silently in background
+      renderContent();
+      refreshState().then(() => renderContent()).catch(() => {});
+    } else {
+      // No cache — show spinner and wait for first load
+      document.body.insertAdjacentHTML('beforeend', `
+        <div id="boot-overlay" style="position:fixed;inset:0;background:var(--surface-0);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;">
+          <div style="font-family:var(--font-display,sans-serif);font-size:22px;font-weight:800;color:var(--upset-gold,#D4AF37);letter-spacing:0.05em;">UPSET SPECIAL</div>
+          <span class="spinner" style="width:32px;height:32px;border-width:3px;"></span>
+          <div style="font-size:13px;color:var(--text-soft);margin-top:4px;">Loading your league data…</div>
+        </div>`);
+      try { await refreshState(); } catch(e) { /* render whatever we have */ }
+      renderContent();
+    }
+
     const overlay = document.getElementById('boot-overlay');
     if (overlay) { overlay.style.opacity='0'; overlay.style.transition='opacity 0.3s'; setTimeout(()=>overlay.remove(),300); }
     startBackgroundPolling();
-    // Show onboarding welcome modal once for new/incomplete users
     if (shouldShowWelcomeModal()) setTimeout(showWelcomeModal, 800);
   } else {
     renderLogin();
@@ -682,8 +714,8 @@ async function refreshState() {
     } catch(e) {}
   }
 
-  // Always fetch fresh data from server
-  const data = await api('getState', {});
+  // Always fetch fresh data from server — silent:true so background failures don't toast
+  const data = await api('getState', {}, true);
   State.players = data.players;
   State.season = seasonArrToObj(data.season);
   State.rotation = data.rotation;
