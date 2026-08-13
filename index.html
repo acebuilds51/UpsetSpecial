@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.22';
-const BUILD_TIME = '2026-08-13T14:06:19Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.25';
+const BUILD_TIME = '2026-08-13T14:22:59Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbw6CXCpxyKPl1HNAemsxpGwLihYm-a76cVl5zfIb3qq_xarpP5EqPXhZ_jeNLUFWLIp/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycby2R87ojzyPZhVr6CLq8S6oRo3E07XHIeDV4DueVn1kpbPgv_iapQZQ6DW-jNDxxjIf/exec'
 };
 
 const State = {
@@ -5133,6 +5133,8 @@ function renderAdminWeek(el) {
       </div>
       <div class="card">
         <button class="btn btn-ghost btn-block" id="apply-defaults-btn">Apply "Favorite" Default for Missing Picks</button>
+        <button class="btn btn-ghost btn-block" id="archive-perfect-weeks-btn" style="margin-top:6px;">🎯 Archive Perfect Weeks for Week ${week}</button>
+        <button class="btn btn-ghost btn-block" id="archive-season-trophies-btn" style="margin-top:6px;">🏆 Archive Season Trophies (All Years)</button>
       </div>
       <div class="card">
         <button class="btn btn-ghost btn-block" id="refresh-snapshot-btn">Add Missing Lines to Snapshot</button>
@@ -5232,6 +5234,28 @@ function renderAdminWeek(el) {
         await refreshState(); renderAdmin(document.getElementById('content'));
       } catch (e) {}
     };
+    if (document.getElementById('archive-season-trophies-btn')) {
+      document.getElementById('archive-season-trophies-btn').onclick = async (e) => {
+        const btn = e.currentTarget;
+        btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+        try {
+          const data = await api('adminArchiveSeasonTrophies', { adminId: State.player.id });
+          showToast(`Archived ${data.archived} trophy position(s) across ${data.yearsScanned} year(s)`, 'success');
+        } catch(e) { showToast('Archive failed: ' + e.message, 'error'); }
+        btn.innerHTML = '🏆 Archive Season Trophies (All Years)';
+      };
+    }
+    if (document.getElementById('archive-perfect-weeks-btn')) {
+      document.getElementById('archive-perfect-weeks-btn').onclick = async (e) => {
+        const btn = e.currentTarget;
+        btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+        try {
+          const data = await api('adminArchivePerfectWeeks', { adminId: State.player.id, week });
+          showToast(`Archived ${data.archived} perfect week(s) for Week ${week}`, 'success');
+        } catch(e) { showToast('Archive failed: ' + e.message, 'error'); }
+        btn.innerHTML = '🎯 Archive Perfect Weeks';
+      };
+    }
     el.querySelectorAll('.manual-result-save').forEach(btn => {
       btn.onclick = async () => {
         const gameId = btn.dataset.gameid;
