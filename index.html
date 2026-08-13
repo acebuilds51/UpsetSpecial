@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v11.4';
-const BUILD_TIME = '2026-08-12T20:55:08Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v11.8';
+const BUILD_TIME = '2026-08-12T02:02:50Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbzE8j8RlHfv3nFRvJx0M0TW06nQMZ-bjhhrmte_PawVnevCeMv49sP_kbo9YWQZmsLJ/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbyER_Ps1tQ0S5LIsI0MYPHq3GXuCj_p1Q8gGStOsJzbgSKRdfo9CcHq6pKRrYpFTLHm/exec'
 };
 
 const State = {
@@ -655,6 +655,31 @@ function showVersionBanner(newVersion) {
 }
 
 async function refreshState() {
+  // Show cached state instantly if available (makes app feel instant on repeat opens)
+  const cached = localStorage.getItem('cachedState');
+  if (cached) {
+    try {
+      const c = JSON.parse(cached);
+      // Only use cache if less than 5 minutes old
+      if (Date.now() - (c._ts || 0) < 5 * 60 * 1000) {
+        State.players = c.players;
+        State.season = seasonArrToObj(c.season);
+        State.rotation = c.rotation;
+        State.games = c.games;
+        State.picks = c.picks;
+        State.ledger = c.ledger;
+        State.bowlGames = c.bowlGames;
+        State.bowlPicks = c.bowlPicks;
+        State.bowlChampion = c.bowlChampion;
+        State.bowlLedger = c.bowlLedger;
+        State.snapshotCount = c.snapshotCount || 0;
+        // Render immediately with cached data, then refresh in background
+        renderContent();
+      }
+    } catch(e) {}
+  }
+
+  // Always fetch fresh data — update UI when it arrives
   const data = await api('getState', {});
   State.players = data.players;
   State.season = seasonArrToObj(data.season);
@@ -667,11 +692,17 @@ async function refreshState() {
   State.bowlChampion = data.bowlChampion;
   State.bowlLedger = data.bowlLedger;
   State.snapshotCount = data.snapshotCount || 0;
+
+  // Cache to localStorage for next boot
+  try {
+    localStorage.setItem('cachedState', JSON.stringify({ ...data, _ts: Date.now() }));
+  } catch(e) {}
+
   // pre-load career history in the background so champion rings work everywhere
   if (!State._careerHistory) {
     api('getCareerHistory', {}, true).then(d => { State._careerHistory = d.history || []; }).catch(()=>{});
   }
-  // refresh logged-in player's own record (team name may have changed elsewhere)
+  // refresh logged-in player's own record
   const me = State.players.find(p => p.id === State.player.id);
   if (me) {
     State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, avatar: me.avatar, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif, chatNotif: me.chatNotif };
@@ -1178,21 +1209,22 @@ function getChampionYearsForPlayer(playerId) {
   return champYears.sort((a,b) => a - b);
 }
 
-// Wraps an avatar with a spinning gold ring that has the champion text ON the ring
 function championRing(avatarHtml, playerId, size) {
   const years = getChampionYearsForPlayer(playerId);
   const inner = `<div style="width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;flex-shrink:0;">${avatarHtml}</div>`;
   if (!years.length) return inner;
-  const label = years.join(', ') + (years.length === 1 ? ' Champion' : ' Champions');
+  const label = years.join(', ') + (years.length === 1 ? ' Champ' : ' Champs');
   const pad = Math.max(4, Math.round(size * 0.12));
   const total = size + pad * 2;
   const ringId = 'cr-' + Math.random().toString(36).slice(2,8);
-  // Canvas draws the ring with text; avatar sits on top via z-index
-  // drawChampionRing() is called after DOM insertion
+  const fs = Math.max(9, Math.round(size * 0.16));
   setTimeout(function(){ drawChampionRing(ringId, label, size, pad); }, 50);
-  return `<div style="position:relative;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:${total}px;height:${total}px;" title="${escapeHtml(label)}">
-    <canvas id="${ringId}" width="${total*2}" height="${total*2}" style="position:absolute;inset:0;width:${total}px;height:${total}px;animation:champSpin 6s linear infinite;border-radius:50%;"></canvas>
-    <div style="position:relative;z-index:2;width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;">${avatarHtml}</div>
+  return `<div style="display:inline-flex;flex-direction:column;align-items:center;gap:3px;flex-shrink:0;" title="${escapeHtml(label)}">
+    <div style="position:relative;width:${total}px;height:${total}px;display:flex;align-items:center;justify-content:center;">
+      <canvas id="${ringId}" width="${total*2}" height="${total*2}" style="position:absolute;inset:0;width:${total}px;height:${total}px;animation:champSpin 6s linear infinite;border-radius:50%;"></canvas>
+      <div style="position:relative;z-index:2;width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;">${avatarHtml}</div>
+    </div>
+    <div style="background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#000;font-size:${fs}px;font-weight:900;padding:2px ${Math.round(fs*0.8)}px;border-radius:20px;white-space:nowrap;letter-spacing:0.02em;box-shadow:0 1px 4px rgba(0,0,0,0.4);">👑 ${escapeHtml(label)}</div>
   </div>`;
 }
 
@@ -1207,8 +1239,9 @@ function drawChampionRing(id, label, size, pad) {
   // Gold ring gradient
   var grd = ctx.createRadialGradient(cx, cy, innerR, cx, cy, outerR);
   grd.addColorStop(0, '#9A6A00');
-  grd.addColorStop(0.3, '#FFD700');
-  grd.addColorStop(0.6, '#FFF5A0');
+  grd.addColorStop(0.25, '#FFD700');
+  grd.addColorStop(0.5, '#FFF5A0');
+  grd.addColorStop(0.75, '#FFD700');
   grd.addColorStop(1, '#9A6A00');
   ctx.beginPath();
   ctx.arc(cx, cy, outerR, 0, Math.PI*2);
@@ -1218,37 +1251,24 @@ function drawChampionRing(id, label, size, pad) {
   ctx.fill();
 
   // Glow
-  ctx.shadowColor = 'rgba(212,160,0,0.6)';
-  ctx.shadowBlur = 8;
-  ctx.strokeStyle = 'rgba(255,220,50,0.5)';
+  ctx.shadowColor = 'rgba(212,160,0,0.7)';
+  ctx.shadowBlur = Math.round(pad * 1.5);
+  ctx.strokeStyle = 'rgba(255,230,80,0.6)';
   ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.arc(cx, cy, (outerR+innerR)/2, 0, Math.PI*2); ctx.stroke();
   ctx.shadowBlur = 0;
 
-  // Text curved along top of ring — white outline behind black text for contrast
-  var text = label.toUpperCase();
-  var textR = (outerR + innerR) / 2;
-  var fontSize = Math.max(9, Math.round(pad * 1.6));
-  ctx.font = 'bold ' + fontSize + 'px Arial Black, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  var totalWidth = ctx.measureText(text).width;
-  var totalAngle = Math.min(Math.PI * 1.7, totalWidth / textR);
-  var startAngle = -Math.PI/2 - totalAngle/2;
-  for (var i = 0; i < text.length; i++) {
-    var charAngle = startAngle + (i + 0.5) * totalAngle / text.length;
-    ctx.save();
-    ctx.translate(cx + textR * Math.cos(charAngle), cy + textR * Math.sin(charAngle));
-    ctx.rotate(charAngle + Math.PI/2);
-    // White outline first
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-    ctx.lineWidth = fontSize * 0.35;
-    ctx.lineJoin = 'round';
-    ctx.strokeText(text[i], 0, 0);
-    // Black fill on top
-    ctx.fillStyle = '#000000';
-    ctx.fillText(text[i], 0, 0);
-    ctx.restore();
+  // Star studs around the ring — 8 evenly spaced, no text
+  var studR = (outerR + innerR) / 2;
+  var studCount = 8;
+  ctx.fillStyle = '#0d0500';
+  for (var i = 0; i < studCount; i++) {
+    var angle = (i / studCount) * Math.PI * 2;
+    var sx = cx + studR * Math.cos(angle);
+    var sy = cy + studR * Math.sin(angle);
+    ctx.beginPath();
+    ctx.arc(sx, sy, Math.max(1.5, pad * 0.2), 0, Math.PI*2);
+    ctx.fill();
   }
 }
 
@@ -3555,13 +3575,16 @@ function renderTrophyRoomContent(el, data) {
   const avatarHtml = (function(){
     const years = data.champYears && data.champYears.length ? data.champYears : getChampionYearsForPlayer(p.id || p.playerId);
     if (!years.length) return `<div style="width:54px;height:54px;border-radius:50%;overflow:hidden;flex-shrink:0;">${avatarInnerTR}</div>`;
-    const label = years.join(', ') + (years.length === 1 ? ' Champion' : ' Champions');
-    const size = 54, pad = 7, total = size + pad*2;
+    const label = years.join(', ') + (years.length === 1 ? ' Champ' : ' Champs');
+    const size = 54, pad = 7, total = size + pad*2, fs = 10;
     const ringId = 'cr-modal-' + Math.random().toString(36).slice(2,8);
     setTimeout(function(){ drawChampionRing(ringId, label, size, pad); }, 80);
-    return `<div style="position:relative;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:${total}px;height:${total}px;" title="${escapeHtml(label)}">
-      <canvas id="${ringId}" width="${total*2}" height="${total*2}" style="position:absolute;inset:0;width:${total}px;height:${total}px;animation:champSpin 6s linear infinite;border-radius:50%;"></canvas>
-      <div style="position:relative;z-index:2;width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;">${avatarInnerTR}</div>
+    return `<div style="display:inline-flex;flex-direction:column;align-items:center;gap:3px;flex-shrink:0;" title="${escapeHtml(label)}">
+      <div style="position:relative;width:${total}px;height:${total}px;display:flex;align-items:center;justify-content:center;">
+        <canvas id="${ringId}" width="${total*2}" height="${total*2}" style="position:absolute;inset:0;width:${total}px;height:${total}px;animation:champSpin 6s linear infinite;border-radius:50%;"></canvas>
+        <div style="position:relative;z-index:2;width:${size}px;height:${size}px;border-radius:50%;overflow:hidden;">${avatarInnerTR}</div>
+      </div>
+      <div style="background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#000;font-size:${fs}px;font-weight:900;padding:2px ${Math.round(fs*0.8)}px;border-radius:20px;white-space:nowrap;letter-spacing:0.02em;box-shadow:0 1px 4px rgba(0,0,0,0.4);">👑 ${escapeHtml(label)}</div>
     </div>`;
   })();
 
