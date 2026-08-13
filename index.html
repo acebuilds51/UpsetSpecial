@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.9';
-const BUILD_TIME = '2026-08-12T03:58:35Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.10';
+const BUILD_TIME = '2026-08-12T04:22:46Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbxBywbx3X3fyyBr3wCjtzsQPfLPUi_hiGxqbBXpRHROEWCW_gxByeZuoAMmZQW_5Tby/exec'
@@ -3426,6 +3426,9 @@ function getMyBowlChampionPick() { return (State.bowlChampion || []).find(c => c
 let _trophyRoomCache = {};
 
 function openTrophyRoom(playerId) {
+  // Fallback to logged-in player if no ID provided
+  if (!playerId && State.player) playerId = State.player.id;
+  if (!playerId) { showToast('Could not identify player', 'error'); return; }
   // create modal if not exists
   let modal = document.getElementById('trophy-modal');
   if (!modal) {
@@ -4205,7 +4208,7 @@ function renderInfo(content) {
    CHAT / MESSAGE BOARD VIEW
    ============================================================ */
 async function renderChat(content) {
-  const isAdmin = State.player && State.player.isAdmin;
+  const isAdmin = State.player && (State.player.isAdmin === true || State.player.isAdmin === 'TRUE');
   const p = State.player;
 
   content.innerHTML = `
@@ -4291,7 +4294,7 @@ function renderChatMessages() {
   const container = document.getElementById('chat-messages');
   if (!container) return;
   const messages = _chatMessages[_chatTab] || [];
-  const isAdmin = State.player && State.player.isAdmin;
+  const isAdmin = State.player && (State.player.isAdmin === true || State.player.isAdmin === 'TRUE');
 
   if (messages.length === 0) {
     container.innerHTML = '<div class="empty-state"><p class="helptext">No messages yet. ' + (_chatTab === 'general' ? 'Say hello!' : 'No commissioner messages yet.') + '</p></div>';
