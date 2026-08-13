@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.10';
-const BUILD_TIME = '2026-08-12T04:22:46Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.12';
+const BUILD_TIME = '2026-08-12T04:35:28Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbxBywbx3X3fyyBr3wCjtzsQPfLPUi_hiGxqbBXpRHROEWCW_gxByeZuoAMmZQW_5Tby/exec'
@@ -737,10 +737,12 @@ async function refreshState() {
   if (!State._careerHistory) {
     api('getCareerHistory', {}, true).then(d => { State._careerHistory = d.history || []; }).catch(()=>{});
   }
-  // refresh logged-in player's own record
+  // refresh logged-in player's own record — preserve full avatar from session since
+  // State.players only carries avatarThumb (stripped for cache size)
   const me = State.players.find(p => p.id === State.player.id);
   if (me) {
-    State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, avatar: me.avatar, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif, chatNotif: me.chatNotif };
+    const existingAvatar = State.player.avatar || '';
+    State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, avatar: existingAvatar, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif, chatNotif: me.chatNotif };
     saveSession(State.player);
   }
 }
@@ -2460,7 +2462,7 @@ async function renderHistoryTab(el) {
     const d = lb.slice();
     if (view === 'stats')  d.sort((a,b) => (b.totalPts||0)-(a.totalPts||0));
     else if (view === 'pw') d.sort((a,b) => (b.perfectWeeks||[]).length-(a.perfectWeeks||[]).length || score(b)-score(a));
-    else if (view === 'az') d.sort((a,b) => a.teamName.localeCompare(b.teamName));
+    else if (view === 'az') d.sort((a,b) => (a.teamName||'').localeCompare(b.teamName||''));
     else d.sort((a,b) => total(b)-total(a) || b.gold.length-a.gold.length || score(b)-score(a));
     return d;
   }
@@ -2506,7 +2508,7 @@ async function renderHistoryTab(el) {
           + '<div style="font-size:11px;text-align:center;color:var(--text-soft);">' + seas + '</div>';
       } else {
         const tot = total(p), pwCount = (p.perfectWeeks||[]).length;
-        const allYears = [...p.gold,...p.silver,...p.bronze].sort();
+        const allYears = [...(p.gold||[]),...(p.silver||[]),...(p.bronze||[])].sort();
         const sub = allYears.length ? allYears.join(', ') : (pwCount ? 'Perfect weeks only' : '');
         dataCols = '<div style="font-size:12px;color:var(--text-soft);text-align:center;">' + (isAZ?'':i+1) + '</div>'
           + '<div style="min-width:0;"><div style="font-size:13px;' + nameStyle + 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(p.teamName) + champRingEl + unlinked + '</div>'
