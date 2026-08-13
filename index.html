@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.6';
-const BUILD_TIME = '2026-08-12T03:11:00Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.9';
+const BUILD_TIME = '2026-08-12T03:58:35Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbyHh9lYFhr8v1k68W0Zq8cHDt2tDwR4gm0LzP08AVS07Z9Th6mtHwf6kii6esjLBYGc/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbxBywbx3X3fyyBr3wCjtzsQPfLPUi_hiGxqbBXpRHROEWCW_gxByeZuoAMmZQW_5Tby/exec'
 };
 
 const State = {
@@ -1054,6 +1054,10 @@ function renderRegister() {
           <label>Confirm PIN</label>
           <input type="password" id="reg-pin2" inputmode="numeric" placeholder="Re-enter PIN" maxlength="6">
         </div>
+        <div class="field">
+          <label>Referred by <span style="font-weight:400; text-transform:none; letter-spacing:0;">(optional — who told you about the league?)</span></label>
+          <input type="text" id="reg-referred" placeholder="e.g. HARBAUGH4PRESIDENT">
+        </div>
 
         <button class="btn btn-gold btn-block" id="reg-submit-btn" style="margin-top:4px;">Submit Registration</button>
         <p class="helptext" style="text-align:center; margin-top:12px;">Once Jeff confirms your payment he'll activate your account and you'll be able to log in.</p>
@@ -1073,6 +1077,7 @@ async function submitRegistration() {
   const email = document.getElementById('reg-email').value.trim();
   const pin = document.getElementById('reg-pin').value.trim();
   const pin2 = document.getElementById('reg-pin2').value.trim();
+  const referredBy = (document.getElementById('reg-referred').value || '').trim();
 
   if (!name) { showToast('Enter your full name', 'error'); return; }
   if (!teamName) { showToast('Enter a team name', 'error'); return; }
@@ -1083,7 +1088,7 @@ async function submitRegistration() {
   const btn = document.getElementById('reg-submit-btn');
   btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
   try {
-    const data = await api('registerPlayer', { name, teamName, pin, email });
+    const data = await api('registerPlayer', { name, teamName, pin, email, referredBy });
     // show success screen
     const app = document.getElementById('app');
     app.innerHTML = `
@@ -1569,11 +1574,28 @@ function renderCountdownBadge(game) {
 }
 
 function renderSlate(content) {
+  // Guard against empty State (can happen during boot on slow connections)
+  if (!State.season || !State.games || !State.rotation) {
+    content.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading board...</p></div>';
+    return;
+  }
   const week = currentWeek();
   const rotation = getRotationForWeek(week);
   const games = getGamesForWeek(week);
   const posted = isWeekPosted(week);
   const isPicker = rotation && rotation.playerId === State.player.id;
+
+  // Dublin / early kickoff warning — Week 0 games can kick off very early ET
+  const hasEarlyKickoff = games.some(g => {
+    if (!g.kickoff) return false;
+    const ko = new Date(g.kickoff);
+    return ko.getUTCHours() < 16; // before noon ET (16:00 UTC)
+  });
+  const earlyWarning = hasEarlyKickoff ? `
+    <div style="background:rgba(212,175,55,0.12);border:1px solid var(--upset-gold);border-radius:var(--radius-sm);padding:10px 14px;margin-bottom:12px;font-size:13px;color:var(--upset-gold);display:flex;gap:8px;align-items:flex-start;">
+      <span>⚠️</span>
+      <span><strong>Early Kickoff This Week!</strong> One or more games kick off earlier than usual — double-check kickoff times and get your picks in early.</span>
+    </div>` : '';
 
   if (!rotation) {
     content.innerHTML = `<div class="empty-state"><h3>No picker assigned</h3><p>The commissioner hasn't assigned this week's picker yet.</p></div>`;
@@ -1593,7 +1615,7 @@ function renderSlate(content) {
       </div>`;
     return;
   }
-  renderPicksBoard(content, week, games);
+  renderPicksBoard(content, week, games, earlyWarning);
 }
 
 /* ---- Picker's submission form ---- */
@@ -1795,7 +1817,8 @@ async function submitSlate() {
 }
 
 /* ---- Posted board: players make their picks ---- */
-function renderPicksBoard(content, week, games) {
+function renderPicksBoard(content, week, games, earlyWarning) {
+  earlyWarning = earlyWarning || '';
   const existingPicks = getMyPicksForWeek(week);
   if (existingPicks.length > 0 && Object.keys(_draftPicks).length === 0) {
     existingPicks.forEach(p => {
@@ -1816,6 +1839,7 @@ function renderPicksBoard(content, week, games) {
   const hasUpset = Object.keys(_draftPicks).some(gid => _draftPicks[gid].isUpset) || _upsetSelection;
 
   content.innerHTML = `
+    ${earlyWarning}
     <div class="card" style="background:var(--surface-3); color:#fff;">
       <div class="flex-between">
         <div>
