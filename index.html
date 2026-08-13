@@ -410,8 +410,8 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v11.8';
-const BUILD_TIME = '2026-08-12T02:02:50Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v11.9';
+const BUILD_TIME = '2026-08-12T02:08:35Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbyER_Ps1tQ0S5LIsI0MYPHq3GXuCj_p1Q8gGStOsJzbgSKRdfo9CcHq6pKRrYpFTLHm/exec'
@@ -673,13 +673,11 @@ async function refreshState() {
         State.bowlChampion = c.bowlChampion;
         State.bowlLedger = c.bowlLedger;
         State.snapshotCount = c.snapshotCount || 0;
-        // Render immediately with cached data, then refresh in background
-        renderContent();
       }
     } catch(e) {}
   }
 
-  // Always fetch fresh data — update UI when it arrives
+  // Always fetch fresh data from server
   const data = await api('getState', {});
   State.players = data.players;
   State.season = seasonArrToObj(data.season);
