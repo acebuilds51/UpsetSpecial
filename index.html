@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.26';
-const BUILD_TIME = '2026-08-13T01:27:41Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.28';
+const BUILD_TIME = '2026-08-14T13:19:27Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbyvHMjqIFKxn46Wg6rk7ppScpBtpmNzHzJJgetJje9FJMoW_Ieh5sx4UbWAUE4WfV6I/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbzJ2q3U5aIbs_6voaMZVBhrHRCe2D6BG1Fj9wsi3X5LcfQY-eJS4r_zoGVf8k58za0/exec'
 };
 
 const State = {
@@ -3769,7 +3769,7 @@ function renderTrophyRoomContent(el, data) {
       <div style="display:flex;align-items:center;gap:12px;">
         ${bio.photoUrl
           ? `<div style="width:72px;height:72px;border-radius:10px;overflow:hidden;flex-shrink:0;cursor:pointer;border:2px solid var(--hairline);" onclick="showLightbox('${bio.photoUrl}')">
-               <img src="${bio.photoUrl}" style="width:100%;height:100%;object-fit:cover;object-position:center top;display:block;">
+               <img src="${bio.photoUrl}" style="width:100%;height:100%;object-fit:cover;object-position:center center;display:block;">
              </div>`
           : `<div style="width:72px;height:72px;border-radius:10px;background:var(--surface-3);border:1px dashed var(--hairline);display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-faint);text-align:center;flex-shrink:0;">${isMe ? 'Add<br>Photo' : ''}</div>`
         }
@@ -5135,6 +5135,7 @@ function renderAdminWeek(el) {
         <button class="btn btn-ghost btn-block" id="apply-defaults-btn">Apply "Favorite" Default for Missing Picks</button>
         <button class="btn btn-ghost btn-block" id="archive-perfect-weeks-btn" style="margin-top:6px;">🎯 Archive Perfect Weeks for Week ${week}</button>
         <button class="btn btn-ghost btn-block" id="archive-season-trophies-btn" style="margin-top:6px;">🏆 Archive Season Trophies (All Years)</button>
+        <button class="btn btn-ghost btn-block" id="clear-season-trophies-btn" style="margin-top:6px;color:var(--loss);">🗑️ Clear & Re-Archive Season Trophies</button>
       </div>
       <div class="card">
         <button class="btn btn-ghost btn-block" id="refresh-snapshot-btn">Add Missing Lines to Snapshot</button>
@@ -5234,6 +5235,19 @@ function renderAdminWeek(el) {
         await refreshState(); renderAdmin(document.getElementById('content'));
       } catch (e) {}
     };
+    if (document.getElementById('clear-season-trophies-btn')) {
+      document.getElementById('clear-season-trophies-btn').onclick = async (e) => {
+        if (!confirm('Clear all archived trophy data and re-archive from scratch?')) return;
+        const btn = e.currentTarget;
+        btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+        try {
+          await api('adminClearSeasonTrophies', { adminId: State.player.id });
+          const data = await api('adminArchiveSeasonTrophies', { adminId: State.player.id });
+          showToast(`Re-archived ${data.archived} trophy position(s)`, 'success');
+        } catch(e) { showToast('Failed: ' + e.message, 'error'); }
+        btn.innerHTML = '🗑️ Clear & Re-Archive Season Trophies';
+      };
+    }
     if (document.getElementById('archive-season-trophies-btn')) {
       document.getElementById('archive-season-trophies-btn').onclick = async (e) => {
         const btn = e.currentTarget;
