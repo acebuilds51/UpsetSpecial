@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.30';
-const BUILD_TIME = '2026-08-14T13:44:42Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v12.32';
+const BUILD_TIME = '2026-08-14T14:06:09Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbwN7_rOsL0fl9D9RkBwlYSW8nxigkL9ubPZB8uJMWrXvRYLLmslLH7lPCr35bf4rT6s/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbz9anB3kp9CwUKsxv9XfOopssFCd8WqWPqVOKAF76dnFE8BBoLl-P2Ywh67pUTO5O0i/exec'
 };
 
 const State = {
@@ -3583,7 +3583,14 @@ function renderTrophyRoomContent(el, data) {
       </div>`;
   }
 
-  const seasonTrophies = data.trophies || [];
+  // Deduplicate by year+position before display (guards against duplicate archive rows)
+  const _seenTrophyKeys = {};
+  const seasonTrophies = (data.trophies || []).filter(t => {
+    const key = t.year + '_' + t.position;
+    if (_seenTrophyKeys[key]) return false;
+    _seenTrophyKeys[key] = true;
+    return true;
+  });
   const bowlTrophies   = data.bowlTrophies || [];
   const hasSeason      = seasonTrophies.length > 0;
   const hasBowl        = bowlTrophies.length > 0;
