@@ -410,11 +410,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v12.34';
-const BUILD_TIME = '2026-08-14T14:23:24Z'; // auto-identifies this exact build -- never edit manually
+const VERSION = 'v13.2';
+const BUILD_TIME = '2026-08-15T13:46:12Z'; // auto-identifies this exact build -- never edit manually
 
 const CONFIG = {
-  API_URL: 'https://script.google.com/macros/s/AKfycbx_Dj6qbRPbdGIjmD4lSgLaqqckCqHyISvAap23NXt3crOY2mesBTpwKydNZaop9TgV/exec'
+  API_URL: 'https://script.google.com/macros/s/AKfycbxp7zJi0DlONwccUCffEfwXx54H-vjksYlUxKbYu-QxRpKvutkBaRKdr7UR0KfVybUa/exec'
 };
 
 const State = {
@@ -5144,6 +5144,16 @@ function renderAdminWeek(el) {
         <button class="btn btn-ghost btn-block" id="archive-season-trophies-btn" style="margin-top:6px;">🏆 Archive Season Trophies (All Years)</button>
         <button class="btn btn-ghost btn-block" id="clear-season-trophies-btn" style="margin-top:6px;color:var(--loss);">🗑️ Clear & Re-Archive Season Trophies</button>
       </div>
+
+    <div class="section-label">📧 Email Center</div>
+    <div class="card">
+      <div style="display:flex; gap:0; border-bottom:1px solid var(--hairline); margin:-4px -4px 12px;">
+        <button class="tab-btn active" data-mailtab="templates" style="flex:1;">Templates</button>
+        <button class="tab-btn" data-mailtab="compose" style="flex:1;">Compose</button>
+        <button class="tab-btn" data-mailtab="results" style="flex:1;">AI Results</button>
+      </div>
+      <div id="mail-panel"><div class="empty-state"><span class="spinner"></span></div></div>
+    </div>
       <div class="card">
         <button class="btn btn-ghost btn-block" id="refresh-snapshot-btn">Add Missing Lines to Snapshot</button>
         <p class="helptext" style="margin-top:8px;">Run this Tuesday or Wednesday if ESPN didn't have all lines posted on Monday. Only adds <em>new</em> games — never overwrites existing Monday lines.</p>
@@ -5242,6 +5252,17 @@ function renderAdminWeek(el) {
         await refreshState(); renderAdmin(document.getElementById('content'));
       } catch (e) {}
     };
+    // ── Email Center ──────────────────────────────────────────────────────
+    document.querySelectorAll('[data-mailtab]').forEach(btn => {
+      btn.onclick = () => {
+        document.querySelectorAll('[data-mailtab]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        _mailTab = btn.dataset.mailtab;
+        renderMailPanel();
+      };
+    });
+    renderMailPanel();
+
     if (document.getElementById('clear-season-trophies-btn')) {
       document.getElementById('clear-season-trophies-btn').onclick = async (e) => {
         if (!confirm('Clear all archived trophy data and re-archive from scratch?')) return;
@@ -5288,6 +5309,237 @@ function renderAdminWeek(el) {
       };
     });
   }
+}
+
+let _mailTab = 'templates';
+let _mailTemplates = null;
+let _mailFolderUrl = '';
+let _mailQuota = null;
+let _aiResultsDraft = null;
+
+function mailStatus(msg, kind) {
+  const el = document.getElementById('mail-status');
+  if (!el) return;
+  const color = kind === 'error' ? 'var(--loss)' : kind === 'success' ? 'var(--win)' : 'var(--text-soft)';
+  el.innerHTML = `<div style="font-size:13px;color:${color};padding:10px 0;line-height:1.5;">${escapeHtml(msg)}</div>`;
+}
+
+async function renderMailPanel() {
+  const el = document.getElementById('mail-panel');
+  if (!el) return;
+
+  if (_mailTab === 'templates') {
+    el.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:8px;">Loading templates…</p></div>';
+    try {
+      const d = await api('adminListEmailTemplates', { adminId: State.player.id });
+      _mailTemplates = d.templates || [];
+      _mailFolderUrl = d.folderUrl || '';
+      _mailQuota = d.quota;
+    } catch (e) {
+      el.innerHTML = `<div class="empty-state"><p style="color:var(--loss);">${escapeHtml(e.message)}</p></div>`;
+      return;
+    }
+
+    el.innerHTML = `
+      <p class="helptext" style="margin-bottom:10px;line-height:1.6;">
+        Drop <strong>.html</strong> files into the Drive folder <em>UpsetSpecial Email Templates</em> and they appear here.
+        ${_mailFolderUrl ? `<a href="${_mailFolderUrl}" target="_blank" style="color:var(--gold);">Open folder →</a>` : ''}
+      </p>
+      ${_mailQuota != null ? `<p class="helptext" style="margin-bottom:12px;">Daily send quota remaining: <strong>${_mailQuota}</strong></p>` : ''}
+      ${_mailTemplates.length === 0 ? `
+        <div class="empty-state"><p class="helptext">No templates yet. Upload your email HTML files to the Drive folder above.</p></div>
+      ` : `
+        <div class="field"><label>Template</label>
+          <select id="mail-tpl-select">
+            ${_mailTemplates.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Subject Line</label>
+          <input type="text" id="mail-tpl-subject" placeholder="e.g. Upset Special 2026 — The App Is Live">
+        </div>
+        <button class="btn btn-ghost btn-block" id="mail-tpl-preview" style="margin-bottom:6px;">👁 Preview</button>
+        <button class="btn btn-ghost btn-block" id="mail-tpl-test" style="margin-bottom:6px;">✉️ Send Test to Me</button>
+        <button class="btn btn-primary btn-block" id="mail-tpl-send">📤 Send to All Players</button>
+      `}
+      <div id="mail-status"></div>
+      <div id="mail-preview"></div>
+    `;
+
+    if (_mailTemplates.length === 0) return;
+
+    document.getElementById('mail-tpl-preview').onclick = async () => {
+      const id = document.getElementById('mail-tpl-select').value;
+      mailStatus('Loading preview…');
+      try {
+        const d = await api('adminGetEmailTemplate', { adminId: State.player.id, templateId: id });
+        showEmailPreview(d.html);
+        mailStatus('');
+      } catch (e) { mailStatus(e.message, 'error'); }
+    };
+
+    document.getElementById('mail-tpl-test').onclick = (ev) => sendTemplate(ev, true);
+    document.getElementById('mail-tpl-send').onclick = (ev) => sendTemplate(ev, false);
+
+    async function sendTemplate(ev, testOnly) {
+      const id = document.getElementById('mail-tpl-select').value;
+      const subject = document.getElementById('mail-tpl-subject').value.trim();
+      if (!subject) { mailStatus('Enter a subject line first.', 'error'); return; }
+      if (!testOnly && !confirm(`Send "${subject}" to ALL active players. This cannot be undone. Continue?`)) return;
+      const btn = ev.currentTarget, label = btn.innerHTML;
+      btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+      try {
+        const d = await api('adminSendTemplateEmail', { adminId: State.player.id, templateId: id, subject, testOnly });
+        mailStatus(`Sent to ${d.sent} recipient${d.sent === 1 ? '' : 's'}.` +
+          (d.failed && d.failed.length ? ` Failed: ${d.failed.length}.` : '') +
+          ` Quota left: ${d.quotaLeft}.`, 'success');
+      } catch (e) { mailStatus(e.message, 'error'); }
+      btn.innerHTML = label;
+    }
+
+  } else if (_mailTab === 'compose') {
+    el.innerHTML = `
+      <p class="helptext" style="margin-bottom:12px;line-height:1.6;">
+        Write a one-off message. It gets wrapped in the standard Upset Special header and footer automatically.
+      </p>
+      <div class="field"><label>Subject Line</label><input type="text" id="mail-c-subject" placeholder="Shows in the inbox"></div>
+      <div class="field"><label>Headline</label><input type="text" id="mail-c-title" placeholder="Big text on the orange banner"></div>
+      <div class="field"><label>Subtitle <span style="font-weight:400;text-transform:none;letter-spacing:0;">(optional)</span></label><input type="text" id="mail-c-subtitle" placeholder="Smaller line under the headline"></div>
+      <div class="field"><label>Message</label>
+        <textarea id="mail-c-body" rows="10" placeholder="Write your message. Blank lines become paragraphs. Basic HTML like <strong>bold</strong> works too."></textarea>
+      </div>
+      <button class="btn btn-ghost btn-block" id="mail-c-preview" style="margin-bottom:6px;">👁 Preview</button>
+      <button class="btn btn-ghost btn-block" id="mail-c-test" style="margin-bottom:6px;">✉️ Send Test to Me</button>
+      <button class="btn btn-primary btn-block" id="mail-c-send">📤 Send to All Players</button>
+      <div id="mail-status"></div>
+      <div id="mail-preview"></div>
+    `;
+
+    const readCompose = () => {
+      const raw = document.getElementById('mail-c-body').value.trim();
+      // Turn blank-line-separated plain text into paragraphs, leave existing HTML alone
+      const bodyHtml = raw.indexOf('<p') === 0 || raw.indexOf('<div') === 0
+        ? raw
+        : raw.split(/\n\s*\n/).map(p => `<p style="margin-bottom:16px;">${p.replace(/\n/g, '<br>')}</p>`).join('\n');
+      return {
+        subject: document.getElementById('mail-c-subject').value.trim(),
+        title: document.getElementById('mail-c-title').value.trim(),
+        subtitle: document.getElementById('mail-c-subtitle').value.trim(),
+        bodyHtml
+      };
+    };
+
+    document.getElementById('mail-c-preview').onclick = async () => {
+      const c = readCompose();
+      if (!c.title || !c.bodyHtml) { mailStatus('Add a headline and a message first.', 'error'); return; }
+      mailStatus('Building preview…');
+      try {
+        const d = await api('adminPreviewCustomEmail', { adminId: State.player.id, ...c });
+        showEmailPreview(d.html);
+        mailStatus('');
+      } catch (e) { mailStatus(e.message, 'error'); }
+    };
+
+    document.getElementById('mail-c-test').onclick = (ev) => sendCustom(ev, true);
+    document.getElementById('mail-c-send').onclick = (ev) => sendCustom(ev, false);
+
+    async function sendCustom(ev, testOnly) {
+      const c = readCompose();
+      if (!c.subject) { mailStatus('Enter a subject line.', 'error'); return; }
+      if (!c.title)   { mailStatus('Enter a headline.', 'error'); return; }
+      if (!c.bodyHtml){ mailStatus('Write a message.', 'error'); return; }
+      if (!testOnly && !confirm(`Send "${c.subject}" to ALL active players. Continue?`)) return;
+      const btn = ev.currentTarget, label = btn.innerHTML;
+      btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+      try {
+        const d = await api('adminSendCustomEmail', { adminId: State.player.id, ...c, testOnly });
+        mailStatus(`Sent to ${d.sent} recipient${d.sent === 1 ? '' : 's'}. Quota left: ${d.quotaLeft}.`, 'success');
+      } catch (e) { mailStatus(e.message, 'error'); }
+      btn.innerHTML = label;
+    }
+
+  } else {
+    const wk = currentWeek();
+    el.innerHTML = `
+      <p class="helptext" style="margin-bottom:12px;line-height:1.6;">
+        Claude reads the week's actual results — scores, upsets, every player's record — and writes the recap.
+        Post results first, then generate. Review and edit before sending.
+      </p>
+      <div class="field"><label>Week</label><input type="number" id="mail-ai-week" value="${wk}" min="0" max="20"></div>
+      <button class="btn btn-primary btn-block" id="mail-ai-gen">🤖 Generate Week Recap</button>
+      <div id="mail-status"></div>
+      <div id="mail-ai-draft"></div>
+      <div id="mail-preview"></div>
+    `;
+
+    document.getElementById('mail-ai-gen').onclick = async (ev) => {
+      const week = Number(document.getElementById('mail-ai-week').value);
+      const btn = ev.currentTarget, label = btn.innerHTML;
+      btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+      mailStatus('Reading the week and writing the recap — about 20 seconds…');
+      try {
+        const d = await api('adminGenerateResultsEmail', { adminId: State.player.id, week });
+        _aiResultsDraft = d;
+        mailStatus(`Generated from ${d.stats.games} games, ${d.stats.players} players, ${d.stats.upsetHits} upset hit(s), ${d.stats.perfectWeeks} perfect week(s).`, 'success');
+        document.getElementById('mail-ai-draft').innerHTML = `
+          <div class="field" style="margin-top:14px;"><label>Subject Line</label>
+            <input type="text" id="mail-ai-subject" value="Upset Special — Week ${d.week} Results">
+          </div>
+          <div class="field"><label>Headline</label><input type="text" id="mail-ai-title" value="${escapeHtml(d.title)}"></div>
+          <div class="field"><label>Subtitle</label><input type="text" id="mail-ai-subtitle" value="${escapeHtml(d.subtitle)}"></div>
+          <div class="field"><label>Body <span style="font-weight:400;text-transform:none;letter-spacing:0;">(edit freely)</span></label>
+            <textarea id="mail-ai-body" rows="14">${escapeHtml(d.bodyHtml)}</textarea>
+          </div>
+          <button class="btn btn-ghost btn-block" id="mail-ai-preview" style="margin-bottom:6px;">👁 Preview</button>
+          <button class="btn btn-ghost btn-block" id="mail-ai-test" style="margin-bottom:6px;">✉️ Send Test to Me</button>
+          <button class="btn btn-primary btn-block" id="mail-ai-send">📤 Send to All Players</button>
+        `;
+
+        const readAi = () => ({
+          subject: document.getElementById('mail-ai-subject').value.trim(),
+          title: document.getElementById('mail-ai-title').value.trim(),
+          subtitle: document.getElementById('mail-ai-subtitle').value.trim(),
+          bodyHtml: document.getElementById('mail-ai-body').value.trim()
+        });
+
+        document.getElementById('mail-ai-preview').onclick = async () => {
+          const c = readAi();
+          try {
+            const p = await api('adminPreviewCustomEmail', { adminId: State.player.id, ...c });
+            showEmailPreview(p.html);
+          } catch (e) { mailStatus(e.message, 'error'); }
+        };
+        document.getElementById('mail-ai-test').onclick = (e2) => sendAi(e2, true);
+        document.getElementById('mail-ai-send').onclick = (e2) => sendAi(e2, false);
+
+        async function sendAi(e2, testOnly) {
+          const c = readAi();
+          if (!c.subject) { mailStatus('Enter a subject line.', 'error'); return; }
+          if (!testOnly && !confirm(`Send "${c.subject}" to ALL active players. Continue?`)) return;
+          const b = e2.currentTarget, lbl = b.innerHTML;
+          b.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+          try {
+            const r = await api('adminSendCustomEmail', { adminId: State.player.id, ...c, testOnly });
+            mailStatus(`Sent to ${r.sent} recipient${r.sent === 1 ? '' : 's'}. Quota left: ${r.quotaLeft}.`, 'success');
+          } catch (e3) { mailStatus(e3.message, 'error'); }
+          b.innerHTML = lbl;
+        }
+      } catch (e) { mailStatus(e.message, 'error'); }
+      btn.innerHTML = label;
+    };
+  }
+}
+
+function showEmailPreview(html) {
+  const box = document.getElementById('mail-preview');
+  if (!box) return;
+  box.innerHTML = `
+    <div style="margin-top:14px;border:1px solid var(--hairline);border-radius:var(--radius-sm);overflow:hidden;background:#fff;">
+      <div style="background:var(--surface-2);padding:8px 12px;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--text-faint);">Preview</div>
+      <iframe id="mail-preview-frame" style="width:100%;height:520px;border:none;display:block;background:#fff;"></iframe>
+    </div>`;
+  const frame = document.getElementById('mail-preview-frame');
+  const doc = frame.contentDocument || frame.contentWindow.document;
+  doc.open(); doc.write(html); doc.close();
 }
 
 function renderAdminGamesCard(games, posted) {
