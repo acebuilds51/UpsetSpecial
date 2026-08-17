@@ -1115,25 +1115,26 @@ async function submitRegistration() {
   const btn = document.getElementById('reg-submit-btn');
   btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
   try {
-    const data = await api('registerPlayer', { name, teamName, pin, email, referredBy });
-    // show success screen
-    const app = document.getElementById('app');
-    app.innerHTML = `
-      <div class="login-wrap">
-        <div class="login-card" style="text-align:center;">
-          <div style="font-size:48px; margin-bottom:12px;">🏈</div>
-          <div style="font-family:var(--font-display); font-size:22px; font-weight:700; color:var(--text); margin-bottom:8px;">You're Registered!</div>
-          <p class="helptext" style="line-height:1.6; margin-bottom:20px;">${escapeHtml(data.message)}</p>
-          <div class="card" style="background:var(--surface-2); text-align:left; margin-bottom:16px;">
-            <div class="card-title">Your Details</div>
-            <p class="helptext"><strong style="color:var(--text);">Name:</strong> ${escapeHtml(name)}</p>
-            <p class="helptext" style="margin-top:4px;"><strong style="color:var(--text);">Team:</strong> ${escapeHtml(teamName)}</p>
-            <p class="helptext" style="margin-top:4px;"><strong style="color:var(--gold);">Remember your PIN:</strong> ${escapeHtml(pin)}</p>
-          </div>
-          <button class="btn btn-primary btn-block" onclick="renderLogin()">Back to Login</button>
-        </div>
-      </div>
-    `;
+    await api('registerPlayer', { name, teamName, pin, email, referredBy });
+    // registration succeeded -- log them straight into the app rather than making
+    // them re-enter their credentials on a separate "wait for approval" screen.
+    // They'll see a pending banner (added in render()) until an admin approves them.
+    const data = await api('login', { name: teamName, pin });
+    if (data.player && data.player.id && !data.player.avatar) {
+      data.player.avatar = loadSavedAvatar(data.player.id);
+    }
+    State.player = data.player;
+    saveSession(data.player);
+    render();
+    try {
+      await refreshState();
+      renderContent();
+      startBackgroundPolling();
+    } catch(e) {
+      showToast('Logged in, but failed to load data. Check your connection.', 'error');
+      renderContent();
+    }
+    showToast("Welcome! Your entry is pending confirmation from Jeff.", 'success');
   } catch(e) {
     btn.innerHTML = 'Submit Registration';
   }
@@ -1162,6 +1163,10 @@ function render() {
         <button class="logout" id="logout-btn">Log out</button>
       </div>
     </div>
+    ${(!p.isAdmin && !p.active) ? `
+    <div style="background:rgba(242,182,50,0.14); border-bottom:1px solid rgba(242,182,50,0.35); color:var(--gold); font-size:13px; font-weight:600; text-align:center; padding:8px 16px; line-height:1.4;">
+      Your entry is pending confirmation from Jeff — look around and make your picks, but you won't appear in standings until you're approved.
+    </div>` : ''}
     <div class="content" id="content"></div>
     <div class="bottomnav" id="bottomnav"></div>
     <!-- Floating help button -->
