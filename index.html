@@ -772,7 +772,7 @@ async function refreshState() {
   const me = State.players.find(p => p.id === State.player.id);
   if (me) {
     const freshAvatar = (State._avatarMap && State._avatarMap[State.player.id]) || State.player.avatar || loadSavedAvatar(State.player.id) || '';
-    State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, email: me.email || State.player.email || '', avatar: freshAvatar, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif, chatNotif: me.chatNotif };
+    State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, email: me.email || State.player.email || '', avatar: freshAvatar, memberSince: me.memberSince, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif, chatNotif: me.chatNotif };
     saveSession(State.player);
   }
 }
@@ -2671,7 +2671,7 @@ async function renderProfile(content) {
       </div>
       <div style="flex:1; min-width:0;">
         <div style="font-family:var(--font-display); font-size:18px; font-weight:700; color:var(--text);">${escapeHtml(p.teamName || p.name)}</div>
-        <div class="helptext" style="margin-top:2px;">${escapeHtml(p.name)} &middot; ${p.isAdmin ? 'Admin' : 'Player'} &middot; Since ${escapeHtml(String(p.joinedSeason || season.year || ''))}</div>
+        <div class="helptext" style="margin-top:2px;">${escapeHtml(p.name)} &middot; ${p.isAdmin ? 'Admin' : 'Player'} &middot; Since ${escapeHtml(String(p.memberSince || p.joinedSeason || season.year || ''))}</div>
         <div style="margin-top:4px;">
           <span style="font-size:11px; font-weight:700; padding:2px 8px; border-radius:20px; background:${p.isPaid ? 'rgba(76,175,80,0.15)' : 'rgba(255,82,82,0.15)'}; color:${p.isPaid ? 'var(--win)' : 'var(--loss)'};">
             ${p.isPaid ? '✓ Entry Fee Paid' : '⚠ Entry Fee Unpaid'}
@@ -3213,7 +3213,7 @@ async function renderProfile(content) {
       const res = await api('generateBio', {
         playerId: p.id,
         teamName: p.teamName,
-        joinedSeason: p.joinedSeason || '',
+        joinedSeason: p.memberSince || p.joinedSeason || '',
         answers
       });
       const bioText = res.bioText || '';
@@ -3811,7 +3811,7 @@ function renderTrophyRoomContent(el, data) {
           <div style="font-size:13px;color:var(--text-faint);margin-top:3px;">${escapeHtml(p.name)}</div>
           ${bio.hometown ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.hometown)}</div>` : ''}
           ${bio.college ? `<div style="font-size:12px;color:var(--text-faint);">${escapeHtml(bio.college)}</div>` : ''}
-          <div style="font-size:11px;color:var(--text-faint);margin-top:2px;">In league since ${p.joinedSeason || ''}</div>
+          <div style="font-size:11px;color:var(--text-faint);margin-top:2px;">In league since ${p.memberSince || p.joinedSeason || ''}</div>
         </div>
       </div>
     </div>
