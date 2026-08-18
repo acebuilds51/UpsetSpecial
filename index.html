@@ -1032,7 +1032,7 @@ async function doLogin() {
    REGISTRATION SCREEN
    ============================================================ */
 function renderRegister() {
-  const entryFee = State.season.entryFee || 50;
+  const entryFee = State.season.entryFee || 100;
   const app = document.getElementById('app');
   app.innerHTML = `
     <div class="login-wrap" style="align-items:flex-start; padding-top:24px; overflow-y:auto;">
@@ -2289,6 +2289,12 @@ function renderSeasonStandings(el, standings, completedWeeks) {
         ${standings.map((s, i) => `
           <div class="standing-row ${i === 0 ? 'rank-1' : ''}" style="padding:12px 16px; border-bottom:${i < standings.length-1 ? '1px solid var(--hairline)' : 'none'};">
             <div class="standing-rank" style="color:${i === 0 ? 'var(--gold)' : i === 1 ? 'var(--text-soft)' : i === 2 ? '#cd7f32' : 'var(--text-faint)'};">${i + 1}</div>
+            ${(() => {
+              const sp = (State.players || []).find(pl => pl.id === s.playerId);
+              return sp && sp.avatar
+                ? `<img src="${sp.avatar}" style="width:32px; height:32px; border-radius:50%; object-fit:cover; flex-shrink:0; cursor:pointer;" onclick="showLightbox('${sp.avatar}')">`
+                : `<div style="width:32px; height:32px; border-radius:50%; background:var(--upset-grad); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; color:#1A1206; flex-shrink:0;">${escapeHtml((s.teamName || s.name || '?')[0].toUpperCase())}</div>`;
+            })()}
             <div style="flex:1;">
               <div class="standing-name" data-player-id="${s.playerId}" style="cursor:pointer;display:flex;align-items:center;gap:6px;">
                 ${(() => { const yrs = getChampionYearsForPlayer(s.playerId); return yrs.length ? `<span style="font-size:11px;font-weight:800;background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#1A0800;padding:1px 6px;border-radius:20px;white-space:nowrap;">${escapeHtml(yrs.join(', '))} 👑</span>` : ''; })()}
