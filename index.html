@@ -752,12 +752,13 @@ async function refreshState() {
   if (!State._careerHistory) {
     api('getCareerHistory', {}, true).then(d => { State._careerHistory = d.history || []; }).catch(()=>{});
   }
-  // refresh logged-in player's own record — preserve full avatar from session since
-  // State.players only carries avatarThumb (stripped for cache size)
+  // refresh logged-in player's own record — now that the backend sends the real
+  // avatar (not the old truncated avatarThumb), trust the fresh value first and
+  // only fall back to session/localStorage if it's genuinely empty
   const me = State.players.find(p => p.id === State.player.id);
   if (me) {
-    const existingAvatar = State.player.avatar || loadSavedAvatar(State.player.id) || '';
-    State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, email: me.email || State.player.email || '', avatar: existingAvatar, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif, chatNotif: me.chatNotif };
+    const freshAvatar = me.avatar || State.player.avatar || loadSavedAvatar(State.player.id) || '';
+    State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, email: me.email || State.player.email || '', avatar: freshAvatar, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif, chatNotif: me.chatNotif };
     saveSession(State.player);
   }
 }
