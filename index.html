@@ -752,12 +752,26 @@ async function refreshState() {
   if (!State._careerHistory) {
     api('getCareerHistory', {}, true).then(d => { State._careerHistory = d.history || []; }).catch(()=>{});
   }
-  // refresh logged-in player's own record — now that the backend sends the real
-  // avatar (not the old truncated avatarThumb), trust the fresh value first and
-  // only fall back to session/localStorage if it's genuinely empty
+  // pre-load everyone's avatars in the background, once per session — kept out of
+  // the main getState payload so photos never bloat the frequently-polled state call
+  if (!State._avatarMap) {
+    State._avatarMap = {};
+    const idsWithAvatars = (State.players || []).filter(p => p.hasAvatar).map(p => p.id);
+    if (idsWithAvatars.length > 0) {
+      api('getAvatars', { playerIds: idsWithAvatars }, true).then(d => {
+        State._avatarMap = d.avatars || {};
+        if (State.player && State._avatarMap[State.player.id]) {
+          State.player.avatar = State._avatarMap[State.player.id];
+          saveSession(State.player);
+        }
+        if (State.view === 'standings' || State.view === 'profile') renderContent();
+      }).catch(() => {});
+    }
+  }
+  // refresh logged-in player's own record
   const me = State.players.find(p => p.id === State.player.id);
   if (me) {
-    const freshAvatar = me.avatar || State.player.avatar || loadSavedAvatar(State.player.id) || '';
+    const freshAvatar = (State._avatarMap && State._avatarMap[State.player.id]) || State.player.avatar || loadSavedAvatar(State.player.id) || '';
     State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, email: me.email || State.player.email || '', avatar: freshAvatar, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif, chatNotif: me.chatNotif };
     saveSession(State.player);
   }
@@ -2291,9 +2305,9 @@ function renderSeasonStandings(el, standings, completedWeeks) {
           <div class="standing-row ${i === 0 ? 'rank-1' : ''}" style="padding:12px 16px; border-bottom:${i < standings.length-1 ? '1px solid var(--hairline)' : 'none'};">
             <div class="standing-rank" style="color:${i === 0 ? 'var(--gold)' : i === 1 ? 'var(--text-soft)' : i === 2 ? '#cd7f32' : 'var(--text-faint)'};">${i + 1}</div>
             ${(() => {
-              const sp = (State.players || []).find(pl => pl.id === s.playerId);
-              return sp && sp.avatar
-                ? `<img src="${sp.avatar}" style="width:32px; height:32px; border-radius:50%; object-fit:cover; flex-shrink:0; cursor:pointer;" onclick="showLightbox('${sp.avatar}')">`
+              const av = (State._avatarMap || {})[s.playerId];
+              return av
+                ? `<img src="${av}" style="width:32px; height:32px; border-radius:50%; object-fit:cover; flex-shrink:0; cursor:pointer;" onclick="showLightbox('${av}')">`
                 : `<div style="width:32px; height:32px; border-radius:50%; background:var(--upset-grad); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; color:#1A1206; flex-shrink:0;">${escapeHtml((s.teamName || s.name || '?')[0].toUpperCase())}</div>`;
             })()}
             <div style="flex:1;">
