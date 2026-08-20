@@ -5187,9 +5187,12 @@ function renderAdminWeek(el) {
         <p class="helptext" style="margin-top:8px;">Use once the week has started — fills in the favorite for anyone who didn't submit picks, per league rule.</p>
       </div>
       <div class="card" style="border:1px solid rgba(255,77,94,0.3);">
-        <div class="card-title" style="color:var(--loss);">⚠️ Clear Week ${week} Data</div>
-        <p class="helptext" style="line-height:1.6;">Wipes all games, picks, and snapshot rows for Week ${week}. Use after a test week to start fresh. <strong style="color:var(--text);">Cannot be undone.</strong></p>
-        <button class="btn btn-danger btn-block" id="clear-week-btn" style="margin-top:10px;">Clear All Week ${week} Data</button>
+        <div class="card-title" style="color:var(--loss);">⚠️ Clear Week Data</div>
+        <p class="helptext" style="line-height:1.6;">Wipes all games, picks, and snapshot rows for the week number you choose below — not necessarily the season's current week. Use after a test week to start fresh. <strong style="color:var(--text);">Cannot be undone.</strong></p>
+        <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
+          <input type="number" id="clear-week-input" value="${week}" min="0" style="width:70px; padding:8px; border-radius:8px; border:1px solid var(--hairline); background:var(--surface-1); color:var(--text); text-align:center;">
+          <button class="btn btn-danger" id="clear-week-btn" style="flex:1;">Clear Week Data</button>
+        </div>
       </div>
     ` : ''}
   `;
@@ -5261,15 +5264,17 @@ function renderAdminWeek(el) {
       } catch(e) { btn.innerHTML = 'Add Missing Lines to Snapshot'; }
     };
     document.getElementById('clear-week-btn').onclick = async () => {
-      if (!confirm(`⚠️ This will permanently delete all games, picks, and snapshot data for Week ${week}. Are you sure?`)) return;
+      const targetWeek = Number(document.getElementById('clear-week-input').value);
+      if (isNaN(targetWeek) || targetWeek < 0) { showToast('Enter a valid week number', 'error'); return; }
+      if (!confirm(`⚠️ This will permanently delete all games, picks, and snapshot data for Week ${targetWeek}. Are you sure?`)) return;
       const btn = document.getElementById('clear-week-btn');
       btn.innerHTML = '<span class="spinner"></span>';
       try {
-        await api('adminClearWeek', { adminId: State.player.id, week });
-        showToast(`Week ${week} data cleared`, 'success');
+        await api('adminClearWeek', { adminId: State.player.id, week: targetWeek });
+        showToast(`Week ${targetWeek} data cleared`, 'success');
         await refreshState();
         renderAdmin(document.getElementById('content'));
-      } catch(e) { btn.innerHTML = `Clear All Week ${week} Data`; }
+      } catch(e) { btn.innerHTML = 'Clear Week Data'; }
     };
     document.getElementById('apply-defaults-btn').onclick = async () => {
       try {
