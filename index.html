@@ -673,7 +673,12 @@ async function boot() {
     startBackgroundPolling();
     if (shouldShowWelcomeModal()) setTimeout(showWelcomeModal, 800);
   } else {
-    renderLogin();
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('register') === '1') {
+      renderRegister();
+    } else {
+      renderLogin();
+    }
   }
 }
 
