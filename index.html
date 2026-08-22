@@ -775,6 +775,17 @@ async function refreshState() {
     State.player = { ...State.player, teamName: me.teamName, name: me.name, isAdmin: me.isAdmin, active: me.active, isPaid: me.isPaid, venmo: me.venmo, paypal: me.paypal, email: me.email || State.player.email || '', avatar: freshAvatar, memberSince: me.memberSince, paymentPref: me.paymentPref, fcmToken: me.fcmToken, scoreNotif: me.scoreNotif, chatNotif: me.chatNotif };
     saveSession(State.player);
   }
+
+  // Opportunistic backfill, checked once per session: if this device is already
+  // running the app standalone (installed) but the backend has never recorded it
+  // — e.g. they installed before this tracking existed — record it now.
+  if (!window._installCheckDone) {
+    window._installCheckDone = true;
+    const isStandaloneNow = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+    if (isStandaloneNow && me && !me.installedAt && State.player && State.player.id) {
+      api('markAppInstalled', { playerId: State.player.id }, true).catch(function(){});
+    }
+  }
 }
 
 function seasonArrToObj(arr) {
@@ -801,6 +812,11 @@ window.addEventListener('appinstalled', function() {
   setOnboardStep('install', true);
   const btn = document.getElementById('onboard-install-btn');
   if (btn) { btn.textContent = '✅ Installed!'; btn.disabled = true; }
+  // Report to the backend so admin can see who's actually installed the app,
+  // not just who's using it in a browser tab. Silent — never blocks the UI.
+  if (State.player && State.player.id) {
+    api('markAppInstalled', { playerId: State.player.id }, true).catch(function(){});
+  }
 });
 
 // ── Onboarding Helpers ────────────────────────────────────────────────────────
@@ -5668,17 +5684,18 @@ function renderAdminPlayers(el) {
       <button class="btn btn-primary btn-block" id="add-player-btn">Add Player</button>
     </div>
 
-    <div class="section-label">Active Roster (${active.length})</div>
+    <div class="section-label">Active Roster (${active.length}) &middot; ${active.filter(p => p.installedAt).length} app installed</div>
     ${active.map(p => {
       const hasPayment = p.venmo || p.paypal;
       const paymentInfo = p.paymentPref
         ? `<span style="color:var(--gold);">${p.paymentPref.charAt(0).toUpperCase() + p.paymentPref.slice(1)}</span>: ${p.venmo && p.paymentPref === 'venmo' ? escapeHtml(p.venmo) : p.paypal && p.paymentPref === 'paypal' ? escapeHtml(p.paypal) : p.venmo || p.paypal || ''}`
         : '<span style="color:var(--text-faint);">No payment info</span>';
+      const avatarUrl = (State._avatarMap || {})[p.id];
       return `
         <div class="card" style="padding:12px 14px; display:flex; align-items:center; gap:10px;">
-          ${p.avatar ? `<img src="${p.avatar}" style="width:36px; height:36px; border-radius:50%; object-fit:cover; flex-shrink:0;">` : `<div style="width:36px; height:36px; border-radius:50%; background:var(--upset-grad); display:flex; align-items:center; justify-content:center; font-weight:700; color:#1A1206; flex-shrink:0;">${escapeHtml((p.teamName || p.name || '?')[0])}</div>`}
+          ${avatarUrl ? `<img src="${avatarUrl}" style="width:36px; height:36px; border-radius:50%; object-fit:cover; flex-shrink:0;">` : `<div style="width:36px; height:36px; border-radius:50%; background:var(--upset-grad); display:flex; align-items:center; justify-content:center; font-weight:700; color:#1A1206; flex-shrink:0;">${escapeHtml((p.teamName || p.name || '?')[0])}</div>`}
           <div style="flex:1; min-width:0;">
-            <div style="font-weight:700; font-size:14px;">${escapeHtml(p.teamName || p.name)} ${p.isAdmin ? '<span class="pill pill-assigned">Admin</span>' : ''}</div>
+            <div style="font-weight:700; font-size:14px;">${escapeHtml(p.teamName || p.name)} ${p.isAdmin ? '<span class="pill pill-assigned">Admin</span>' : ''} ${p.installedAt ? '<span title="App installed" style="font-size:11px;">📲</span>' : ''}</div>
             <div class="helptext">${escapeHtml(p.name)} &middot; ${p.careerPoints || 0} career pts</div>
             <div class="helptext" style="margin-top:2px;">${paymentInfo}</div>
           </div>
