@@ -3289,10 +3289,11 @@ let _liveScoresLoading = false;
 async function renderLiveScores(content) {
   const week = currentWeek();
   const boardGames = getGamesForWeek(week);
+  const finalCount = boardGames.filter(g => isGameFinal(g)).length;
 
   content.innerHTML = `
     <div class="section-label" style="display:flex; justify-content:space-between; align-items:center;">
-      <span>Week ${week} Board</span>
+      <span>Week ${week} Board ${boardGames.length > 0 ? `<span style="color:var(--text-faint); font-weight:400; text-transform:none; letter-spacing:normal;">(${finalCount}/${boardGames.length} final)</span>` : ''}</span>
       <button class="btn btn-ghost btn-sm" id="scores-refresh-btn">↻ Refresh</button>
     </div>
 
@@ -3339,21 +3340,24 @@ function renderScoreRow(g, isBoard) {
   const homeSpread = g.spread ? (g.favorite === g.homeTeam ? `-${fmtSpread(g.spread)}` : `+${fmtSpread(g.spread)}`) : '';
 
   return `
-    <div style="padding:10px 14px; border-bottom:1px solid var(--hairline); display:flex; align-items:center; gap:8px; ${isBoard ? 'background:rgba(255,184,0,0.03);' : ''}">
-      ${isBoard ? '<div style="width:8px; height:8px; border-radius:50%; background:var(--gold); flex-shrink:0;"></div>' : '<div style="width:8px;"></div>'}
-      <div style="flex:1; min-width:0;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:3px;">
-          <span style="font-size:13px; font-weight:${awayWon ? '700' : '400'}; color:${awayIsUpset ? 'var(--gold)' : awayWon ? 'var(--text)' : 'var(--text-soft)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:55%;">${escapeHtml(g.awayTeam)}${awayIsUpset ? ' 🚨' : ''} <span style="font-size:11px; color:var(--text-faint);">${spread}</span></span>
-          <span class="mono" style="font-size:15px; font-weight:700; color:${awayWon ? 'var(--text)' : 'var(--text-faint)'};">${awayScore}</span>
+    <div style="padding:10px 14px; border-bottom:1px solid var(--hairline); ${isBoard ? 'background:rgba(255,184,0,0.03);' : ''}">
+      <div style="display:flex; align-items:center; gap:8px;">
+        ${isBoard ? '<div style="width:8px; height:8px; border-radius:50%; background:var(--gold); flex-shrink:0;"></div>' : '<div style="width:8px;"></div>'}
+        <div style="flex:1; min-width:0;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:3px;">
+            <span style="font-size:13px; font-weight:${awayWon ? '700' : '400'}; color:${awayIsUpset ? 'var(--gold)' : awayWon ? 'var(--text)' : 'var(--text-soft)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:55%;">${escapeHtml(g.awayTeam)}${awayIsUpset ? ' 🚨' : ''} <span style="font-size:11px; color:var(--text-faint);">${spread}</span></span>
+            <span class="mono" style="font-size:15px; font-weight:700; color:${awayWon ? 'var(--text)' : 'var(--text-faint)'};">${awayScore}</span>
+          </div>
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-size:13px; font-weight:${homeWon ? '700' : '400'}; color:${homeIsUpset ? 'var(--gold)' : homeWon ? 'var(--text)' : 'var(--text-soft)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:55%;">${escapeHtml(g.homeTeam)}${homeIsUpset ? ' 🚨' : ''} <span style="font-size:11px; color:var(--text-faint);">${homeSpread}</span></span>
+            <span class="mono" style="font-size:15px; font-weight:700; color:${homeWon ? 'var(--text)' : 'var(--text-faint)'};">${homeScore}</span>
+          </div>
         </div>
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-          <span style="font-size:13px; font-weight:${homeWon ? '700' : '400'}; color:${homeIsUpset ? 'var(--gold)' : homeWon ? 'var(--text)' : 'var(--text-soft)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:55%;">${escapeHtml(g.homeTeam)}${homeIsUpset ? ' 🚨' : ''} <span style="font-size:11px; color:var(--text-faint);">${homeSpread}</span></span>
-          <span class="mono" style="font-size:15px; font-weight:700; color:${homeWon ? 'var(--text)' : 'var(--text-faint)'};">${homeScore}</span>
+        <div style="text-align:right; flex-shrink:0; min-width:40px;">
+          <div style="font-size:10px; font-weight:700; color:${statusColor}; text-transform:uppercase;">${status}</div>
         </div>
       </div>
-      <div style="text-align:right; flex-shrink:0; min-width:40px;">
-        <div style="font-size:10px; font-weight:700; color:${statusColor}; text-transform:uppercase;">${status}</div>
-      </div>
+      ${isBoard && started ? renderRevealedPicksForGame(g) : ''}
     </div>
   `;
 }
