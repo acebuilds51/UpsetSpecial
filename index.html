@@ -1584,15 +1584,29 @@ function getMyPicksForWeek(week) {
   return (State.picks || []).filter(p => p.playerId === State.player.id && Number(p.week) === Number(week));
 }
 
+// Determines which team COVERED THE SPREAD — what straight (non-upset) picks
+// are actually scored against, per league rules ("straight picks against the
+// spread"). NOT the same as who won outright: a favorite can win and still
+// fail to cover, and an underdog can lose and still cover.
+function computeCoveringTeam(g) {
+  const homeScore = Number(g.finalHomeScore), awayScore = Number(g.finalAwayScore);
+  const favorite = g.favorite;
+  const underdog = favorite === g.homeTeam ? g.awayTeam : g.homeTeam;
+  const spread = Number(g.spread) || 0;
+  const favMargin = (favorite === g.homeTeam) ? (homeScore - awayScore) : (awayScore - homeScore);
+  return favMargin > spread ? favorite : underdog;
+}
+
 function computeGameResult(game) {
   if (!game || !isGameFinal(game)) {
-    return { isFinal: false, winner: null, underdog: null, upsetOccurred: false, awayScore: '', homeScore: '' };
+    return { isFinal: false, winner: null, underdog: null, upsetOccurred: false, coveringTeam: null, awayScore: '', homeScore: '' };
   }
   const home = Number(game.finalHomeScore), away = Number(game.finalAwayScore);
   const winner = home > away ? game.homeTeam : away > home ? game.awayTeam : 'TIE';
   const underdog = game.favorite === game.homeTeam ? game.awayTeam : game.homeTeam;
   const upsetOccurred = winner === underdog;
-  return { isFinal: true, winner, underdog, upsetOccurred, awayScore: away, homeScore: home };
+  const coveringTeam = computeCoveringTeam(game);
+  return { isFinal: true, winner, underdog, upsetOccurred, coveringTeam, awayScore: away, homeScore: home };
 }
 
 function isFavorite(game, team) { return game.favorite === team; }
@@ -1985,8 +1999,8 @@ function renderGamesBoard(games, week) {
       resultStrip = `
         <div class="result-strip">
           <span class="mono" style="color:var(--text-soft);">${escapeHtml(g.awayTeam)} ${result.awayScore} – ${result.homeScore} ${escapeHtml(g.homeTeam)}</span>
-          ${draft.pickedTeam ? `<span class="result-pill ${draft.isUpset ? (result.winner === draft.pickedTeam ? 'upset-win' : 'loss') : (result.winner === draft.pickedTeam ? 'win' : 'loss')}">
-            ${draft.isUpset ? (result.winner === draft.pickedTeam ? 'Upset hit +' + fmtSpread(g.spread) : 'Upset miss') : (result.winner === draft.pickedTeam ? 'Correct +1' : 'Incorrect')}
+          ${draft.pickedTeam ? `<span class="result-pill ${draft.isUpset ? (result.winner === draft.pickedTeam ? 'upset-win' : 'loss') : (result.coveringTeam === draft.pickedTeam ? 'win' : 'loss')}">
+            ${draft.isUpset ? (result.winner === draft.pickedTeam ? 'Upset hit +' + fmtSpread(g.spread) : 'Upset miss') : (result.coveringTeam === draft.pickedTeam ? 'Correct +1' : 'Incorrect')}
           </span>` : ''}
         </div>`;
     } else if (started) {
@@ -2272,7 +2286,7 @@ function computeStandingsLocally() {
           standings[p.playerId].upsetWins += 1;
           standings[p.playerId].weeklyBreakdown[wk] += spread;
         }
-      } else if (result.winner === p.pickedTeam) {
+      } else if (result.coveringTeam === p.pickedTeam) {
         standings[p.playerId].points += 1;
         standings[p.playerId].correct += 1;
         standings[p.playerId].weeklyBreakdown[wk] += 1;
