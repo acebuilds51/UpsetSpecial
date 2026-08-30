@@ -3333,6 +3333,93 @@ async function renderLiveScores(content) {
   loadAllEspnScores(week);
 }
 
+function renderPickBreakdown(g) {
+  const picksForGame = State.picks.filter(p => p.gameId === g.gameId && !(p.isUpset === true || p.isUpset === 'TRUE'));
+  const upsetPlayerIds = new Set(State.picks.filter(p => p.gameId === g.gameId && (p.isUpset === true || p.isUpset === 'TRUE')).map(p => p.playerId));
+  const nameFor = p => { const pl = getPlayerById(p.playerId); return pl ? (pl.teamName || pl.name) : '—'; };
+  const awayPicks = picksForGame.filter(p => p.pickedTeam === g.awayTeam);
+  const homePicks = picksForGame.filter(p => p.pickedTeam === g.homeTeam);
+  const col = (picks, label) => `
+    <div style="flex:1; background:var(--surface-2); border-radius:8px; padding:8px;">
+      <div class="helptext" style="font-size:10px; text-transform:uppercase; font-weight:700; margin-bottom:6px;">${escapeHtml(label)} (${picks.length})</div>
+      <div style="font-size:11px; line-height:1.8;">${picks.length ? picks.map(p => `${escapeHtml(nameFor(p))}${upsetPlayerIds.has(p.playerId) ? ' ⭐' : ''}`).join('<br>') : '<span class="helptext">None</span>'}</div>
+    </div>`;
+  if (picksForGame.length === 0) return '<div class="helptext" style="padding:8px 0; font-size:11px;">No picks yet.</div>';
+  return `<div style="display:flex; gap:8px; margin-top:8px;">${col(awayPicks, g.awayTeam)}${col(homePicks, g.homeTeam)}</div>`;
+}
+
+function renderPickSummaryBar(g) {
+  const picksForGame = State.picks.filter(p => p.gameId === g.gameId && !(p.isUpset === true || p.isUpset === 'TRUE'));
+  const awayCount = picksForGame.filter(p => p.pickedTeam === g.awayTeam).length;
+  const homeCount = picksForGame.filter(p => p.pickedTeam === g.homeTeam).length;
+  const total = awayCount + homeCount;
+  if (total === 0) return '<div class="helptext" style="padding:4px 0; font-size:11px;">No picks yet.</div>';
+  const awayPct = Math.round((awayCount / total) * 100);
+  return `
+    <div style="margin-top:8px;">
+      <div style="display:flex; height:6px; border-radius:3px; overflow:hidden; margin-bottom:4px;">
+        <div style="width:${awayPct}%; background:var(--gold);"></div>
+        <div style="width:${100 - awayPct}%; background:var(--hairline);"></div>
+      </div>
+      <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-faint);">
+        <span>${awayCount} picked ${escapeHtml(g.awayTeam)}</span>
+        <span>${homeCount} picked ${escapeHtml(g.homeTeam)} ▾</span>
+      </div>
+    </div>`;
+}
+
+function togglePickSummary(gameId) {
+  const summary = document.getElementById('picks-summary-' + gameId);
+  const full = document.getElementById('picks-full-' + gameId);
+  if (!summary || !full) return;
+  const collapsing = full.style.display !== 'none';
+  full.style.display = collapsing ? 'none' : 'block';
+  summary.style.display = collapsing ? 'block' : 'none';
+}
+
+async function loadGameSummary(gameId, espnEventId) {
+  const container = document.getElementById('live-detail-' + gameId);
+  const toggle = document.getElementById('live-detail-toggle-' + gameId);
+  if (!container) return;
+  if (container.dataset.loaded === '1') {
+    const isHidden = container.style.display === 'none';
+    container.style.display = isHidden ? 'block' : 'none';
+    if (toggle) toggle.textContent = isHidden ? 'Hide live detail ▴' : 'View live detail ▾';
+    return;
+  }
+  container.style.display = 'block';
+  container.innerHTML = '<div class="helptext" style="padding:8px 0; font-size:11px;">Loading...</div>';
+  if (toggle) toggle.textContent = 'Hide live detail ▴';
+  try {
+    const data = await api('getGameSummary', { espnEventId }, true);
+    if (!data.ok) {
+      container.innerHTML = `<div class="helptext" style="padding:8px 0; font-size:11px;">${escapeHtml(data.error || 'Could not load live detail.')}</div>`;
+      return;
+    }
+    let html = '';
+    if (data.situation && (data.situation.lastPlay || data.situation.possessionText)) {
+      html += `<div style="background:var(--surface-2); border-radius:8px; padding:8px; margin-top:6px; font-size:12px;">
+        ${data.situation.possessionText ? `<div style="font-weight:700; margin-bottom:3px;">${escapeHtml(data.situation.possessionText)}</div>` : ''}
+        ${data.situation.lastPlay ? `<div class="helptext">${escapeHtml(data.situation.lastPlay)}</div>` : ''}
+      </div>`;
+    }
+    if (data.winProbability) {
+      html += `<div style="margin-top:6px; font-size:11px; color:var(--text-faint);">Win probability: ${data.winProbability.homePct}% home</div>`;
+    }
+    if (data.boxscore && data.boxscore.length) {
+      html += `<div style="display:flex; gap:8px; margin-top:6px;">${data.boxscore.map(t => `
+        <div style="flex:1; font-size:10px;">
+          <div style="font-weight:700; margin-bottom:3px;">${escapeHtml(t.team || '')}</div>
+          ${Object.keys(t.stats).slice(0, 4).map(k => `<div class="helptext">${escapeHtml(k)}: ${escapeHtml(String(t.stats[k]))}</div>`).join('')}
+        </div>`).join('')}</div>`;
+    }
+    container.innerHTML = html || '<div class="helptext" style="padding:8px 0; font-size:11px;">No live detail available yet.</div>';
+    container.dataset.loaded = '1';
+  } catch (e) {
+    container.innerHTML = '<div class="helptext" style="padding:8px 0; font-size:11px;">Could not load live detail.</div>';
+  }
+}
+
 function renderScoreRow(g, isBoard) {
   const result = computeGameResult(g);
   const dog = underdogOf(g);
@@ -3371,7 +3458,16 @@ function renderScoreRow(g, isBoard) {
           <div style="font-size:10px; font-weight:700; color:${statusColor}; text-transform:uppercase;">${status}</div>
         </div>
       </div>
-      ${isBoard && started ? renderRevealedPicksForGame(g) : ''}
+      ${isBoard && started ? (
+        final
+          ? `<div id="picks-summary-${g.gameId}" onclick="togglePickSummary('${g.gameId}')" style="cursor:pointer;">${renderPickSummaryBar(g)}</div>
+             <div id="picks-full-${g.gameId}" onclick="togglePickSummary('${g.gameId}')" style="display:none; cursor:pointer;">${renderPickBreakdown(g)}</div>`
+          : `${renderPickBreakdown(g)}
+             ${g.espnEventId ? `
+               <div id="live-detail-toggle-${g.gameId}" onclick="loadGameSummary('${g.gameId}', '${g.espnEventId}')" style="margin-top:6px; font-size:11px; color:var(--gold); cursor:pointer; font-weight:700;">View live detail ▾</div>
+               <div id="live-detail-${g.gameId}" style="display:none;"></div>
+             ` : ''}`
+      ) : ''}
     </div>
   `;
 }
