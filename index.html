@@ -3377,11 +3377,20 @@ function togglePickSummary(gameId) {
   summary.style.display = collapsing ? 'block' : 'none';
 }
 
+// encodeURIComponent does NOT escape apostrophes (it's in the JS "unreserved"
+// set left untouched by design), so a team name like "Hawai'i" passes straight
+// through and breaks a single-quoted onclick string. Base64 only ever produces
+// letters, numbers, +, /, and = — none of which can break any quote context,
+// so this is used anywhere a team name needs to travel through an inline
+// onclick attribute.
+function safeEncode(str) { return btoa(unescape(encodeURIComponent(str || ''))); }
+function safeDecode(str) { try { return decodeURIComponent(escape(atob(str || ''))); } catch (e) { return ''; } }
+
 async function loadGameSummary(gameId, espnEventId, label, awayTeamEnc, homeTeamEnc, awayScore, homeScore, favoriteEnc, spread) {
   label = label || 'live detail';
-  const awayTeam = decodeURIComponent(awayTeamEnc || '');
-  const homeTeam = decodeURIComponent(homeTeamEnc || '');
-  const favorite = decodeURIComponent(favoriteEnc || '');
+  const awayTeam = safeDecode(awayTeamEnc);
+  const homeTeam = safeDecode(homeTeamEnc);
+  const favorite = safeDecode(favoriteEnc);
   const container = document.getElementById('live-detail-' + gameId);
   const toggle = document.getElementById('live-detail-toggle-' + gameId);
   if (!container) return;
@@ -3487,12 +3496,12 @@ function renderScoreRow(g, isBoard) {
           ? `<div id="picks-summary-${g.gameId}" onclick="togglePickSummary('${g.gameId}')" style="cursor:pointer;">${renderPickSummaryBar(g)}</div>
              <div id="picks-full-${g.gameId}" onclick="togglePickSummary('${g.gameId}')" style="display:none; cursor:pointer;">${renderPickBreakdown(g)}</div>
              ${g.espnEventId ? `
-               <div id="live-detail-toggle-${g.gameId}" onclick="loadGameSummary('${g.gameId}', '${g.espnEventId}', 'game detail', '${encodeURIComponent(g.awayTeam)}', '${encodeURIComponent(g.homeTeam)}', ${Number(awayScore) || 0}, ${Number(homeScore) || 0}, '${encodeURIComponent(g.favorite || '')}', ${Number(g.spread) || 0})" style="margin-top:6px; font-size:11px; color:var(--gold); cursor:pointer; font-weight:700;">View game detail ▾</div>
+               <div id="live-detail-toggle-${g.gameId}" onclick="loadGameSummary('${g.gameId}', '${g.espnEventId}', 'game detail', '${safeEncode(g.awayTeam)}', '${safeEncode(g.homeTeam)}', ${Number(awayScore) || 0}, ${Number(homeScore) || 0}, '${safeEncode(g.favorite || '')}', ${Number(g.spread) || 0})" style="margin-top:6px; font-size:11px; color:var(--gold); cursor:pointer; font-weight:700;">View game detail ▾</div>
                <div id="live-detail-${g.gameId}" style="display:none;"></div>
              ` : ''}`
           : `${renderPickBreakdown(g)}
              ${g.espnEventId ? `
-               <div id="live-detail-toggle-${g.gameId}" onclick="loadGameSummary('${g.gameId}', '${g.espnEventId}', 'live detail', '${encodeURIComponent(g.awayTeam)}', '${encodeURIComponent(g.homeTeam)}', ${Number(awayScore) || 0}, ${Number(homeScore) || 0}, '${encodeURIComponent(g.favorite || '')}', ${Number(g.spread) || 0})" style="margin-top:6px; font-size:11px; color:var(--gold); cursor:pointer; font-weight:700;">View live detail ▾</div>
+               <div id="live-detail-toggle-${g.gameId}" onclick="loadGameSummary('${g.gameId}', '${g.espnEventId}', 'live detail', '${safeEncode(g.awayTeam)}', '${safeEncode(g.homeTeam)}', ${Number(awayScore) || 0}, ${Number(homeScore) || 0}, '${safeEncode(g.favorite || '')}', ${Number(g.spread) || 0})" style="margin-top:6px; font-size:11px; color:var(--gold); cursor:pointer; font-weight:700;">View live detail ▾</div>
                <div id="live-detail-${g.gameId}" style="display:none;"></div>
              ` : ''}`
       ) : ''}
