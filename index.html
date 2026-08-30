@@ -3394,14 +3394,15 @@ async function loadGameSummary(gameId, espnEventId, label, awayTeamEnc, homeTeam
   container.innerHTML = '<div class="helptext" style="padding:8px 0; font-size:11px;">Loading...</div>';
   if (toggle) toggle.textContent = `Hide ${label} ▴`;
   try {
-    const data = await api('getGameSummary', { espnEventId }, true);
+    const data = await api('getGameSummary', { espnEventId, awayTeam, homeTeam, awayScore, homeScore }, true);
     if (!data.ok) {
       container.innerHTML = `<div class="helptext" style="padding:8px 0; font-size:11px;">${escapeHtml(data.error || 'Could not load live detail.')}</div>`;
       return;
     }
     let html = '';
-    html += `<button class="recap-gen-btn" data-gameid="${gameId}" data-espnid="${espnEventId}" data-away="${escapeHtml(awayTeam)}" data-home="${escapeHtml(homeTeam)}" data-awayscore="${awayScore}" data-homescore="${homeScore}" onclick="generateGameRecap(this)" style="width:100%; background:var(--upset-grad); border:none; border-radius:8px; padding:8px; color:#1A1206; font-size:12px; font-weight:700; cursor:pointer; margin-top:6px;">✨ Give me the recap</button>
-      <div id="recap-result-${gameId}"></div>`;
+    if (data.recap) {
+      html += `<div style="background:var(--surface-2); border-radius:8px; padding:10px; margin-top:6px; font-size:12px; line-height:1.5;">${escapeHtml(data.recap)}</div>`;
+    }
     if (data.situation && (data.situation.lastPlay || data.situation.possessionText)) {
       html += `<div style="background:var(--surface-2); border-radius:8px; padding:8px; margin-top:6px; font-size:12px;">
         ${data.situation.possessionText ? `<div style="font-weight:700; margin-bottom:3px;">${escapeHtml(data.situation.possessionText)}</div>` : ''}
@@ -3439,22 +3440,6 @@ async function loadGameSummary(gameId, espnEventId, label, awayTeamEnc, homeTeam
     container.dataset.loaded = '1';
   } catch (e) {
     container.innerHTML = '<div class="helptext" style="padding:8px 0; font-size:11px;">Could not load live detail.</div>';
-  }
-}
-
-async function generateGameRecap(btn) {
-  const { gameid, espnid, away, home, awayscore, homescore } = btn.dataset;
-  const resultDiv = document.getElementById('recap-result-' + gameid);
-  btn.disabled = true;
-  btn.textContent = 'Writing recap...';
-  try {
-    const data = await api('generateGameRecap', { espnEventId: espnid, awayTeam: away, homeTeam: home, awayScore: Number(awayscore), homeScore: Number(homescore) }, true);
-    resultDiv.innerHTML = `<div style="background:var(--surface-2); border-radius:8px; padding:10px; margin-top:6px; font-size:12px; line-height:1.5;">${escapeHtml(data.recap)}</div>`;
-    btn.style.display = 'none';
-  } catch (e) {
-    resultDiv.innerHTML = `<div class="helptext" style="padding:6px 0; font-size:11px;">${escapeHtml(e.message || 'Could not generate recap.')}</div>`;
-    btn.disabled = false;
-    btn.textContent = '✨ Give me the recap';
   }
 }
 
