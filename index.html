@@ -5330,6 +5330,16 @@ function renderAdminWeek(el) {
 
     ${games.length > 0 && !posted ? `<button class="btn btn-gold btn-block" id="post-week-btn">Post This Week's Board</button>` : ''}
 
+    <div class="section-label">📧 Email Center</div>
+    <div class="card">
+      <div style="display:flex; gap:0; border-bottom:1px solid var(--hairline); margin:-4px -4px 12px;">
+        <button class="tab-btn active" data-mailtab="templates" style="flex:1;">Templates</button>
+        <button class="tab-btn" data-mailtab="compose" style="flex:1;">Compose</button>
+        <button class="tab-btn" data-mailtab="results" style="flex:1;">AI Results</button>
+      </div>
+      <div id="mail-panel"><div class="empty-state"><span class="spinner"></span></div></div>
+    </div>
+
     ${posted ? `
       <div class="section-label">Results</div>
       <div class="card">
@@ -5342,16 +5352,6 @@ function renderAdminWeek(el) {
         <button class="btn btn-ghost btn-block" id="archive-season-trophies-btn" style="margin-top:6px;">🏆 Archive Season Trophies (All Years)</button>
         <button class="btn btn-ghost btn-block" id="clear-season-trophies-btn" style="margin-top:6px;color:var(--loss);">🗑️ Clear & Re-Archive Season Trophies</button>
       </div>
-
-    <div class="section-label">📧 Email Center</div>
-    <div class="card">
-      <div style="display:flex; gap:0; border-bottom:1px solid var(--hairline); margin:-4px -4px 12px;">
-        <button class="tab-btn active" data-mailtab="templates" style="flex:1;">Templates</button>
-        <button class="tab-btn" data-mailtab="compose" style="flex:1;">Compose</button>
-        <button class="tab-btn" data-mailtab="results" style="flex:1;">AI Results</button>
-      </div>
-      <div id="mail-panel"><div class="empty-state"><span class="spinner"></span></div></div>
-    </div>
       <div class="card">
         <button class="btn btn-ghost btn-block" id="refresh-snapshot-btn">Add Missing Lines to Snapshot</button>
         <p class="helptext" style="margin-top:8px;">Run this Tuesday or Wednesday if ESPN didn't have all lines posted on Monday. Only adds <em>new</em> games — never overwrites existing Monday lines.</p>
@@ -5368,6 +5368,16 @@ function renderAdminWeek(el) {
       </div>
     ` : ''}
   `;
+
+  document.querySelectorAll('[data-mailtab]').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('[data-mailtab]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      _mailTab = btn.dataset.mailtab;
+      renderMailPanel();
+    };
+  });
+  renderMailPanel();
 
   document.getElementById('week-jump').onclick = () => {
     const w = prompt('Jump to week #:', week);
@@ -5455,16 +5465,6 @@ function renderAdminWeek(el) {
         await refreshState(); renderAdmin(document.getElementById('content'));
       } catch (e) {}
     };
-    // ── Email Center ──────────────────────────────────────────────────────
-    document.querySelectorAll('[data-mailtab]').forEach(btn => {
-      btn.onclick = () => {
-        document.querySelectorAll('[data-mailtab]').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        _mailTab = btn.dataset.mailtab;
-        renderMailPanel();
-      };
-    });
-    renderMailPanel();
 
     if (document.getElementById('clear-season-trophies-btn')) {
       document.getElementById('clear-season-trophies-btn').onclick = async (e) => {
