@@ -3404,6 +3404,23 @@ async function loadGameSummary(gameId, espnEventId, label) {
         ${data.situation.lastPlay ? `<div class="helptext">${escapeHtml(data.situation.lastPlay)}</div>` : ''}
       </div>`;
     }
+    if (data.scoringPlays && data.scoringPlays.length) {
+      html += `<div style="margin-top:6px;">
+        <div class="helptext" style="font-size:10px; text-transform:uppercase; font-weight:700; margin-bottom:4px;">Scoring plays</div>
+        ${data.scoringPlays.map(p => `
+          <div style="font-size:11px; padding:4px 0; border-bottom:1px solid var(--hairline);">
+            <span style="color:var(--text-faint);">${p.period ? 'Q' + escapeHtml(String(p.period)) : ''}${p.clock ? ' ' + escapeHtml(p.clock) : ''}</span>
+            ${escapeHtml(p.text)}
+            ${(p.awayScore !== undefined && p.homeScore !== undefined) ? `<span class="mono" style="color:var(--text-faint); float:right;">${p.awayScore}-${p.homeScore}</span>` : ''}
+          </div>`).join('')}
+      </div>`;
+    }
+    if (data.leaders && data.leaders.length) {
+      html += `<div style="margin-top:6px;">
+        <div class="helptext" style="font-size:10px; text-transform:uppercase; font-weight:700; margin-bottom:4px;">Top performers</div>
+        ${data.leaders.map(l => `<div style="font-size:11px; padding:2px 0;"><strong>${escapeHtml(l.category)}:</strong> ${escapeHtml(l.player)} (${escapeHtml(l.team)}) — ${escapeHtml(l.value)}</div>`).join('')}
+      </div>`;
+    }
     if (data.winProbability) {
       html += `<div style="margin-top:6px; font-size:11px; color:var(--text-faint);">Win probability: ${data.winProbability.homePct}% home</div>`;
     }
