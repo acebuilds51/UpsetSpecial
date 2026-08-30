@@ -443,7 +443,7 @@ async function api(action, payload, silent) {
   payload = payload || {};
   payload.action = action;
   // Per-action timeouts — trophy room needs more time for heavy players
-  const timeouts = { getTrophyRoom: 55000, helpChat: 40000 };
+  const timeouts = { getTrophyRoom: 55000, helpChat: 40000, adminGenerateResultsEmail: 55000 };
   const ms = timeouts[action] || 25000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
