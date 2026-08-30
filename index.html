@@ -3377,10 +3377,11 @@ function togglePickSummary(gameId) {
   summary.style.display = collapsing ? 'block' : 'none';
 }
 
-async function loadGameSummary(gameId, espnEventId, label, awayTeamEnc, homeTeamEnc, awayScore, homeScore) {
+async function loadGameSummary(gameId, espnEventId, label, awayTeamEnc, homeTeamEnc, awayScore, homeScore, favoriteEnc, spread) {
   label = label || 'live detail';
   const awayTeam = decodeURIComponent(awayTeamEnc || '');
   const homeTeam = decodeURIComponent(homeTeamEnc || '');
+  const favorite = decodeURIComponent(favoriteEnc || '');
   const container = document.getElementById('live-detail-' + gameId);
   const toggle = document.getElementById('live-detail-toggle-' + gameId);
   if (!container) return;
@@ -3394,7 +3395,7 @@ async function loadGameSummary(gameId, espnEventId, label, awayTeamEnc, homeTeam
   container.innerHTML = '<div class="helptext" style="padding:8px 0; font-size:11px;">Loading...</div>';
   if (toggle) toggle.textContent = `Hide ${label} ▴`;
   try {
-    const data = await api('getGameSummary', { espnEventId, awayTeam, homeTeam, awayScore, homeScore }, true);
+    const data = await api('getGameSummary', { espnEventId, gameId, awayTeam, homeTeam, awayScore, homeScore, favorite, spread }, true);
     if (!data.ok) {
       container.innerHTML = `<div class="helptext" style="padding:8px 0; font-size:11px;">${escapeHtml(data.error || 'Could not load live detail.')}</div>`;
       return;
@@ -3486,12 +3487,12 @@ function renderScoreRow(g, isBoard) {
           ? `<div id="picks-summary-${g.gameId}" onclick="togglePickSummary('${g.gameId}')" style="cursor:pointer;">${renderPickSummaryBar(g)}</div>
              <div id="picks-full-${g.gameId}" onclick="togglePickSummary('${g.gameId}')" style="display:none; cursor:pointer;">${renderPickBreakdown(g)}</div>
              ${g.espnEventId ? `
-               <div id="live-detail-toggle-${g.gameId}" onclick="loadGameSummary('${g.gameId}', '${g.espnEventId}', 'game detail', '${encodeURIComponent(g.awayTeam)}', '${encodeURIComponent(g.homeTeam)}', ${Number(awayScore) || 0}, ${Number(homeScore) || 0})" style="margin-top:6px; font-size:11px; color:var(--gold); cursor:pointer; font-weight:700;">View game detail ▾</div>
+               <div id="live-detail-toggle-${g.gameId}" onclick="loadGameSummary('${g.gameId}', '${g.espnEventId}', 'game detail', '${encodeURIComponent(g.awayTeam)}', '${encodeURIComponent(g.homeTeam)}', ${Number(awayScore) || 0}, ${Number(homeScore) || 0}, '${encodeURIComponent(g.favorite || '')}', ${Number(g.spread) || 0})" style="margin-top:6px; font-size:11px; color:var(--gold); cursor:pointer; font-weight:700;">View game detail ▾</div>
                <div id="live-detail-${g.gameId}" style="display:none;"></div>
              ` : ''}`
           : `${renderPickBreakdown(g)}
              ${g.espnEventId ? `
-               <div id="live-detail-toggle-${g.gameId}" onclick="loadGameSummary('${g.gameId}', '${g.espnEventId}', 'live detail', '${encodeURIComponent(g.awayTeam)}', '${encodeURIComponent(g.homeTeam)}', ${Number(awayScore) || 0}, ${Number(homeScore) || 0})" style="margin-top:6px; font-size:11px; color:var(--gold); cursor:pointer; font-weight:700;">View live detail ▾</div>
+               <div id="live-detail-toggle-${g.gameId}" onclick="loadGameSummary('${g.gameId}', '${g.espnEventId}', 'live detail', '${encodeURIComponent(g.awayTeam)}', '${encodeURIComponent(g.homeTeam)}', ${Number(awayScore) || 0}, ${Number(homeScore) || 0}, '${encodeURIComponent(g.favorite || '')}', ${Number(g.spread) || 0})" style="margin-top:6px; font-size:11px; color:var(--gold); cursor:pointer; font-weight:700;">View live detail ▾</div>
                <div id="live-detail-${g.gameId}" style="display:none;"></div>
              ` : ''}`
       ) : ''}
