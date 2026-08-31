@@ -1741,7 +1741,7 @@ function renderPickerSubmissionForm(content, week) {
   document.getElementById('picker-end-date').value = fmt(sun);
 
   document.getElementById('picker-load-btn').onclick = () => loadPickerSlate(content, week);
-  document.getElementById('submit-slate-btn').onclick = submitSlate;
+  document.getElementById('submit-slate-btn').onclick = () => submitSlate(week);
 
   // auto-load immediately
   loadPickerSlate(content, week);
@@ -1882,8 +1882,7 @@ function updatePickerCount() {
   }
 }
 
-async function submitSlate() {
-  const week = currentWeek();
+async function submitSlate(week) {
   const max = Math.min(_pickerAllGames.length || 10, 10);
   if (_pickerSelectedGames.length !== max) { showToast(`Select all ${max} games`, 'error'); return; }
   const btn = document.getElementById('submit-slate-btn');
