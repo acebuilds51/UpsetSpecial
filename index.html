@@ -1845,9 +1845,9 @@ function renderPickerGamesList(week) {
   listEl.querySelectorAll('.picker-game-row:not(.picker-started)').forEach(row => {
     row.onclick = () => {
       const espnId = row.dataset.espnid;
-      const game = _pickerAllGames.find(g => g.espnEventId === espnId);
+      const game = _pickerAllGames.find(g => String(g.espnEventId) === String(espnId));
       if (!game) return;
-      const idx = _pickerSelectedGames.findIndex(g => g.espnEventId === espnId);
+      const idx = _pickerSelectedGames.findIndex(g => String(g.espnEventId) === String(espnId));
       if (idx >= 0) {
         _pickerSelectedGames.splice(idx, 1); // deselect
       } else {
