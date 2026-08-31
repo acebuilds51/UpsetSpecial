@@ -443,7 +443,7 @@ async function api(action, payload, silent) {
   payload = payload || {};
   payload.action = action;
   // Per-action timeouts — trophy room needs more time for heavy players
-  const timeouts = { getTrophyRoom: 55000, helpChat: 40000, adminGenerateResultsEmail: 55000 };
+  const timeouts = { getTrophyRoom: 55000, helpChat: 40000, adminGenerateResultsEmail: 55000, adminClearWeek: 90000 };
   const ms = timeouts[action] || 25000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
@@ -5456,7 +5456,7 @@ function renderAdminWeek(el) {
         showToast(`Week ${targetWeek} data cleared`, 'success');
         await refreshState();
         renderAdmin(document.getElementById('content'));
-      } catch(e) { btn.innerHTML = 'Clear Week Data'; }
+      } catch(e) { btn.innerHTML = 'Clear Week Data'; showToast(e.message || 'Clear failed — try again.', 'error'); }
     };
     document.getElementById('apply-defaults-btn').onclick = async () => {
       try {
