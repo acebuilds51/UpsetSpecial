@@ -5539,9 +5539,16 @@ async function renderMailPanel() {
       _mailFolderUrl = d.folderUrl || '';
       _mailQuota = d.quota;
     } catch (e) {
+      if (!el.isConnected) return;
       el.innerHTML = `<div class="empty-state"><p style="color:var(--loss);">${escapeHtml(e.message)}</p></div>`;
       return;
     }
+
+    // The admin panel may have re-rendered (e.g. after Clear Week Data) while this
+    // fetch was in flight — this panel element would then be detached from the live
+    // page. Writing into it is harmless, but wiring onclick on IDs that no longer
+    // exist in the document throws. Bail out cleanly instead.
+    if (!el.isConnected) return;
 
     el.innerHTML = `
       <p class="helptext" style="margin-bottom:10px;line-height:1.6;">
@@ -5681,6 +5688,7 @@ async function renderMailPanel() {
       mailStatus('Reading the week and writing the recap — about 20 seconds…');
       try {
         const d = await api('adminGenerateResultsEmail', { adminId: State.player.id, week });
+        if (!document.getElementById('mail-ai-draft')) return;
         _aiResultsDraft = d;
         mailStatus(`Generated from ${d.stats.games} games, ${d.stats.players} players, ${d.stats.upsetHits} upset hit(s), ${d.stats.perfectWeeks} perfect week(s).`, 'success');
         document.getElementById('mail-ai-draft').innerHTML = `
