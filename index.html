@@ -5340,7 +5340,7 @@ function renderAdminWeek(el) {
       <div id="mail-panel"><div class="empty-state"><span class="spinner"></span></div></div>
     </div>
 
-    ${posted ? `
+    ${(posted || games.length > 0) ? `
       <div class="section-label">Results</div>
       <div class="card">
         <button class="btn btn-primary btn-block" id="fetch-results-btn">Fetch Final Scores (ESPN)</button>
