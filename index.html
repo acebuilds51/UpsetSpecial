@@ -1724,20 +1724,21 @@ function renderPickerSubmissionForm(content, week) {
           <button class="btn btn-ghost btn-sm" id="picker-load-btn">Load</button>
         </div>
       </div>
-      <p class="helptext">Board games are Saturday only, per league rule. Defaults to this Saturday.</p>
+      <p class="helptext">Board games are weekend-only (Sat/Sun), per league rule. Defaults to this Saturday and Sunday.</p>
     </div>
     <div id="picker-games-list"><div class="empty-state"><p>Loading this weekend's games from ESPN...</p></div></div>
     <button class="btn btn-gold btn-block" id="submit-slate-btn" style="margin-top:6px;" disabled>Select 10 Games to Submit</button>
   `;
 
-  // default date range to this Saturday only
+  // default date range to this Saturday through Sunday
   const today = new Date();
   const dayOfWeek = today.getDay();
   const daysUntilSat = (6 - dayOfWeek + 7) % 7;
   const sat = new Date(today.getTime() + daysUntilSat * 24 * 60 * 60 * 1000);
+  const sun = new Date(sat.getTime() + 1 * 24 * 60 * 60 * 1000);
   const fmt = d => d.toISOString().split('T')[0];
   document.getElementById('picker-start-date').value = fmt(sat);
-  document.getElementById('picker-end-date').value = fmt(sat);
+  document.getElementById('picker-end-date').value = fmt(sun);
 
   document.getElementById('picker-load-btn').onclick = () => loadPickerSlate(content, week);
   document.getElementById('submit-slate-btn').onclick = () => submitSlate(week);
@@ -1760,26 +1761,28 @@ async function loadPickerSlate(content, week) {
     // (covers test data AND the real season after Sunday's auto-snapshot runs)
     const snapData = await api('getPickerSlateFromSnapshot', { week });
     if (snapData.games && snapData.games.length > 0) {
-      _pickerAllGames = filterToSaturday(snapData.games);
+      _pickerAllGames = filterToWeekend(snapData.games);
       renderPickerGamesList(week);
       return;
     }
     // no snapshot yet -- fall back to live ESPN
     listEl.innerHTML = `<div class="empty-state"><span class="spinner" style="border-top-color:var(--gold); border-color:rgba(255,255,255,0.08);"></span><p style="margin-top:12px;">Loading from ESPN...</p></div>`;
     const data = await api('getWeeklyEspnSlate', { startDate, endDate });
-    _pickerAllGames = filterToSaturday(data.games);
+    _pickerAllGames = filterToWeekend(data.games);
     renderPickerGamesList(week);
   } catch(e) {
     listEl.innerHTML = `<div class="empty-state"><h3>Couldn't load games</h3><p>Check your connection and try again, or adjust the date range.</p></div>`;
   }
 }
 
-// The board is Saturday-games-only by league rule. The snapshot source in
-// particular ignores the date-range inputs entirely (it returns whatever was
-// captured for the week), so this filter is what actually enforces the rule
-// regardless of which source the games came from.
-function filterToSaturday(games) {
-  return (games || []).filter(g => g.kickoff && new Date(g.kickoff).getDay() === 6);
+// The board is weekend-games-only by league rule (Sat/Sun) -- this excludes
+// Thu/Fri games, which are the ones most likely to have already kicked off
+// by the time someone's actually picking, causing them to show as unselectable.
+// The snapshot source in particular ignores the date-range inputs entirely (it
+// returns whatever was captured for the week), so this filter is what actually
+// enforces the rule regardless of which source the games came from.
+function filterToWeekend(games) {
+  return (games || []).filter(g => g.kickoff && [0, 6].includes(new Date(g.kickoff).getDay()));
 }
 
 function renderPickerGamesList(week) {
