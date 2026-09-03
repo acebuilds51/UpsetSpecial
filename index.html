@@ -5576,9 +5576,15 @@ async function renderMailPanel() {
         <div class="field"><label>Subject Line</label>
           <input type="text" id="mail-tpl-subject" placeholder="e.g. Upset Special 2026 — The App Is Live">
         </div>
+        <div class="field"><label>Send To</label>
+          <select id="mail-tpl-audience">
+            <option value="all">All active players (${(State.players || []).filter(p => p.active).length})</option>
+            <option value="notInstalled">Haven't installed the app yet (${(State.players || []).filter(p => p.active && !p.installedAt).length})</option>
+          </select>
+        </div>
         <button class="btn btn-ghost btn-block" id="mail-tpl-preview" style="margin-bottom:6px;">👁 Preview</button>
         <button class="btn btn-ghost btn-block" id="mail-tpl-test" style="margin-bottom:6px;">✉️ Send Test to Me</button>
-        <button class="btn btn-primary btn-block" id="mail-tpl-send">📤 Send to All Players</button>
+        <button class="btn btn-primary btn-block" id="mail-tpl-send">📤 Send</button>
       `}
       <div id="mail-status"></div>
       <div id="mail-preview"></div>
@@ -5602,12 +5608,14 @@ async function renderMailPanel() {
     async function sendTemplate(ev, testOnly) {
       const id = document.getElementById('mail-tpl-select').value;
       const subject = document.getElementById('mail-tpl-subject').value.trim();
+      const audience = document.getElementById('mail-tpl-audience').value;
       if (!subject) { mailStatus('Enter a subject line first.', 'error'); return; }
-      if (!testOnly && !confirm(`Send "${subject}" to ALL active players. This cannot be undone. Continue?`)) return;
+      const audienceLabel = audience === 'notInstalled' ? "players who haven't installed the app yet" : 'ALL active players';
+      if (!testOnly && !confirm(`Send "${subject}" to ${audienceLabel}. This cannot be undone. Continue?`)) return;
       const btn = ev.currentTarget, label = btn.innerHTML;
       btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
       try {
-        const d = await api('adminSendTemplateEmail', { adminId: State.player.id, templateId: id, subject, testOnly });
+        const d = await api('adminSendTemplateEmail', { adminId: State.player.id, templateId: id, subject, testOnly, audience });
         mailStatus(`Sent to ${d.sent} recipient${d.sent === 1 ? '' : 's'}.` +
           (d.failed && d.failed.length ? ` Failed: ${d.failed.length}.` : '') +
           ` Quota left: ${d.quotaLeft}.`, 'success');
