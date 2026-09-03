@@ -2818,7 +2818,7 @@ async function renderProfile(content) {
           <div style="font-size:13px; font-weight:700; color:var(--text); margin-bottom:8px;">General Chat Notifications</div>
           <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
             <div class="helptext">Get notified when someone posts in General chat</div>
-            <button class="btn ${(p.chatNotif || 'off') === 'on' ? 'btn-primary' : 'btn-ghost'} btn-sm" id="chat-notif-btn">${(p.chatNotif || 'off') === 'on' ? 'On' : 'Off'}</button>
+            <button class="btn ${(p.chatNotif || 'on') === 'on' ? 'btn-primary' : 'btn-ghost'} btn-sm" id="chat-notif-btn">${(p.chatNotif || 'on') === 'on' ? 'On' : 'Off'}</button>
           </div>
           <div style="font-size:13px; font-weight:700; color:var(--text); margin-bottom:8px;">Game Score Notifications</div>
           <div style="display:flex; flex-direction:column; gap:8px;">
