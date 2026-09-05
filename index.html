@@ -1443,6 +1443,7 @@ function goToView(view) {
    SLATE / PICKS VIEW (regular season)
    ============================================================ */
 let _draftPicks = {};       // gameId -> {pickedTeam, isUpset}
+let _draftPicksSyncedFrom = ''; // week + latest submittedAt this draft was last synced from -- see renderPicksBoard
 let _draftSlateGames = [];  // picker submission draft
 let _upsetMode = 'board';   // 'board' (pick from the 10) | 'search' (any game)
 let _upsetSearchResults = [];
@@ -1911,7 +1912,18 @@ async function submitSlate(week) {
 function renderPicksBoard(content, week, games, earlyWarning) {
   earlyWarning = earlyWarning || '';
   const existingPicks = getMyPicksForWeek(week);
-  if (existingPicks.length > 0 && Object.keys(_draftPicks).length === 0) {
+  // Fingerprint = week + the latest submittedAt among this player's current picks.
+  // If this differs from what the draft was last synced from, the server-side data
+  // has moved on since (a newer submission from this device or another) and the
+  // draft must be rebuilt from it -- otherwise a stale draft still in memory (e.g.
+  // a backgrounded PWA session held open since Friday) can resubmit its old values
+  // for every game, silently overwriting a genuinely newer pick.
+  const latestSubmittedAt = existingPicks.reduce((max, p) => (p.submittedAt > max ? p.submittedAt : max), '');
+  const syncFingerprint = week + ':' + latestSubmittedAt;
+  if (existingPicks.length > 0 && _draftPicksSyncedFrom !== syncFingerprint) {
+    _draftPicks = {};
+    _upsetSelection = null;
+    _upsetMode = 'board';
     existingPicks.forEach(p => {
       const isUpset = p.isUpset === true || p.isUpset === 'TRUE';
       _draftPicks[p.gameId] = { pickedTeam: p.pickedTeam, isUpset };
@@ -1924,6 +1936,7 @@ function renderPicksBoard(content, week, games, earlyWarning) {
         }
       }
     });
+    _draftPicksSyncedFrom = syncFingerprint;
   }
 
   const straightCount = Object.keys(_draftPicks).filter(gid => _draftPicks[gid].pickedTeam).length;
