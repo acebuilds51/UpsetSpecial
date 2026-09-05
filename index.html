@@ -1939,7 +1939,7 @@ function renderPicksBoard(content, week, games, earlyWarning) {
     _draftPicksSyncedFrom = syncFingerprint;
   }
 
-  const straightCount = Object.keys(_draftPicks).filter(gid => _draftPicks[gid].pickedTeam).length;
+  const straightCount = Object.keys(_draftPicks).filter(gid => _draftPicks[gid].pickedTeam && games.some(g => g.gameId === gid)).length;
   const hasUpset = Object.keys(_draftPicks).some(gid => _draftPicks[gid].isUpset) || _upsetSelection;
 
   content.innerHTML = `
@@ -2226,8 +2226,11 @@ async function runUpsetSearch(query, week, games) {
 }
 
 function updateBoardHeader() {
-  // count all games with a pick -- including the one with the upset flag
-  const straightCount = Object.keys(_draftPicks).filter(gid => _draftPicks[gid].pickedTeam).length;
+  // count all games with a pick -- including the one with the upset flag, but
+  // excluding an Upset Special pick sourced from a searched game outside this
+  // week's 10 (that has a different gameId and should not inflate this count)
+  const boardGameIds = new Set(getGamesForWeek(currentWeek()).map(g => g.gameId));
+  const straightCount = Object.keys(_draftPicks).filter(gid => _draftPicks[gid].pickedTeam && boardGameIds.has(gid)).length;
   const hasUpset = Object.keys(_draftPicks).some(gid => _draftPicks[gid].isUpset) || _upsetSelection;
   const countEl = document.getElementById('picked-count-display');
   const upsetEl = document.getElementById('upset-status-display');
@@ -2273,6 +2276,7 @@ async function submitMyPicks(week, games) {
   } catch (e) {
     btn.disabled = false;
     btn.innerHTML = 'Submit My Picks';
+    showToast(e.message || 'Something went wrong -- try again.', 'error');
   }
 }
 </script>
