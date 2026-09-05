@@ -2249,6 +2249,8 @@ async function submitMyPicks(week, games) {
   picks.push(upsetPick);
 
   const btn = document.getElementById('submit-picks-btn');
+  if (btn.disabled) return; // already submitting -- ignore a rapid second tap
+  btn.disabled = true;
   btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
   try {
     await api('submitPicks', { week, playerId: State.player.id, picks });
@@ -2256,6 +2258,7 @@ async function submitMyPicks(week, games) {
     await refreshState();
     renderContent();
   } catch (e) {
+    btn.disabled = false;
     btn.innerHTML = 'Submit My Picks';
   }
 }
