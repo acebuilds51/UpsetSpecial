@@ -2291,7 +2291,8 @@ function underdogOf(game) {
 
 function computeStandingsLocally() {
   const players = State.players.filter(p => p.active);
-  const finalGames = State.games.filter(isGameFinal);
+  // Week 0 is practice and must never count toward season standings.
+  const finalGames = State.games.filter(g => isGameFinal(g) && Number(g.week) > 0);
   const standings = {};
   players.forEach(p => standings[p.id] = {
     playerId: p.id, name: p.name, teamName: p.teamName,
