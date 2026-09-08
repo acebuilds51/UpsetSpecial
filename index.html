@@ -443,7 +443,7 @@ async function api(action, payload, silent) {
   payload = payload || {};
   payload.action = action;
   // Per-action timeouts — trophy room needs more time for heavy players
-  const timeouts = { getTrophyRoom: 55000, helpChat: 40000, adminGenerateResultsEmail: 55000, adminClearWeek: 90000 };
+  const timeouts = { getTrophyRoom: 55000, helpChat: 40000, adminGenerateResultsEmail: 120000, adminClearWeek: 90000 };
   const ms = timeouts[action] || 25000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
@@ -5723,19 +5723,28 @@ async function renderMailPanel() {
       const week = Number(document.getElementById('mail-ai-week').value);
       const btn = ev.currentTarget, label = btn.innerHTML;
       btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
-      mailStatus('Reading the week and writing the recap — about 20 seconds…');
+      mailStatus('Reading the week and writing the recap, with an automated accuracy check — usually 20-30 seconds, longer if it needs a retry…');
       try {
         const d = await api('adminGenerateResultsEmail', { adminId: State.player.id, week });
         if (!document.getElementById('mail-ai-draft')) return;
         _aiResultsDraft = d;
         mailStatus(`Generated from ${d.stats.games} games, ${d.stats.players} players, ${d.stats.upsetHits} upset hit(s), ${d.stats.perfectWeeks} perfect week(s).`, 'success');
+        const verifyBanner = d.verified
+          ? `<div style="border-left:4px solid #16a34a;background:#f2fbf5;border-radius:0 8px 8px 0;padding:12px 14px;margin:14px 0;font-size:13px;color:#0a3a1a;">
+               ✅ <strong>Automated accuracy check passed</strong> — every named player's point total and every upset hit was verified against the actual results data.
+             </div>`
+          : `<div style="border-left:4px solid #FF4D5E;background:#fff5f5;border-radius:0 8px 8px 0;padding:12px 14px;margin:14px 0;font-size:13px;color:#5a0010;">
+               ⚠️ <strong>Automated accuracy check found issues after 3 attempts — review carefully before sending.</strong>
+               <ul style="margin:8px 0 0;padding-left:18px;line-height:1.6;">${(d.validationIssues || []).map(iss => `<li>${escapeHtml(iss)}</li>`).join('')}</ul>
+             </div>`;
         document.getElementById('mail-ai-draft').innerHTML = `
+          ${verifyBanner}
           <div class="field" style="margin-top:14px;"><label>Subject Line</label>
             <input type="text" id="mail-ai-subject" value="Upset Special — Week ${d.week} Results">
           </div>
           <div class="field"><label>Headline</label><input type="text" id="mail-ai-title" value="${escapeHtml(d.title)}"></div>
           <div class="field"><label>Subtitle</label><input type="text" id="mail-ai-subtitle" value="${escapeHtml(d.subtitle)}"></div>
-          <div class="field"><label>Body <span style="font-weight:400;text-transform:none;letter-spacing:0;">(edit freely)</span></label>
+          <div class="field"><label>Body <span style="font-weight:400;text-transform:none;letter-spacing:0;">(edit freely — includes the Official Box Score at the bottom, generated directly from the data, not the AI)</span></label>
             <textarea id="mail-ai-body" rows="14">${escapeHtml(d.bodyHtml)}</textarea>
           </div>
           <button class="btn btn-ghost btn-block" id="mail-ai-preview" style="margin-bottom:6px;">👁 Preview</button>
