@@ -5645,6 +5645,7 @@ async function renderMailPanel() {
     }
 
   } else if (_mailTab === 'compose') {
+    const activePlayers = (State.players || []).filter(p => p.active).sort((a, b) => (a.teamName || '').localeCompare(b.teamName || ''));
     el.innerHTML = `
       <p class="helptext" style="margin-bottom:12px;line-height:1.6;">
         Write a one-off message. It gets wrapped in the standard Upset Special header and footer automatically.
@@ -5655,12 +5656,46 @@ async function renderMailPanel() {
       <div class="field"><label>Message</label>
         <textarea id="mail-c-body" rows="10" placeholder="Write your message. Blank lines become paragraphs. Basic HTML like <strong>bold</strong> works too."></textarea>
       </div>
+      <div class="field"><label>Send To</label>
+        <select id="mail-c-audience">
+          <option value="all">All active players (${activePlayers.length})</option>
+          <option value="specific">Specific players…</option>
+        </select>
+      </div>
+      <div id="mail-c-player-picker" style="display:none;">
+        <input type="text" id="mail-c-player-search" placeholder="Search players…" style="margin-bottom:8px;">
+        <div id="mail-c-player-count" class="helptext" style="margin-bottom:6px;">0 selected</div>
+        <div id="mail-c-player-list" style="max-height:220px;overflow-y:auto;border:1px solid var(--hairline);border-radius:8px;padding:8px;margin-bottom:14px;">
+          ${activePlayers.map(p => `
+            <label style="display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;">
+              <input type="checkbox" class="mail-c-player-cb" value="${p.id}">
+              <span>${escapeHtml(p.teamName || p.name)}${!p.email ? ' <span style="color:var(--loss);font-size:12px;">(no email on file)</span>' : ''}</span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
       <button class="btn btn-ghost btn-block" id="mail-c-preview" style="margin-bottom:6px;">👁 Preview</button>
       <button class="btn btn-ghost btn-block" id="mail-c-test" style="margin-bottom:6px;">✉️ Send Test to Me</button>
-      <button class="btn btn-primary btn-block" id="mail-c-send">📤 Send to All Players</button>
+      <button class="btn btn-primary btn-block" id="mail-c-send">📤 Send</button>
       <div id="mail-status"></div>
       <div id="mail-preview"></div>
     `;
+
+    const audienceSel = document.getElementById('mail-c-audience');
+    const pickerBox = document.getElementById('mail-c-player-picker');
+    const countEl = document.getElementById('mail-c-player-count');
+    const updateCount = () => {
+      const n = document.querySelectorAll('.mail-c-player-cb:checked').length;
+      countEl.textContent = n === 1 ? '1 selected' : `${n} selected`;
+    };
+    audienceSel.onchange = () => { pickerBox.style.display = audienceSel.value === 'specific' ? 'block' : 'none'; };
+    document.getElementById('mail-c-player-search').oninput = (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      document.querySelectorAll('#mail-c-player-list label').forEach(lbl => {
+        lbl.style.display = lbl.textContent.toLowerCase().indexOf(q) !== -1 ? 'flex' : 'none';
+      });
+    };
+    document.querySelectorAll('.mail-c-player-cb').forEach(cb => { cb.onchange = updateCount; });
 
     const readCompose = () => {
       const raw = document.getElementById('mail-c-body').value.trim();
@@ -5668,11 +5703,15 @@ async function renderMailPanel() {
       const bodyHtml = raw.indexOf('<p') === 0 || raw.indexOf('<div') === 0
         ? raw
         : raw.split(/\n\s*\n/).map(p => `<p style="margin-bottom:16px;">${p.replace(/\n/g, '<br>')}</p>`).join('\n');
+      const audience = audienceSel.value;
+      const playerIds = audience === 'specific'
+        ? Array.from(document.querySelectorAll('.mail-c-player-cb:checked')).map(cb => cb.value)
+        : undefined;
       return {
         subject: document.getElementById('mail-c-subject').value.trim(),
         title: document.getElementById('mail-c-title').value.trim(),
         subtitle: document.getElementById('mail-c-subtitle').value.trim(),
-        bodyHtml
+        bodyHtml, audience, playerIds
       };
     };
 
@@ -5695,7 +5734,14 @@ async function renderMailPanel() {
       if (!c.subject) { mailStatus('Enter a subject line.', 'error'); return; }
       if (!c.title)   { mailStatus('Enter a headline.', 'error'); return; }
       if (!c.bodyHtml){ mailStatus('Write a message.', 'error'); return; }
-      if (!testOnly && !confirm(`Send "${c.subject}" to ALL active players. Continue?`)) return;
+      if (c.audience === 'specific' && (!c.playerIds || c.playerIds.length === 0)) {
+        mailStatus('Select at least one player, or switch back to "All active players".', 'error');
+        return;
+      }
+      const audienceLabel = c.audience === 'specific'
+        ? `${c.playerIds.length} selected player${c.playerIds.length === 1 ? '' : 's'}`
+        : 'ALL active players';
+      if (!testOnly && !confirm(`Send "${c.subject}" to ${audienceLabel}. Continue?`)) return;
       const btn = ev.currentTarget, label = btn.innerHTML;
       btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
       try {
