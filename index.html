@@ -3432,7 +3432,24 @@ async function renderLiveScores(content) {
     renderLiveScores(content);
   };
 
+  reExpandGameDetails();
   loadAllEspnScores(week);
+}
+
+// If a background refresh (or manual re-render) rebuilds this view while the
+// user has a game's detail expanded, this re-opens it automatically instead
+// of silently leaving it collapsed -- otherwise anyone watching a live game's
+// detail would see it close itself out from under them every time a score
+// changes elsewhere and triggers a refresh.
+function reExpandGameDetails() {
+  const expanded = window._expandedGameDetails || {};
+  Object.keys(expanded).forEach(gameId => {
+    const container = document.getElementById('live-detail-' + gameId);
+    if (!container) return; // this game isn't in the current render (e.g. dropped off the board)
+    const args = expanded[gameId];
+    delete window._expandedGameDetails[gameId]; // loadGameSummary will re-add it once expanded
+    loadGameSummary(...args);
+  });
 }
 
 function renderPickBreakdown(g) {
@@ -3499,12 +3516,22 @@ async function loadGameSummary(gameId, espnEventId, label, awayTeamEnc, homeTeam
   const container = document.getElementById('live-detail-' + gameId);
   const toggle = document.getElementById('live-detail-toggle-' + gameId);
   if (!container) return;
+  window._expandedGameDetails = window._expandedGameDetails || {};
   if (container.dataset.loaded === '1') {
     const isHidden = container.style.display === 'none';
     container.style.display = isHidden ? 'block' : 'none';
     if (toggle) toggle.textContent = isHidden ? `Hide ${label} ▴` : `View ${label} ▾`;
+    // Track expanded state (with the full args needed to reload it) so a
+    // background refresh that rebuilds this view can re-expand it automatically
+    // instead of silently collapsing it out from under someone watching a game.
+    if (isHidden) {
+      window._expandedGameDetails[gameId] = [gameId, espnEventId, label, awayTeamEnc, homeTeamEnc, awayScore, homeScore, favoriteEnc, spread];
+    } else {
+      delete window._expandedGameDetails[gameId];
+    }
     return;
   }
+  window._expandedGameDetails[gameId] = [gameId, espnEventId, label, awayTeamEnc, homeTeamEnc, awayScore, homeScore, favoriteEnc, spread];
   container.style.display = 'block';
   container.innerHTML = '<div class="helptext" style="padding:8px 0; font-size:11px;">Loading...</div>';
   if (toggle) toggle.textContent = `Hide ${label} ▴`;
@@ -3564,8 +3591,13 @@ function renderScoreRow(g, isBoard) {
   const started = isGameStarted(g);
   const final = isGameFinal(g);
 
-  const awayScore = final || started ? (g.finalAwayScore || g.awayScore || '') : '';
-  const homeScore = final || started ? (g.finalHomeScore || g.homeScore || '') : '';
+  const pickScore = (finalVal, liveVal) => {
+    if (finalVal !== undefined && finalVal !== null && finalVal !== '') return finalVal;
+    if (liveVal !== undefined && liveVal !== null && liveVal !== '') return liveVal;
+    return '';
+  };
+  const awayScore = final || started ? pickScore(g.finalAwayScore, g.awayScore) : '';
+  const homeScore = final || started ? pickScore(g.finalHomeScore, g.homeScore) : '';
 
   const awayWon = final && Number(awayScore) > Number(homeScore);
   const homeWon = final && Number(homeScore) > Number(awayScore);
@@ -3662,6 +3694,7 @@ function renderAllScores(container, games) {
       ${s.games.map(g => renderScoreRow(g, false)).join('')}
     </div>
   `).join('');
+  reExpandGameDetails();
 }
 
 /* ============================================================
