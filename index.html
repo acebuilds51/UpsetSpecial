@@ -5975,10 +5975,34 @@ async function adminSetSeasonField(key, value) {
 
 /* ---- Admin: Players ---- */
 function renderAdminPlayers(el) {
-  const pending = State.players.filter(p => !p.active && !p.isAdmin);
+  const pending = State.players.filter(p => !p.active && !p.isAdmin && !p.deactivatedAt);
+  const deactivated = State.players.filter(p => !p.active && !p.isAdmin && p.deactivatedAt);
   const active = State.players.filter(p => p.active);
 
+  // Same "haven't finished picks" definition used by the automated reminder
+  // emails -- incomplete on straight picks, missing an Upset Special, or both.
+  const currentWeek = Number((State.season || []).find(s => s.key === 'currentWeek')?.value || 0);
+  const boardGames = (State.games || []).filter(g => Number(g.week) === currentWeek && g.source !== 'external' && (g.locked === true || g.locked === 'TRUE'));
+  const expectedStraightCount = boardGames.length;
+  const weekPicks = (State.picks || []).filter(p => Number(p.week) === currentWeek);
+  const nonPickers = expectedStraightCount > 0 ? active.filter(player => {
+    const myPicks = weekPicks.filter(p => p.playerId === player.id);
+    const straightCount = myPicks.filter(p => !(p.isUpset === true || p.isUpset === 'TRUE')).length;
+    const hasUpset = myPicks.some(p => p.isUpset === true || p.isUpset === 'TRUE');
+    return straightCount < expectedStraightCount || !hasUpset;
+  }) : [];
+
   el.innerHTML = `
+    ${expectedStraightCount > 0 ? `
+      <div class="section-label" style="color:${nonPickers.length > 0 ? 'var(--loss)' : 'var(--win)'};">⏰ Haven't Finished Week ${currentWeek} Picks (${nonPickers.length})</div>
+      ${nonPickers.length > 0 ? `
+        <div class="card" style="padding:12px 14px;">
+          <div class="helptext" style="line-height:1.6;">${nonPickers.map(p => escapeHtml(p.teamName || p.name)).join(', ')}</div>
+          <div class="helptext" style="margin-top:6px; color:var(--text-faint);">Same list the automated reminder emails go out to.</div>
+        </div>
+      ` : `<div class="card"><div class="helptext" style="color:var(--win);">Everyone's in for Week ${currentWeek}. ✓</div></div>`}
+    ` : ''}
+
     ${pending.length > 0 ? `
       <div class="section-label" style="color:var(--gold);">⏳ Pending Approval (${pending.length})</div>
       ${pending.map(p => `
@@ -5992,6 +6016,21 @@ function renderAdminPlayers(el) {
           <div class="row2">
             <button class="btn btn-primary btn-sm" data-approve="${p.id}">✓ Approve</button>
             <button class="btn btn-danger btn-sm" data-reject="${p.id}">✗ Reject</button>
+          </div>
+        </div>
+      `).join('')}
+    ` : ''}
+
+    ${deactivated.length > 0 ? `
+      <div class="section-label">🚫 Deactivated (${deactivated.length})</div>
+      ${deactivated.map(p => `
+        <div class="card" style="padding:12px 14px;">
+          <div class="flex-between">
+            <div>
+              <div style="font-weight:700; font-size:14px;">${escapeHtml(p.teamName || p.name)}</div>
+              <div class="helptext">${escapeHtml(p.name)}</div>
+            </div>
+            <button class="btn btn-ghost btn-sm" data-reactivate="${p.id}">Reactivate</button>
           </div>
         </div>
       `).join('')}
@@ -6060,7 +6099,16 @@ function renderAdminPlayers(el) {
   el.querySelectorAll('[data-toggle-active]').forEach(btn => {
     btn.onclick = async () => {
       const id = btn.dataset.toggleActive;
-      await api('adminUpdatePlayer', { adminId: State.player.id, id, active: false });
+      await api('adminUpdatePlayer', { adminId: State.player.id, id, active: false, deactivatedAt: new Date().toISOString() });
+      await refreshState(); renderAdmin(document.getElementById('content'));
+    };
+  });
+
+  el.querySelectorAll('[data-reactivate]').forEach(btn => {
+    btn.onclick = async () => {
+      const id = btn.dataset.reactivate;
+      await api('adminUpdatePlayer', { adminId: State.player.id, id, active: true, deactivatedAt: '' });
+      showToast('Player reactivated', 'success');
       await refreshState(); renderAdmin(document.getElementById('content'));
     };
   });
