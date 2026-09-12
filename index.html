@@ -3458,15 +3458,18 @@ function renderPickSummaryBar(g) {
   if (total === 0) return '<div class="helptext" style="padding:4px 0; font-size:11px;">No picks yet.</div>';
   const awayPct = Math.round((awayCount / total) * 100);
   return `
-    <div style="margin-top:8px;">
-      <div style="display:flex; height:6px; border-radius:3px; overflow:hidden; margin-bottom:4px;">
-        <div style="width:${awayPct}%; background:var(--gold);"></div>
-        <div style="width:${100 - awayPct}%; background:var(--hairline);"></div>
+    <div style="margin-top:8px; border:1px solid rgba(242,182,50,0.35); border-radius:8px; padding:8px 10px; display:flex; align-items:center; gap:10px;">
+      <div style="flex:1; min-width:0;">
+        <div style="display:flex; height:6px; border-radius:3px; overflow:hidden; margin-bottom:6px;">
+          <div style="width:${awayPct}%; background:var(--gold);"></div>
+          <div style="width:${100 - awayPct}%; background:var(--hairline);"></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-soft);">
+          <span>${awayCount} picked ${escapeHtml(g.awayTeam)}</span>
+          <span>${homeCount} picked ${escapeHtml(g.homeTeam)}</span>
+        </div>
       </div>
-      <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-faint);">
-        <span>${awayCount} picked ${escapeHtml(g.awayTeam)}</span>
-        <span>${homeCount} picked ${escapeHtml(g.homeTeam)} ▾</span>
-      </div>
+      <div style="color:var(--gold); font-size:16px; flex-shrink:0;">▾</div>
     </div>`;
 }
 
