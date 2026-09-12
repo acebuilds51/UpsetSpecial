@@ -2200,14 +2200,14 @@ function renderUpsetResultRows(resultsEl, results, week, games) {
         </div>
         <div>
           <div class="matchup">${escapeHtml(r.awayTeam)} @ ${escapeHtml(r.homeTeam)}</div>
-          <div style="display:flex; align-items:center; gap:6px; margin-top:2px; flex-wrap:wrap;">
-            <div class="helptext">${r.favorite ? escapeHtml(r.favorite) + ' favored' : 'No line'}${r.kickoff ? ' · ' + new Date(r.kickoff).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : ''}</div>
-            <span style="font-size:10px; padding:1px 6px; border-radius:4px; background:rgba(242,182,50,0.15); color:var(--gold); font-weight:700; letter-spacing:0.04em;">🔒 OFFICIAL LINE</span>
-          </div>
+          <div class="helptext" style="margin-top:2px;">${r.favorite ? escapeHtml(r.favorite) + ' favored' : 'No line'}${r.kickoff ? ' · ' + new Date(r.kickoff).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : ''}</div>
         </div>
       </div>
       <div style="text-align:right;">
-        <div class="line">${r.favorite ? '+' + fmtSpread(r.spread) : '—'}</div>
+        <div style="display:flex; align-items:center; justify-content:flex-end; gap:6px;">
+          <span style="font-size:10px; padding:1px 6px; border-radius:4px; background:rgba(242,182,50,0.15); color:var(--gold); font-weight:700; letter-spacing:0.04em; white-space:nowrap;">🔒 OFFICIAL</span>
+          <div class="line">${r.favorite ? '+' + fmtSpread(r.spread) : '—'}</div>
+        </div>
         ${hasCurrent ? `
           <div style="font-size:11px; margin-top:2px; ${moved ? 'color:var(--gold); font-weight:700;' : 'color:var(--text-faint);'}">
             LIVE: ${escapeHtml(r.currentFavorite)} -${fmtSpread(r.currentSpread)}${moved ? ' ⚡' : ''}
