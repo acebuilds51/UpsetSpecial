@@ -2187,7 +2187,10 @@ function renderUpsetResultRows(resultsEl, results, week, games) {
     resultsEl.innerHTML = '<div class="helptext">No games found. Try another team name.</div>';
     return;
   }
-  resultsEl.innerHTML = results.map((r, i) => `
+  resultsEl.innerHTML = results.map((r, i) => {
+    const hasCurrent = r.currentFavorite && r.currentSpread !== undefined && r.currentSpread !== '';
+    const moved = hasCurrent && (r.currentFavorite !== r.favorite || Number(r.currentSpread) !== Number(r.spread));
+    return `
     <div class="search-result-row" data-idx="${i}">
       <div style="display:flex; align-items:center; gap:10px;">
         <div style="display:flex; align-items:center;">
@@ -2196,15 +2199,23 @@ function renderUpsetResultRows(resultsEl, results, week, games) {
         </div>
         <div>
           <div class="matchup">${escapeHtml(r.awayTeam)} @ ${escapeHtml(r.homeTeam)}</div>
-          <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
+          <div style="display:flex; align-items:center; gap:6px; margin-top:2px; flex-wrap:wrap;">
             <div class="helptext">${r.favorite ? escapeHtml(r.favorite) + ' favored' : 'No line'}${r.kickoff ? ' · ' + new Date(r.kickoff).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : ''}</div>
             <span style="font-size:10px; padding:1px 6px; border-radius:4px; background:rgba(242,182,50,0.15); color:var(--gold); font-weight:700; letter-spacing:0.04em;">MON LINE</span>
           </div>
         </div>
       </div>
-      <div class="line">${r.favorite ? '+' + fmtSpread(r.spread) : '—'}</div>
+      <div style="text-align:right;">
+        <div class="line">${r.favorite ? '+' + fmtSpread(r.spread) : '—'}</div>
+        ${hasCurrent ? `
+          <div style="font-size:11px; margin-top:2px; ${moved ? 'color:var(--gold); font-weight:700;' : 'color:var(--text-faint);'}">
+            NOW: ${escapeHtml(r.currentFavorite)} -${fmtSpread(r.currentSpread)}${moved ? ' ⚡' : ''}
+          </div>
+        ` : ''}
+      </div>
     </div>
-  `).join('');
+  `;
+  }).join('');
   resultsEl.querySelectorAll('.search-result-row').forEach(row => {
     row.onclick = () => {
       const r = _upsetSearchResults[Number(row.dataset.idx)];
