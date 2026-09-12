@@ -2130,6 +2130,7 @@ function renderUpsetSearchArea(week, games) {
       <div class="field" style="margin-bottom:8px;">
         <input type="text" id="upset-search-input" placeholder="Search any team playing this week..." value="">
       </div>
+      <button class="btn btn-ghost btn-sm btn-block" id="upset-browse-all-btn" style="margin-bottom:8px;">📋 Browse All Available Games</button>
       <div id="upset-search-results"></div>
       ${_upsetSelection ? `
         <div class="card" style="background:var(--surface-2); margin-top:8px;">
@@ -2151,6 +2152,10 @@ function renderUpsetSearchArea(week, games) {
     input.oninput = () => {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => runUpsetSearch(input.value, week, games), 400);
+    };
+    document.getElementById('upset-browse-all-btn').onclick = () => {
+      input.value = '';
+      runUpsetBrowseAll(week, games);
     };
     if (_upsetSelection) {
       document.getElementById('clear-upset-search-btn').onclick = () => {
@@ -2174,6 +2179,44 @@ function clearAllUpsetFlags(boardGameIds) {
   });
 }
 
+// Shared row renderer + click wiring for both search results and the full
+// browse-all list, so both stay visually and behaviorally identical.
+function renderUpsetResultRows(resultsEl, results, week, games) {
+  _upsetSearchResults = results;
+  if (results.length === 0) {
+    resultsEl.innerHTML = '<div class="helptext">No games found. Try another team name.</div>';
+    return;
+  }
+  resultsEl.innerHTML = results.map((r, i) => `
+    <div class="search-result-row" data-idx="${i}">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <div style="display:flex; align-items:center;">
+          ${renderTeamLogo(r.awayLogo, r.awayTeam)}
+          <span style="margin-left:-6px; z-index:1;">${renderTeamLogo(r.homeLogo, r.homeTeam)}</span>
+        </div>
+        <div>
+          <div class="matchup">${escapeHtml(r.awayTeam)} @ ${escapeHtml(r.homeTeam)}</div>
+          <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
+            <div class="helptext">${r.favorite ? escapeHtml(r.favorite) + ' favored' : 'No line'}${r.kickoff ? ' · ' + new Date(r.kickoff).toLocaleString('en-US', { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : ''}</div>
+            <span style="font-size:10px; padding:1px 6px; border-radius:4px; background:rgba(242,182,50,0.15); color:var(--gold); font-weight:700; letter-spacing:0.04em;">MON LINE</span>
+          </div>
+        </div>
+      </div>
+      <div class="line">${r.favorite ? '+' + fmtSpread(r.spread) : '—'}</div>
+    </div>
+  `).join('');
+  resultsEl.querySelectorAll('.search-result-row').forEach(row => {
+    row.onclick = () => {
+      const r = _upsetSearchResults[Number(row.dataset.idx)];
+      if (!r.favorite) { showToast('This game has no line — try another', 'error'); return; }
+      const dog = isFavorite({ favorite: r.favorite, homeTeam: r.homeTeam }, r.homeTeam) ? r.awayTeam : r.homeTeam;
+      clearAllUpsetFlags(games.map(g => g.gameId));
+      _upsetSelection = { espnEventId: r.espnEventId, awayTeam: r.awayTeam, homeTeam: r.homeTeam, favorite: r.favorite, spread: r.spread, kickoff: r.kickoff, pickedTeam: dog, homeLogo: r.homeLogo, awayLogo: r.awayLogo };
+      renderPicksBoard(document.getElementById('content'), week, games);
+    };
+  });
+}
+
 async function runUpsetSearch(query, week, games) {
   if (query.trim().length < 2) { document.getElementById('upset-search-results').innerHTML = ''; return; }
   const resultsEl = document.getElementById('upset-search-results');
@@ -2181,47 +2224,29 @@ async function runUpsetSearch(query, week, games) {
   try {
     // always search the Monday snapshot -- never live ESPN -- so lines are always the opening line
     const data = await api('searchSnapshotGames', { query, week });
-    _upsetSearchResults = data.results || [];
-
     if (!data.ok && data.error) {
       // no snapshot exists yet (board not posted, or posted before this feature was added)
       resultsEl.innerHTML = `<div class="helptext" style="color:var(--loss);">${escapeHtml(data.error)}</div>`;
       return;
     }
-    if (_upsetSearchResults.length === 0) {
-      resultsEl.innerHTML = '<div class="helptext">No games found in this week\'s line snapshot. Try another team name.</div>';
-      return;
-    }
-    resultsEl.innerHTML = _upsetSearchResults.map((r, i) => `
-      <div class="search-result-row" data-idx="${i}">
-        <div style="display:flex; align-items:center; gap:10px;">
-          <div style="display:flex; align-items:center;">
-            ${renderTeamLogo(r.awayLogo, r.awayTeam)}
-            <span style="margin-left:-6px; z-index:1;">${renderTeamLogo(r.homeLogo, r.homeTeam)}</span>
-          </div>
-          <div>
-            <div class="matchup">${escapeHtml(r.awayTeam)} @ ${escapeHtml(r.homeTeam)}</div>
-            <div style="display:flex; align-items:center; gap:6px; margin-top:2px;">
-              <div class="helptext">${r.favorite ? escapeHtml(r.favorite) + ' favored' : 'No line'}</div>
-              <span style="font-size:10px; padding:1px 6px; border-radius:4px; background:rgba(242,182,50,0.15); color:var(--gold); font-weight:700; letter-spacing:0.04em;">MON LINE</span>
-            </div>
-          </div>
-        </div>
-        <div class="line">${r.favorite ? '+' + fmtSpread(r.spread) : '—'}</div>
-      </div>
-    `).join('');
-    resultsEl.querySelectorAll('.search-result-row').forEach(row => {
-      row.onclick = () => {
-        const r = _upsetSearchResults[Number(row.dataset.idx)];
-        if (!r.favorite) { showToast('This game has no line — try another', 'error'); return; }
-        const dog = isFavorite({ favorite: r.favorite, homeTeam: r.homeTeam }, r.homeTeam) ? r.awayTeam : r.homeTeam;
-        clearAllUpsetFlags(games.map(g => g.gameId));
-        _upsetSelection = { espnEventId: r.espnEventId, awayTeam: r.awayTeam, homeTeam: r.homeTeam, favorite: r.favorite, spread: r.spread, kickoff: r.kickoff, pickedTeam: dog, homeLogo: r.homeLogo, awayLogo: r.awayLogo };
-        renderPicksBoard(document.getElementById('content'), week, games);
-      };
-    });
+    renderUpsetResultRows(resultsEl, data.results || [], week, games);
   } catch (e) {
     resultsEl.innerHTML = '<div class="helptext">Search failed. Try again.</div>';
+  }
+}
+
+async function runUpsetBrowseAll(week, games) {
+  const resultsEl = document.getElementById('upset-search-results');
+  resultsEl.innerHTML = '<div class="helptext">Loading this week\'s full slate...</div>';
+  try {
+    const data = await api('searchSnapshotGames', { week, listAll: true });
+    if (!data.ok && data.error) {
+      resultsEl.innerHTML = `<div class="helptext" style="color:var(--loss);">${escapeHtml(data.error)}</div>`;
+      return;
+    }
+    renderUpsetResultRows(resultsEl, data.results || [], week, games);
+  } catch (e) {
+    resultsEl.innerHTML = '<div class="helptext">Couldn\'t load the full slate. Try again.</div>';
   }
 }
 
