@@ -5981,7 +5981,7 @@ function renderAdminPlayers(el) {
 
   // Same "haven't finished picks" definition used by the automated reminder
   // emails -- incomplete on straight picks, missing an Upset Special, or both.
-  const currentWeek = Number((State.season || []).find(s => s.key === 'currentWeek')?.value || 0);
+  const currentWeek = Number((State.season || {}).currentWeek || 0);
   const boardGames = (State.games || []).filter(g => Number(g.week) === currentWeek && g.source !== 'external' && (g.locked === true || g.locked === 'TRUE'));
   const expectedStraightCount = boardGames.length;
   const weekPicks = (State.picks || []).filter(p => Number(p.week) === currentWeek);
