@@ -2241,14 +2241,26 @@ function renderUpsetResultRows(resultsEl, results, week, games) {
   });
 }
 
+let _upsetSearchSeq = 0;
 async function runUpsetSearch(query, week, games) {
   window._lastUpsetSearchActivity = Date.now();
-  if (query.trim().length < 2) { document.getElementById('upset-search-results').innerHTML = ''; return; }
+  const mySeq = ++_upsetSearchSeq; // this request's sequence number, captured before any await
+  if (query.trim().length < 2) {
+    if (mySeq === _upsetSearchSeq) document.getElementById('upset-search-results').innerHTML = '';
+    return;
+  }
   const resultsEl = document.getElementById('upset-search-results');
   resultsEl.innerHTML = '<div class="helptext">Searching...</div>';
   try {
     // always search the Monday snapshot -- never live ESPN -- so lines are always the opening line
     const data = await api('searchSnapshotGames', { query, week });
+    // A newer search (from a later keystroke) may have already started while this
+    // one was in flight -- given how slow these calls can be, an earlier, less
+    // specific query's response can arrive after a later one's. Discard this
+    // response outright if it's no longer the most recent request; showing a
+    // stale result under the current search text is a correctness bug, not a
+    // cosmetic one -- it can show the wrong team entirely.
+    if (mySeq !== _upsetSearchSeq) return;
     if (!data.ok && data.error) {
       // no snapshot exists yet (board not posted, or posted before this feature was added)
       resultsEl.innerHTML = `<div class="helptext" style="color:var(--loss);">${escapeHtml(data.error)}</div>`;
@@ -2256,22 +2268,26 @@ async function runUpsetSearch(query, week, games) {
     }
     renderUpsetResultRows(resultsEl, data.results || [], week, games);
   } catch (e) {
+    if (mySeq !== _upsetSearchSeq) return;
     resultsEl.innerHTML = '<div class="helptext">Search failed. Try again.</div>';
   }
 }
 
 async function runUpsetBrowseAll(week, games) {
   window._lastUpsetSearchActivity = Date.now();
+  const mySeq = ++_upsetSearchSeq;
   const resultsEl = document.getElementById('upset-search-results');
   resultsEl.innerHTML = '<div class="helptext">Loading this week\'s full slate...</div>';
   try {
     const data = await api('searchSnapshotGames', { week, listAll: true });
+    if (mySeq !== _upsetSearchSeq) return; // a newer search/browse started while this was in flight
     if (!data.ok && data.error) {
       resultsEl.innerHTML = `<div class="helptext" style="color:var(--loss);">${escapeHtml(data.error)}</div>`;
       return;
     }
     renderUpsetResultRows(resultsEl, data.results || [], week, games);
   } catch (e) {
+    if (mySeq !== _upsetSearchSeq) return;
     resultsEl.innerHTML = '<div class="helptext">Couldn\'t load the full slate. Try again.</div>';
   }
 }
