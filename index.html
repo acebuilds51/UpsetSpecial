@@ -2164,7 +2164,7 @@ function renderUpsetSearchArea(week, games) {
     input.oninput = () => {
       window._lastUpsetSearchActivity = Date.now();
       clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(() => runUpsetSearch(input.value, week, games), 400);
+      debounceTimer = setTimeout(() => runUpsetSearch(input.value, week, games), 700);
     };
     document.getElementById('upset-browse-all-btn').onclick = () => {
       input.value = '';
