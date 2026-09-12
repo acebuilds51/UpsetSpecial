@@ -1587,9 +1587,14 @@ function isGameFinal(game) { return game.isFinal === true || game.isFinal === 'T
 
 function getGamesForWeek(week) {
   const all = (State.games || []).filter(g => Number(g.week) === Number(week));
-  const boardGames = all.filter(g => g.source !== 'external');
-  if (boardGames.length <= 10) return boardGames;
-  return boardGames.slice().sort((a, b) => new Date(a.postedAt||0) - new Date(b.postedAt||0)).slice(0, 10);
+  let boardGames = all.filter(g => g.source !== 'external');
+  if (boardGames.length > 10) {
+    boardGames = boardGames.slice().sort((a, b) => new Date(a.postedAt||0) - new Date(b.postedAt||0)).slice(0, 10);
+  }
+  // Always show games in chronological kickoff order -- this is the natural,
+  // expected reading order for a board/scores view, and previously wasn't
+  // applied at all in the normal (<=10 games) case.
+  return boardGames.slice().sort((a, b) => new Date(a.kickoff||0) - new Date(b.kickoff||0));
 }
 
 function getMyPicksForWeek(week) {
