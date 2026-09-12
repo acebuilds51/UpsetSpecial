@@ -3596,7 +3596,8 @@ function renderScoreRow(g, isBoard) {
                <div id="live-detail-toggle-${g.gameId}" onclick="loadGameSummary('${g.gameId}', '${g.espnEventId}', 'game detail', '${safeEncode(g.awayTeam)}', '${safeEncode(g.homeTeam)}', ${Number(awayScore) || 0}, ${Number(homeScore) || 0}, '${safeEncode(g.favorite || '')}', ${Number(g.spread) || 0})" style="margin-top:6px; font-size:11px; color:var(--gold); cursor:pointer; font-weight:700;">View game detail ▾</div>
                <div id="live-detail-${g.gameId}" style="display:none;"></div>
              ` : ''}`
-          : `${renderPickBreakdown(g)}
+          : `<div id="picks-summary-${g.gameId}" onclick="togglePickSummary('${g.gameId}')" style="cursor:pointer;">${renderPickSummaryBar(g)}</div>
+             <div id="picks-full-${g.gameId}" onclick="togglePickSummary('${g.gameId}')" style="display:none; cursor:pointer;">${renderPickBreakdown(g)}</div>
              ${g.espnEventId ? `
                <div id="live-detail-toggle-${g.gameId}" onclick="loadGameSummary('${g.gameId}', '${g.espnEventId}', 'live detail', '${safeEncode(g.awayTeam)}', '${safeEncode(g.homeTeam)}', ${Number(awayScore) || 0}, ${Number(homeScore) || 0}, '${safeEncode(g.favorite || '')}', ${Number(g.spread) || 0})" style="margin-top:6px; font-size:11px; color:var(--gold); cursor:pointer; font-weight:700;">View live detail ▾</div>
                <div id="live-detail-${g.gameId}" style="display:none;"></div>
