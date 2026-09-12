@@ -1936,7 +1936,12 @@ function renderPicksBoard(content, week, games, earlyWarning) {
   // for every game, silently overwriting a genuinely newer pick.
   const latestSubmittedAt = existingPicks.reduce((max, p) => (p.submittedAt > max ? p.submittedAt : max), '');
   const syncFingerprint = week + ':' + latestSubmittedAt;
-  if (existingPicks.length > 0 && _draftPicksSyncedFrom !== syncFingerprint) {
+  if (_draftPicksSyncedFrom !== syncFingerprint) {
+    // Always reset here, not only when existingPicks.length > 0 -- otherwise
+    // switching to a week with zero picks submitted yet (e.g. moving from a
+    // previously-viewed week straight to a fresh one) leaves the prior week's
+    // draft, including its Upset Special selection, sitting in memory and
+    // displaying on the new week's board.
     _draftPicks = {};
     _upsetSelection = null;
     _upsetMode = 'board';
