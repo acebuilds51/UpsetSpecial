@@ -2535,15 +2535,23 @@ function renderWeeklyHistory(el, standings, completedWeeks) {
               <div style="font-size:13px; font-weight:700; color:var(--text);">${escapeHtml(s.teamName || s.name)}</div>
             </div>
             <div class="mono" style="font-weight:700; color:${i === 0 ? 'var(--gold)' : 'var(--text)'};">${s.weekPoints % 1 === 0 ? s.weekPoints : s.weekPoints.toFixed(1)}</div>
-            <div style="color:var(--gold); font-size:14px;">▾</div>
+            <div class="week-pick-arrow" style="color:var(--gold); font-size:14px;">▾</div>
           </div>
           <div id="week-picks-${s.playerId}" style="display:none; padding:0 14px 12px;">
             ${straightPicks.length === 0 && !upsetPick ? '<div class="helptext">No picks submitted this week.</div>' : ''}
             ${straightPicks.map(p => {
               const g = (State.games || []).find(gg => gg.gameId === p.gameId);
-              if (!g || !isGameFinal(g)) return `
+              // Never reveal WHICH team a player picked until that game has at
+              // least started -- an unstarted game's pick is private, full stop,
+              // regardless of what's already happened elsewhere this week.
+              if (!g || !isGameStarted(g)) return `
                 <div style="display:flex; justify-content:space-between; padding:4px 0; font-size:12px; color:var(--text-faint);">
                   <span>${g ? escapeHtml(g.awayTeam) + ' @ ' + escapeHtml(g.homeTeam) : escapeHtml(p.gameId)}</span>
+                  <span>Not yet locked</span>
+                </div>`;
+              if (!isGameFinal(g)) return `
+                <div style="display:flex; justify-content:space-between; padding:4px 0; font-size:12px; color:var(--text-faint);">
+                  <span>${escapeHtml(g.awayTeam)} @ ${escapeHtml(g.homeTeam)}</span>
                   <span>${escapeHtml(p.pickedTeam)} &middot; pending</span>
                 </div>`;
               const covering = computeCoveringTeam(g);
@@ -2556,9 +2564,14 @@ function renderWeeklyHistory(el, standings, completedWeeks) {
             }).join('')}
             ${upsetPick ? (() => {
               const g = (State.games || []).find(gg => gg.gameId === upsetPick.gameId);
-              if (!g || !isGameFinal(g)) return `
-                <div style="display:flex; justify-content:space-between; padding:6px 0; margin-top:4px; border-top:1px solid var(--hairline); font-size:12px; color:var(--gold);">
+              if (!g || !isGameStarted(g)) return `
+                <div style="display:flex; justify-content:space-between; padding:6px 0; margin-top:4px; border-top:1px solid var(--hairline); font-size:12px; color:var(--text-faint);">
                   <span>🎲 Upset Special: ${g ? escapeHtml(g.awayTeam) + ' @ ' + escapeHtml(g.homeTeam) : ''}</span>
+                  <span>Not yet locked</span>
+                </div>`;
+              if (!isGameFinal(g)) return `
+                <div style="display:flex; justify-content:space-between; padding:6px 0; margin-top:4px; border-top:1px solid var(--hairline); font-size:12px; color:var(--gold);">
+                  <span>🎲 Upset Special: ${escapeHtml(g.awayTeam)} @ ${escapeHtml(g.homeTeam)}</span>
                   <span>${escapeHtml(upsetPick.pickedTeam)} &middot; pending</span>
                 </div>`;
               const result = computeGameResult(g);
@@ -2579,7 +2592,7 @@ function renderWeeklyHistory(el, standings, completedWeeks) {
     row.onclick = () => {
       const id = row.dataset.toggleWeekPicks;
       const panel = document.getElementById('week-picks-' + id);
-      const arrow = row.querySelector('div:last-child');
+      const arrow = row.querySelector('.week-pick-arrow');
       if (!panel) return;
       const isHidden = panel.style.display === 'none';
       panel.style.display = isHidden ? 'block' : 'none';
