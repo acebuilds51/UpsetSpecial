@@ -1272,6 +1272,13 @@ async function silentRefresh() {
     if (before !== after) {
       const content = document.getElementById('content');
       if (!content) return;
+      // Don't blow away an in-progress Upset Special search/selection just because
+      // something else changed in the background -- re-rendering the slate wipes
+      // the search input and results, which reads as the app randomly glitching
+      // mid-search. Skip this one re-render; the next poll (or the user's own
+      // action) will pick up the change once they're not actively searching.
+      const searchedRecently = window._lastUpsetSearchActivity && (Date.now() - window._lastUpsetSearchActivity < 20000);
+      if (State.view === 'slate' && searchedRecently) return;
       switch (State.view) {
         case 'home': renderHome(content); break;
         case 'slate': renderSlate(content); break;
@@ -1285,12 +1292,16 @@ async function silentRefresh() {
   } catch(e) { /* silent -- cached state stays on screen */ }
 }
 
-// auto-refresh every 45 seconds to keep scores/countdowns current
+// auto-refresh every 90 seconds to keep scores/countdowns current -- kept
+// deliberately infrequent since each call competes for Apps Script's limited
+// concurrent-execution slots with whatever the user is actively doing
+// (search, tab switches, etc.), and overlapping calls were measured to queue
+// and slow each other down significantly.
 function startBackgroundPolling() {
   if (window._pollTimer) clearInterval(window._pollTimer);
   window._pollTimer = setInterval(() => {
     if (State.player && document.getElementById('content')) silentRefresh();
-  }, 45000);
+  }, 90000);
 }
 
 function escapeHtml(s) {
@@ -2151,6 +2162,7 @@ function renderUpsetSearchArea(week, games) {
     const input = document.getElementById('upset-search-input');
     let debounceTimer;
     input.oninput = () => {
+      window._lastUpsetSearchActivity = Date.now();
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => runUpsetSearch(input.value, week, games), 400);
     };
@@ -2230,6 +2242,7 @@ function renderUpsetResultRows(resultsEl, results, week, games) {
 }
 
 async function runUpsetSearch(query, week, games) {
+  window._lastUpsetSearchActivity = Date.now();
   if (query.trim().length < 2) { document.getElementById('upset-search-results').innerHTML = ''; return; }
   const resultsEl = document.getElementById('upset-search-results');
   resultsEl.innerHTML = '<div class="helptext">Searching...</div>';
@@ -2248,6 +2261,7 @@ async function runUpsetSearch(query, week, games) {
 }
 
 async function runUpsetBrowseAll(week, games) {
+  window._lastUpsetSearchActivity = Date.now();
   const resultsEl = document.getElementById('upset-search-results');
   resultsEl.innerHTML = '<div class="helptext">Loading this week\'s full slate...</div>';
   try {
