@@ -1986,7 +1986,7 @@ function renderPicksBoard(content, week, games, earlyWarning) {
         ${isUpsetPicksRevealed(games) ? `
           <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--hairline);">
             <div class="helptext" style="font-weight:700; margin-bottom:6px;">All Upset Picks Revealed:</div>
-            ${(State.picks || []).filter(p => p.isUpset === true || p.isUpset === 'TRUE').map(p => {
+            ${(State.picks || []).filter(p => (p.isUpset === true || p.isUpset === 'TRUE') && Number(p.week) === Number(week)).map(p => {
               const pl = getPlayerById(p.playerId);
               const isDefault = p.isAutoDefault === true || p.isAutoDefault === 'TRUE';
               return `<div style="display:flex; justify-content:space-between; font-size:12px; padding:3px 0;">
