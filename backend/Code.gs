@@ -1318,7 +1318,9 @@ function autoBackfillMissingLines() {
   const events = fetchEspnScoreboardRange(formatYYYYMMDD(rangeStart), formatYYYYMMDD(rangeEnd));
 
   let added = 0;
+  let stillNoLine = 0;
   const snapshotAt = new Date().toISOString();
+  const newRows = [];
   events.forEach(function(ev) {
     if (existingIds.has(String(ev.id))) return; // already snapshotted -- never overwrite the frozen line
     const comp = ev.competitions && ev.competitions[0];
@@ -1328,8 +1330,8 @@ function autoBackfillMissingLines() {
     const away = competitors.find(function(c) { return c.homeAway === 'away'; });
     if (!home || !away) return;
     const line = extractEspnLine(ev, comp, home, away);
-    if (!line.favorite || !line.spread) return; // still no line posted -- try again next run
-    appendObject(SHEET_NAMES.LINE_SNAPSHOT, {
+    if (!line.favorite || !line.spread) { stillNoLine++; return; } // still no line posted -- try again next run
+    newRows.push({
       week: week, espnEventId: ev.id,
       awayTeam: away.team.displayName, homeTeam: home.team.displayName,
       favorite: line.favorite, spread: line.spread, kickoff: line.kickoff,
@@ -1337,7 +1339,11 @@ function autoBackfillMissingLines() {
     });
     added++;
   });
-  if (added > 0) invalidateSheetCache(SHEET_NAMES.LINE_SNAPSHOT);
+  appendObjects_(SHEET_NAMES.LINE_SNAPSHOT, newRows); // one write (was one appendObject per game)
+  // recorded for the nightly diagnostics report
+  try {
+    PropertiesService.getScriptProperties().setProperty('lastLineBackfill', JSON.stringify({ at: snapshotAt, week: week, added: added, stillNoLine: stillNoLine }));
+  } catch (e) {}
 
   // DISABLED as of week 3: this assumed the snapshot is always more
   // authoritative than the board game's original line, but that's confirmed
@@ -2549,9 +2555,11 @@ function installWeeklyTrigger() {
   Logger.log('Trigger installed! The app will now automatically snapshot all CFB opening lines from ESPN every Sunday between 8-9 PM. No further action needed -- it runs itself every week. Verify it under Apps Script -> Triggers (clock icon in the left sidebar).');
 }
 
-// Run this ONCE to install the daily trigger that picks up newly-posted lines
+// Run this ONCE to install the trigger that picks up newly-posted lines
 // throughout the week for games that had none yet at the Sunday snapshot
 // (never overwrites an already-frozen line -- only adds what was missing).
+// Every 6 hours (was once a day) so games get a line -- and become pickable as
+// an Upset Special -- soon after ESPN posts one.
 function installAutoBackfillTrigger() {
   ScriptApp.getProjectTriggers().forEach(t => {
     if (t.getHandlerFunction() === 'autoBackfillMissingLines') {
@@ -2560,10 +2568,9 @@ function installAutoBackfillTrigger() {
   });
   ScriptApp.newTrigger('autoBackfillMissingLines')
     .timeBased()
-    .everyDays(1)
-    .atHour(9)
+    .everyHours(6)
     .create();
-  Logger.log('Trigger installed! The app will now automatically check for newly-posted lines once a day (around 9 AM) and add them to that week\'s snapshot -- never touching an already-frozen line. Verify it under Apps Script -> Triggers (clock icon in the left sidebar).');
+  Logger.log('Trigger installed! The app will now check ESPN for newly-posted lines every 6 hours and add them to that week\'s snapshot -- never touching an already-frozen line. Verify it under Apps Script -> Triggers (clock icon in the left sidebar).');
 }
 
 // Lists every trigger currently installed on this project, so you can check
@@ -2732,35 +2739,40 @@ function runSnapshotNow() {
 function snapshotWeeklyLines(week) {
   try {
     const now = new Date();
-    const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon...
+    const DAY_MS = 24 * 60 * 60 * 1000;
 
-    // when running on Sunday, look at the UPCOMING week (Thu-Sat of next week).
-    // when running Mon-Sat, look at the current week's games.
-    // window: Thursday through the following Sunday to catch all CFB games
-    // (Thu night games, Fri games, Sat games, and any Sun leftovers)
-    let thursday;
-    if (dayOfWeek === 0) {
-      // Sunday -- next Thursday is 4 days away
-      thursday = new Date(now.getTime() + 4 * 24 * 60 * 60 * 1000);
-    } else {
-      // Mon-Sat -- find the most recent past Thursday (or today if Thu)
-      const daysToLastThu = (dayOfWeek + 3) % 7; // days since last Thursday
-      thursday = new Date(now.getTime() - daysToLastThu * 24 * 60 * 60 * 1000);
+    // Window: today through the coming Sunday (Mon-Sun covers Tue/Wed MACtion,
+    // Thu/Fri/Sat, and Sunday leftovers; run on a Sunday it covers the week ahead).
+    // Extended to the day after the board's last kickoff if the board runs later.
+    // The OLD window ran from the most recent Thursday for 10 days -- it pulled in
+    // last week's already-played games AND next week's Thu-Sat games, tagging all
+    // of them with this week's number.
+    const daysToSunday = (7 - now.getDay()) % 7 || 7;
+    let windowEnd = new Date(now.getTime() + daysToSunday * DAY_MS);
+    const boardKickoffs = sheetToObjects(SHEET_NAMES.GAMES)
+      .filter(g => Number(g.week) === week && g.source !== 'external' && g.kickoff)
+      .map(g => new Date(g.kickoff).getTime()).filter(t => !isNaN(t));
+    if (boardKickoffs.length) {
+      const lastBoard = new Date(Math.max.apply(null, boardKickoffs) + DAY_MS);
+      if (lastBoard > windowEnd) windowEnd = lastBoard;
     }
-    const followingSunday = new Date(thursday.getTime() + 10 * 24 * 60 * 60 * 1000);
-    const startDate = formatYYYYMMDD(thursday);
-    const endDate = formatYYYYMMDD(followingSunday);
+    const events = fetchEspnScoreboardRange(formatYYYYMMDD(now), formatYYYYMMDD(windowEnd));
 
-    const events = fetchEspnScoreboardRange(startDate, endDate);
-
-    // clear existing snapshot for this week first
-    deleteRowsByMatch(SHEET_NAMES.LINE_SNAPSHOT, r => Number(r.week) === week);
+    // FROZEN LINES ARE NEVER OVERWRITTEN. This used to delete and rebuild the whole
+    // week's snapshot every time it ran (Monday trigger, and again on every Post
+    // Week), replacing opening lines with whatever ESPN showed at that moment.
+    // Now it only ADDS games that aren't in this week's snapshot yet.
+    const existingIds = {};
+    sheetToObjects(SHEET_NAMES.LINE_SNAPSHOT)
+      .filter(r => Number(r.week) === week)
+      .forEach(r => { existingIds[String(r.espnEventId)] = true; });
 
     const snapshotAt = now.toISOString();
     let count = 0;
     const snapRows = [];
 
     events.forEach(ev => {
+      if (existingIds[String(ev.id)]) return; // already frozen -- keep the original line
       const comp = ev.competitions && ev.competitions[0];
       if (!comp) return;
       const competitors = comp.competitors || [];
@@ -4804,6 +4816,12 @@ function apiSubmitPicks_(payload, week, playerId, picks) {
       const snapshotRow = upsetPick.espnEventId
         ? sheetToObjects(SHEET_NAMES.LINE_SNAPSHOT).find(r => String(r.espnEventId) === String(upsetPick.espnEventId) && Number(r.week) === week)
         : null;
+      // Only games with a frozen line can be an Upset Special (the search only lists
+      // those). Without this, a hand-crafted request could supply its own spread,
+      // which would then be scored as the upset's point value.
+      if (!snapshotRow) {
+        return { ok: false, error: 'That game doesn\'t have a frozen line yet, so it can\'t be your Upset Special. Pick a game from the search list.' };
+      }
 
       const frozenFavorite = snapshotRow ? snapshotRow.favorite : upsetPick.favorite;
       const frozenSpread   = snapshotRow ? snapshotRow.spread   : upsetPick.spread;
@@ -6517,6 +6535,15 @@ function diagTriggers_(report, warn, info) {
   var handlers = ScriptApp.getProjectTriggers().map(function(t) { return t.getHandlerFunction(); });
   info('Installed triggers: ' + (handlers.length ? handlers.join(', ') : '(none)'));
   if (handlers.indexOf('keepWarm') < 0) warn('keepWarm trigger is NOT installed -- the state cache is cold for most users. Run installKeepWarmTrigger().');
+  if (handlers.indexOf('weeklyMondaySnapshot') < 0) warn('Weekly line snapshot trigger is NOT installed -- opening lines won\'t be frozen automatically. Run installWeeklyTrigger().');
+  if (handlers.indexOf('autoBackfillMissingLines') < 0) warn('Missing-lines ESPN check is NOT installed -- games that get a line mid-week never become pickable. Run installAutoBackfillTrigger().');
+  try {
+    var bf = JSON.parse(PropertiesService.getScriptProperties().getProperty('lastLineBackfill') || 'null');
+    if (bf) {
+      info('Last ESPN missing-lines check: ' + bf.at + ' (week ' + bf.week + ': ' + bf.added + ' added, ' + bf.stillNoLine + ' still without a line)');
+      if (Date.now() - new Date(bf.at).getTime() > 26 * 3600000) warn('The ESPN missing-lines check hasn\'t run in over a day (last: ' + bf.at + ').');
+    }
+  } catch (e) {}
   var dupes = handlers.filter(function(h, i) { return handlers.indexOf(h) !== i; });
   if (dupes.length) warn('Duplicate triggers (each runs twice): ' + dupes.join(', '));
 }
@@ -6624,6 +6651,13 @@ function diagIntegrity_(report, warn, info) {
   if (dupes) warn(dupes + ' duplicate straight pick row(s) -- these can inflate scores. See auditAndFixDuplicatePicks().');
   if (multiUpset) warn(multiUpset + ' player-week(s) have more than one Upset Special. See findAndFixDuplicateUpsetPicks().');
   if (favUpsets) warn(favUpsets + ' Upset Special pick(s) are on the favorite (should be impossible).');
+
+  // legacy players who never changed the old shared default PIN
+  var defaultPin = sheetToObjects(SHEET_NAMES.PLAYERS).filter(function(p) {
+    return isTrue(p.active) && String(p.pin).trim() === '1234';
+  });
+  report.integrity.push({ check: 'Active players still on default PIN 1234', count: defaultPin.length });
+  if (defaultPin.length) warn(defaultPin.length + ' active player(s) still use the default PIN 1234 (anyone can log in as them): ' + defaultPin.map(function(p) { return p.teamName; }).join(', '));
 
   // current week board health
   var board = games.filter(function(g) { return Number(g.week) === week && g.source !== 'external'; });

@@ -230,6 +230,14 @@ test('BUG FIX: Upset Special on the favorite of a NEW external game is rejected'
   eq(r.ok, false); ok(/underdog/.test(r.error), r.error);
 });
 
+test('Upset Special on a game with NO frozen line is rejected (no client-supplied spreads)', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  espnEvents.push(mkEvent('E999', 'Nobody', 'Someone', { date: kickoff }));
+  const r = env.call('submitPicks', picksPayload('p2', { espnEventId: 'E999', awayTeam: 'Nobody', homeTeam: 'Someone', pickedTeam: 'Nobody', favorite: 'Someone', spread: 40 }));
+  eq(r.ok, false); ok(/frozen line/.test(r.error), r.error);
+  eq(rowsOf(env, 'Games').filter(g => g.source === 'external').length, 0, 'no game row created');
+});
+
 test('submitPicks rejects a changed pick on a locked game', () => {
   const env = loadBackend(); seedLeague(env, { kickoffOffset: -3600000 });
   const r = env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' }));
@@ -333,6 +341,24 @@ test('postMessage sends pushes in one parallel batch', () => {
   eq(counters.fetchAll - before, 1, 'one fetchAll'); eq(counters.fetch - beforeFetch, 0, 'no serial fetches');
   const m = env.call('getMessages', { type: 'general' });
   eq(m.messages.length, 1, 'new message visible immediately');
+});
+
+test('re-running the snapshot never overwrites a frozen line, only adds new games', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  // ESPN now shows E100 at a DIFFERENT line, plus a brand-new game E200
+  espnEvents = [
+    mkEvent('E100', 'Dog U', 'Fav U', { date: kickoff, odds: 'FAV -3' }),
+    mkEvent('E200', 'New A', 'New B', { date: kickoff, odds: 'NEW -7' })
+  ];
+  env.ctx._sheetDataCache = {};
+  const added = env.ctx.snapshotWeeklyLines(1);
+  eq(added, 1, 'only the new game is added');
+  const snap = rowsOf(env, 'LineSnapshot').filter(r => r.week === 1);
+  const e100 = snap.filter(r => String(r.espnEventId) === 'E100');
+  eq(e100.length, 1, 'no duplicate row for the frozen game');
+  eq(e100[0].spread, 14, 'frozen spread untouched');
+  eq(e100[0].favorite, 'Fav U', 'frozen favorite untouched');
+  ok(snap.some(r => String(r.espnEventId) === 'E200'), 'new game captured');
 });
 
 test('runDiagnostics completes and writes a report', () => {

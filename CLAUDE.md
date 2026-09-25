@@ -23,5 +23,11 @@ Verify a backend deploy took effect: every API response carries `_version` (= `C
 - The shared getState cache is invalidated by `handle()` after any action NOT in `READ_ONLY_ACTIONS`. New read-only endpoint → add it there.
 - Frontend: all callers share one in-flight `getState` (`refreshState`); background callers pass `{shared:true}`, post-write callers use the default. Don't add new `getState` calls per render.
 
+## League rules the code must keep
+- Frozen snapshot lines are NEVER overwritten — snapshot jobs (`snapshotWeeklyLines`, `autoBackfillMissingLines`, Refresh Snapshot) only add missing games.
+- Games without a frozen line are never listed or accepted as an Upset Special.
+- `autoBackfillMissingLines` re-checks ESPN every 6 hours for games that gained a line.
+- Login-token security is deferred by the owner — don't add it unasked.
+
 ## Diagnostics
 `runDiagnostics()` (nightly trigger via `installDiagnosticsTrigger()`) writes the `DiagnosticsReport` and `DiagnosticsHistory` tabs and emails the owner on warnings. `PerfLog` tab = slow/failed requests + 5% sample.
