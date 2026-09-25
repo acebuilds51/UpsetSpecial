@@ -1,0 +1,15 @@
+# Runs on every push / pull request: syntax-checks index.html + backend/Code.gs and
+# runs the backend regression tests against in-memory fakes (never the real league).
+# A red X in GitHub Desktop / on GitHub means a change broke something -- fix before deploying.
+name: checks
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node tools/check-syntax.js
+      - run: node tools/backend-tests.js

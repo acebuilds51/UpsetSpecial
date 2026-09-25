@@ -400,12 +400,15 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 .pulse-update{ animation: numPulse 0.6s var(--ease); }
 @keyframes numPulse{ 0%{ text-shadow: 0 0 0 transparent; } 30%{ text-shadow: 0 0 16px rgba(242,182,50,0.7); } 100%{ text-shadow: 0 0 0 transparent; } }
 </style>
-
+<!-- Fonts load without blocking: a render-blocking stylesheet placed right before the
+     main script block used to hold ALL app JS until fonts.googleapis.com responded. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 </head>
 <body>
 <div id="app"></div>
 <div id="toast" class="toast"></div>
-<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <script>
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
@@ -439,34 +442,54 @@ let _chatMessages = { general: [], commissioner: [] };
 let _chatPollTimer = null;
 let _chatUnread = { general: 0, commissioner: 0 };
 
+// Read-only actions that are safe to retry automatically. Apps Script returns an
+// HTML error page (non-JSON) on cold starts / "too many simultaneous invocations",
+// so one or two quick retries turn most of those transient failures into successes.
+// NEVER add a write action here — a retried write could double-apply.
+const RETRYABLE_ACTIONS = { getState: 1, getMessages: 1, getCareerHistory: 1, getAvatars: 1, getAllEspnScores: 1, getAllTimeLeaderboard: 1, getTrophyRoom: 1, getStandings: 1, getBowlStandings: 1 };
+const RETRY_DELAYS_MS = [1500, 4000];
+
 async function api(action, payload, silent) {
   payload = payload || {};
   payload.action = action;
   // Per-action timeouts — trophy room needs more time for heavy players
-  const timeouts = { getTrophyRoom: 55000, helpChat: 40000, adminGenerateResultsEmail: 120000, adminClearWeek: 90000, adminSendCustomEmail: 60000, adminSendTemplateEmail: 60000 };
+  const timeouts = { getTrophyRoom: 55000, helpChat: 40000, adminGenerateResultsEmail: 120000, adminClearWeek: 90000, adminSendCustomEmail: 60000, adminSendTemplateEmail: 60000, adminPostWeek: 90000 };
   const ms = timeouts[action] || 25000;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), ms);
-  try {
-    const resp = await fetch(CONFIG.API_URL, { method: 'POST', body: JSON.stringify(payload), signal: controller.signal });
-    clearTimeout(timer);
-    let data;
+  const maxAttempts = RETRYABLE_ACTIONS[action] ? RETRY_DELAYS_MS.length + 1 : 1;
+  let lastErr;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt - 1]));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
     try {
-      data = await resp.json();
-    } catch(parseErr) {
-      if (!silent) showToast('Server error — try again in a moment', 'error');
-      throw new Error('Server returned non-JSON response');
+      const resp = await fetch(CONFIG.API_URL, { method: 'POST', body: JSON.stringify(payload), signal: controller.signal });
+      let data;
+      try {
+        // timer stays armed until the body is fully read — a stalled body must still time out
+        data = await resp.json();
+      } catch(parseErr) {
+        if (parseErr.name === 'AbortError') throw parseErr;
+        const e = new Error('Server returned non-JSON response');
+        e.transient = true;
+        throw e;
+      }
+      if (!data.ok) throw new Error(data.error || 'Request failed');
+      return data;
+    } catch (err) {
+      lastErr = err;
+      // only network/timeout/non-JSON failures are worth retrying, never a real server "ok:false"
+      const transient = err.transient || err.name === 'AbortError' || err.name === 'TypeError';
+      if (!transient || attempt === maxAttempts - 1) break;
+    } finally {
+      clearTimeout(timer);
     }
-    if (!data.ok) throw new Error(data.error || 'Request failed');
-    return data;
-  } catch (err) {
-    clearTimeout(timer);
-    const msg = err.name === 'AbortError' ? 'Request timed out — try again' : (err.message || 'Network error');
-    if (!silent && err.message !== 'Server returned non-JSON response') {
-      showToast(msg, 'error');
-    }
-    throw err;
   }
+  const err = lastErr;
+  if (!silent) {
+    if (err.message === 'Server returned non-JSON response') showToast('Server error — try again in a moment', 'error');
+    else showToast(err.name === 'AbortError' ? 'Request timed out — try again' : (err.message || 'Network error'), 'error');
+  }
+  throw err;
 }
 
 function showToast(msg, type) {
@@ -506,6 +529,12 @@ const FCM_VAPID_KEY = "BHg_GXa8Qby_wGTVY9eBp8B73oKJZcTLd6z_O-Fh14hWz2blb8p32fw7i
 let _fcmMessaging = null;
 
 async function initFirebase() {
+  // SDK loads asynchronously (see end of <body>); wait for it if a caller gets here first
+  if (typeof firebase === 'undefined' && window._firebaseReady && !window._firebaseLoading) {
+    window._firebaseLoading = true;
+    try { await window._firebaseReady; } catch(e) {} finally { window._firebaseLoading = false; }
+    if (_fcmMessaging) return;
+  }
   if (typeof firebase === 'undefined') {
     console.log('Firebase SDK not available — push notifications disabled');
     return;
@@ -650,12 +679,14 @@ async function boot() {
       } catch(e) {}
     }
 
+    // render() -> renderContent() draws from cache immediately AND kicks off the single
+    // background getState via silentRefresh(), which re-renders only if data changed.
+    // (The old code then called renderContent() + refreshState() again here, firing
+    // 3-4 simultaneous getState requests on every app open.)
     render();
 
     if (hasCachedState) {
-      // Render immediately from cache, then fetch fresh data silently in background
-      renderContent();
-      refreshState().then(() => renderContent()).catch(() => {});
+      // nothing more to do -- the background refresh is already in flight
     } else {
       // No cache — show spinner and wait for first load
       document.body.insertAdjacentHTML('beforeend', `
@@ -664,8 +695,14 @@ async function boot() {
           <span class="spinner" style="width:32px;height:32px;border-width:3px;"></span>
           <div style="font-size:13px;color:var(--text-soft);margin-top:4px;">Loading your league data…</div>
         </div>`);
-      try { await refreshState(); } catch(e) { /* render whatever we have */ }
+      let bootFailed = false;
+      try { await refreshState({ shared: true }); } catch(e) { bootFailed = true; }
+      // after a failed first load (which already retried), don't let renderContent's
+      // background refresh immediately hammer the server again -- the Retry button
+      // and the 90s poll take it from here
+      if (bootFailed) State._lastRefreshTs = Date.now();
       renderContent();
+      if (bootFailed && !(State.players && State.players.length)) showBootRetryCard();
     }
 
     const overlay = document.getElementById('boot-overlay');
@@ -683,17 +720,45 @@ async function boot() {
 }
 
 async function checkAppVersion() {
+  // Deferred so it never competes with the first getState for bandwidth.
+  await new Promise(r => setTimeout(r, 8000));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
   try {
-    // fetch this page's own source from the server -- if the BUILD_TIME in the
-    // live file differs from what's running, a newer version has been pushed.
-    // uses cache:reload to always get the server's current version, not a cached copy.
-    const resp = await fetch(window.location.href, { cache: 'reload' });
-    const html = await resp.text();
-    const match = html.match(/BUILD_TIME = '([^']+)'/);
-    if (match && match[1] && match[1] !== BUILD_TIME) {
-      showVersionBanner(match[1]);
+    // HEAD request only (a few hundred bytes) -- the old check re-downloaded the whole
+    // ~575KB page on every app open, and compared a BUILD_TIME constant that nobody was
+    // updating, so it never actually detected new versions. Instead compare the server's
+    // Last-Modified header against the Last-Modified of the page that's actually running
+    // (document.lastModified). GitHub Pages updates Last-Modified on every push.
+    const resp = await fetch(window.location.href, { method: 'HEAD', cache: 'no-store', signal: controller.signal });
+    const serverLm = resp.headers.get('last-modified');
+    if (!serverLm) return;
+    const serverTime = new Date(serverLm).getTime();
+    const runningTime = new Date(document.lastModified).getTime();
+    // 60s slack avoids false positives from clock/format rounding
+    if (serverTime && runningTime && serverTime - runningTime > 60000) {
+      showVersionBanner(serverLm);
     }
   } catch(e) { /* version check failure is non-fatal */ }
+  finally { clearTimeout(timer); }
+}
+
+// Shown only when the very first load (no cached data on this device) fails --
+// previously this left a blank app with no explanation until the next 90s poll.
+function showBootRetryCard() {
+  const content = document.getElementById('content');
+  if (!content) return;
+  content.innerHTML = `
+    <div class="empty-state" style="text-align:center;padding:40px 16px;">
+      <p class="helptext" style="margin-bottom:14px;">Couldn't reach the league server. It may be busy — this usually clears up in a few seconds.</p>
+      <button class="btn btn-primary" id="boot-retry-btn">Retry</button>
+    </div>`;
+  document.getElementById('boot-retry-btn').onclick = async (ev) => {
+    ev.target.disabled = true;
+    ev.target.textContent = 'Loading…';
+    try { await refreshState(); renderContent(); }
+    catch(e) { showBootRetryCard(); showToast('Still can\'t reach the server — try again shortly', 'error'); }
+  };
 }
 
 function showVersionBanner(newVersion) {
@@ -711,51 +776,73 @@ function showVersionBanner(newVersion) {
   document.body.prepend(banner);
 }
 
-async function refreshState() {
-  // Show cached state instantly if available (makes app feel instant on repeat opens)
-  const cached = localStorage.getItem('cachedState');
-  if (cached) {
-    try {
-      const c = JSON.parse(cached);
-      // Only use cache if less than 5 minutes old
-      if (Date.now() - (c._ts || 0) < 5 * 60 * 1000) {
-        State.players = c.players;
-        State.season = seasonArrToObj(c.season);
-        State.rotation = c.rotation;
-        State.games = c.games;
-        State.picks = c.picks;
-        State.ledger = c.ledger;
-        State.bowlGames = c.bowlGames;
-        State.bowlPicks = c.bowlPicks;
-        State.bowlChampion = c.bowlChampion;
-        State.bowlLedger = c.bowlLedger;
-        State.snapshotCount = c.snapshotCount || 0;
-      }
-    } catch(e) {}
+// Every caller (boot, login, tab switches, the 90s poll, post-submit refreshes)
+// shares ONE in-flight getState request. Previously boot alone fired 3-4
+// simultaneous getState calls, and Apps Script queues concurrent executions --
+// that queueing is what pushed requests past the 25s timeout.
+//
+// Two modes:
+//  - refreshState({ shared: true }) -- background callers (boot, polling, tab switches)
+//    simply join whatever request is already in flight.
+//  - refreshState() -- the default, used after every write (submit picks, admin actions).
+//    If a request is already in flight it may have been sent BEFORE the write, so we wait
+//    for it and then fetch once more. Concurrent post-write callers share that one follow-up.
+let _refreshPromise = null;
+let _refreshFollowUp = null;
+function refreshState(opts) {
+  if (!_refreshPromise) {
+    _refreshPromise = _doRefreshState().finally(() => { _refreshPromise = null; });
+    return _refreshPromise;
   }
+  if (opts && opts.shared) return _refreshPromise;
+  if (!_refreshFollowUp) {
+    _refreshFollowUp = _refreshPromise.catch(() => {}).then(() => {
+      _refreshFollowUp = null;
+      return refreshState();
+    });
+  }
+  return _refreshFollowUp;
+}
 
-  // Always fetch fresh data from server — silent:true so background failures don't toast
+// Resolves true if the server state differs from what was on screen before.
+async function _doRefreshState() {
+  // Always fetch fresh data from server — silent:true so background failures don't toast.
+  // (Cached state is loaded once in boot(); it is intentionally NOT re-applied here, since
+  // doing so before a failed fetch used to wipe out just-submitted local changes.)
   const data = await api('getState', {}, true);
-  State.players = data.players;
+  State._lastRefreshTs = Date.now();
+  // One stringify serves both change detection (covers EVERY field, including
+  // players/ledger/bowl data the old games+picks-only check missed) and the cache write.
+  delete data._version;
+  const stateStr = JSON.stringify(data);
+  const changed = stateStr !== State._stateSig;
+  State._stateSig = stateStr;
+
+  State.players = data.players || [];
   State.season = seasonArrToObj(data.season);
-  State.rotation = data.rotation;
-  State.games = data.games;
-  State.picks = data.picks;
-  State.ledger = data.ledger;
-  State.bowlGames = data.bowlGames;
-  State.bowlPicks = data.bowlPicks;
-  State.bowlChampion = data.bowlChampion;
-  State.bowlLedger = data.bowlLedger;
+  State.rotation = data.rotation || [];
+  State.games = data.games || [];
+  State.picks = data.picks || [];
+  State.ledger = data.ledger || [];
+  State.bowlGames = data.bowlGames || [];
+  State.bowlPicks = data.bowlPicks || [];
+  State.bowlChampion = data.bowlChampion || [];
+  State.bowlLedger = data.bowlLedger || [];
   State.snapshotCount = data.snapshotCount || 0;
 
   // Cache to localStorage for next boot
   try {
-    localStorage.setItem('cachedState', JSON.stringify({ ...data, _ts: Date.now() }));
+    localStorage.setItem('cachedState', stateStr.slice(0, -1) + ',"_ts":' + Date.now() + '}');
   } catch(e) {}
 
-  // pre-load career history in the background so champion rings work everywhere
-  if (!State._careerHistory) {
-    api('getCareerHistory', {}, true).then(d => { State._careerHistory = d.history || []; }).catch(()=>{});
+  // pre-load career history in the background so champion rings work everywhere.
+  // The pending flag stops overlapping refreshes from each firing their own request.
+  if (!State._careerHistory && !State._careerHistoryPending) {
+    State._careerHistoryPending = true;
+    api('getCareerHistory', {}, true)
+      .then(d => { State._careerHistory = d.history || []; })
+      .catch(()=>{})
+      .finally(() => { State._careerHistoryPending = false; });
   }
   // pre-load everyone's avatars in the background, once per session — kept out of
   // the main getState payload so photos never bloat the frequently-polled state call
@@ -770,9 +857,11 @@ async function refreshState() {
           saveSession(State.player);
         }
         if (State.view === 'standings' || State.view === 'profile') renderContent();
-      }).catch(() => {});
+      }).catch(() => { State._avatarMap = null; /* allow a retry on the next refresh */ });
     }
   }
+  // user may have logged out while the request was in flight
+  if (!State.player) return changed;
   // refresh logged-in player's own record
   const me = State.players.find(p => p.id === State.player.id);
   if (me) {
@@ -791,6 +880,7 @@ async function refreshState() {
       api('markAppInstalled', { playerId: State.player.id }, true).catch(function(){});
     }
   }
+  return changed;
 }
 
 function seasonArrToObj(arr) {
@@ -1263,13 +1353,16 @@ async function renderContent() {
   silentRefresh();
 }
 
-// runs a background refresh without blocking the UI -- only re-renders if something actually changed
-async function silentRefresh() {
+// runs a background refresh without blocking the UI -- only re-renders if something actually changed.
+// Tab switches within SILENT_REFRESH_MIN_MS of the last successful fetch reuse the data
+// already on screen instead of firing another getState (pass force=true to bypass).
+const SILENT_REFRESH_MIN_MS = 20000;
+async function silentRefresh(force) {
+  if (!force && State._lastRefreshTs && Date.now() - State._lastRefreshTs < SILENT_REFRESH_MIN_MS) return;
   try {
-    const before = JSON.stringify({ games: State.games, picks: State.picks, rotation: State.rotation, season: State.season });
-    await refreshState();
-    const after = JSON.stringify({ games: State.games, picks: State.picks, rotation: State.rotation, season: State.season });
-    if (before !== after) {
+    // force = caller needs data from AFTER now (post-write), so don't join an older in-flight request
+    const changed = await refreshState(force ? undefined : { shared: true });
+    if (changed) {
       const content = document.getElementById('content');
       if (!content) return;
       // Don't blow away an in-progress Upset Special search/selection just because
@@ -1300,8 +1393,17 @@ async function silentRefresh() {
 function startBackgroundPolling() {
   if (window._pollTimer) clearInterval(window._pollTimer);
   window._pollTimer = setInterval(() => {
-    if (State.player && document.getElementById('content')) silentRefresh();
+    // skip ticks while the app is backgrounded -- they burn Apps Script quota and pile up on wake
+    if (document.hidden) return;
+    if (State.player && document.getElementById('content')) silentRefresh(true); // bypass the 20s reuse window
   }, 90000);
+  if (!window._visibilityHooked) {
+    window._visibilityHooked = true;
+    document.addEventListener('visibilitychange', () => {
+      // catch up once when the user returns (still subject to the 20s reuse window)
+      if (!document.hidden && State.player && document.getElementById('content')) silentRefresh();
+    });
+  }
 }
 
 function escapeHtml(s) {
@@ -1915,11 +2017,11 @@ async function submitSlate(week) {
   const btn = document.getElementById('submit-slate-btn');
   btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
   try {
-    await api('submitSlate', { week, games: _pickerSelectedGames });
+    await api('submitSlate', { week, games: _pickerSelectedGames, playerId: State.player.id });
     showToast('Slate submitted! The commissioner will review and post it.', 'success');
     _pickerSelectedGames = [];
     _pickerAllGames = [];
-    await silentRefresh();
+    await silentRefresh(true);
     renderContent();
   } catch(e) { btn.innerHTML = 'Submit My 10 Games'; }
 }
@@ -2693,23 +2795,28 @@ function renderMyHistory(el, completedWeeks) {
 async function renderHistoryTab(el) {
   el.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading history…</p></div>';
 
-  // Load all-time leaderboard data
+  // Load all-time leaderboard + career history IN PARALLEL (they used to run back to
+  // back). The leaderboard is historical data that only changes at season archive
+  // time, so it's reused for 10 minutes instead of refetched on every re-render.
+  const LB_TTL_MS = 10 * 60 * 1000;
   let lb = [];
+  const lbPromise = (State._leaderboardCache && Date.now() - State._leaderboardCache.ts < LB_TTL_MS)
+    ? Promise.resolve(State._leaderboardCache.data)
+    : api('getAllTimeLeaderboard', {}, true).then(d => {
+        const data = d.leaderboard || [];
+        State._leaderboardCache = { ts: Date.now(), data: data };
+        return data;
+      });
+  const chPromise = State._careerHistory
+    ? Promise.resolve()
+    : api('getCareerHistory', {}, true).then(d => { State._careerHistory = d.history || []; }).catch(() => {});
   try {
-    const d = await api('getAllTimeLeaderboard', {}, true);
-    lb = d.leaderboard || [];
+    lb = await lbPromise;
   } catch(e) {
     el.innerHTML = '<div class="card"><p class="helptext">Could not load history.</p></div>';
     return;
   }
-
-  // Load career history for year-by-year view
-  if (!State._careerHistory) {
-    try {
-      const d = await api('getCareerHistory', {}, true);
-      State._careerHistory = d.history || [];
-    } catch(e) {}
-  }
+  await chPromise;
 
   let view = State._historyView || 'trophies';
 
@@ -2852,13 +2959,19 @@ async function renderProfile(content) {
   let _deviceNotifEnabled = false;
   if (p.fcmToken && _fcmMessaging) {
     try {
-      const swReg = await navigator.serviceWorker.getRegistration('/UpsetSpecial/');
-      if (swReg) {
-        const deviceToken = await _fcmMessaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: swReg }).catch(() => '');
-        if (deviceToken) {
-          const tokens = (p.fcmToken || '').split(',').map(t => t.trim()).filter(Boolean);
-          _deviceNotifEnabled = tokens.includes(deviceToken);
-        }
+      // getToken() is known to hang indefinitely on iOS/Safari -- cap the whole check at 3s
+      // so the Profile tab always renders (toggle just shows "off" if the check times out).
+      const deviceToken = await Promise.race([
+        (async () => {
+          const swReg = await navigator.serviceWorker.getRegistration('/UpsetSpecial/');
+          if (!swReg) return '';
+          return await _fcmMessaging.getToken({ vapidKey: FCM_VAPID_KEY, serviceWorkerRegistration: swReg }).catch(() => '');
+        })(),
+        new Promise(r => setTimeout(() => r(''), 3000))
+      ]);
+      if (deviceToken) {
+        const tokens = (p.fcmToken || '').split(',').map(t => t.trim()).filter(Boolean);
+        _deviceNotifEnabled = tokens.includes(deviceToken);
       }
     } catch(e) {}
   }
@@ -3721,15 +3834,20 @@ async function loadAllEspnScores(week) {
   const container = document.getElementById('all-scores-container');
   if (!container) return;
 
-  if (_liveScoresCache) {
-    renderAllScores(container, _liveScoresCache);
+  // Reuse only if it's for the same week and under 60s old -- previously this was
+  // cached forever, so live scores never updated and last week's list stuck around.
+  if (_liveScoresCache && _liveScoresCache.week === week && Date.now() - _liveScoresCache.ts < 60000) {
+    renderAllScores(container, _liveScoresCache.games);
     return;
   }
+  // show the stale list instantly while fresh scores load
+  if (_liveScoresCache) renderAllScores(container, _liveScoresCache.games);
 
   try {
     const data = await api('getAllEspnScores', { week });
-    _liveScoresCache = data.games || [];
-    renderAllScores(container, _liveScoresCache);
+    _liveScoresCache = { week: week, ts: Date.now(), games: data.games || [] };
+    const c2 = document.getElementById('all-scores-container');
+    if (c2) renderAllScores(c2, _liveScoresCache.games);
   } catch(e) {
     if (container) container.innerHTML = `<div class="empty-state"><p>Could not load ESPN scores. ${e.message}</p></div>`;
   }
@@ -4740,6 +4858,7 @@ async function renderChat(content) {
   clearInterval(_chatPollTimer);
   _chatPollTimer = setInterval(async () => {
     if (State.view === 'chat') {
+      if (document.hidden) return; // don't poll while the app is backgrounded
       await loadChatMessages(_chatTab);
       renderChatMessages();
     } else {
@@ -6637,6 +6756,7 @@ async function pullBowlScheduleFromEspn(phase, expected) {
   btn.innerHTML = '<span class="spinner"></span>';
   try {
     const data = await api('fetchEspnGamesByDateRange', {
+      adminId: State.player.id,
       startDate: start.replace(/-/g, ''), endDate: end.replace(/-/g, '')
     });
     if (!data.games || data.games.length === 0) {
@@ -6757,18 +6877,26 @@ function renderAdminBowlResolve(el) {
   }
 }
 </script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js"></script>
   <script>
-    // Firebase SDKs are now fully loaded and parsed — safe to initialize
-    (function() {
-      if (typeof firebase !== 'undefined') {
-        initFirebase()
-          .then(function() { console.log('FCM: ready after SDK load'); })
-          .catch(function(e) { console.log('FCM init error:', e.message); });
-      } else {
-        console.log('FCM: firebase global still not defined after SDK scripts');
+    // Firebase SDKs (~100KB+) are loaded asynchronously so they no longer block
+    // DOMContentLoaded -> boot() -> first paint. messaging-compat depends on
+    // app-compat, so they're chained. window._firebaseReady lets initFirebase()
+    // wait for the SDK if push setup is requested before it has finished loading.
+    window._firebaseReady = (function() {
+      function load(src) {
+        return new Promise(function(resolve, reject) {
+          var s = document.createElement('script');
+          s.src = src; s.async = true;
+          s.onload = resolve; s.onerror = reject;
+          document.head.appendChild(s);
+        });
       }
+      return load('https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js')
+        .then(function() { return load('https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js'); })
+        .then(function() {
+          return initFirebase().then(function() { console.log('FCM: ready after SDK load'); });
+        })
+        .catch(function(e) { console.log('FCM SDK load/init error:', e && e.message); });
     })();
   </script>
 </body>
