@@ -98,7 +98,7 @@ function loadBackend() {
   sentRequests.length = 0;
   const ctx = {
     console,
-    SpreadsheetApp: { getActiveSpreadsheet: () => ss },
+    SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush: () => {} },
     CacheService: { getScriptCache: () => cache },
     PropertiesService: { getScriptProperties: () => ({ getProperty: k => (k in props ? props[k] : null), setProperty: (k, v) => { props[k] = String(v); } }) },
     LockService: { getScriptLock: () => ({ waitLock: () => {}, tryLock: () => true, releaseLock: () => {} }) },
@@ -255,6 +255,26 @@ test('Upset Special on a game with NO frozen line is rejected (no client-supplie
   eq(rowsOf(env, 'Games').filter(g => g.source === 'external').length, 0, 'no game row created');
 });
 
+test('REGRESSION (Uncle D, wk4): can change a later game after his board-game Upset Special kicked off', () => {
+  const env = loadBackend(); seedLeague(env);
+  // g1 = his Upset Special AND straight pick (same team, board mode), later games still open
+  const upset = { gameId: 'g1', pickedTeam: 'Away1' };
+  const first = picksPayload('p2', upset);
+  first.picks[0].pickedTeam = 'Away1';
+  let r = env.call('submitPicks', first);
+  ok(r.ok, r.error);
+  // g1 kicks off (noon); g9 still hours away
+  const gs = env.ss.getSheetByName('Games'); const h = gs._data[0];
+  gs._data.forEach((row, i) => { if (i && row[h.indexOf('gameId')] === 'g1') row[h.indexOf('kickoff')] = new Date(Date.now() - 3600000).toISOString(); });
+  env.ctx.invalidateStateCache();
+  const second = picksPayload('p2', upset);
+  second.picks[0].pickedTeam = 'Away1';
+  second.picks[8].pickedTeam = 'Away9'; // the "Alabama -> South Carolina" change
+  r = env.call('submitPicks', second);
+  ok(r.ok, 'change should be accepted: ' + r.error);
+  eq(rowsOf(env, 'Picks').find(p => p.playerId === 'p2' && p.gameId === 'g9' && p.isUpset !== true).pickedTeam, 'Away9');
+});
+
 test('submitPicks rejects a changed pick on a locked game', () => {
   const env = loadBackend(); seedLeague(env, { kickoffOffset: -3600000 });
   const r = env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' }));
@@ -316,6 +336,25 @@ test('live-game auto default picks: batched, no duplicates on repeat', () => {
   env.props.lastAutoScoreFetch = '0';
   env.call('getState');
   eq(rowsOf(env, 'Picks').filter(p => p.isAutoDefault === true).length, first, 'second run adds nothing');
+});
+
+test('REGRESSION (wk4): automatic score updates also finalize Upset Special games outside the board', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U' }));
+  // everything kicks off and ends; only the automatic path runs (no admin Fetch Results)
+  const past = new Date(Date.now() - 5 * 3600000).toISOString();
+  const gs = env.ss.getSheetByName('Games'); const h = gs._data[0];
+  gs._data.forEach((row, i) => { if (i) row[h.indexOf('kickoff')] = past; });
+  espnEvents = [];
+  for (let i = 1; i <= 10; i++) espnEvents.push(mkEvent('E' + i, 'Away' + i, 'Home' + i, { date: past, final: true, homeScore: 30, awayScore: 20 }));
+  espnEvents.push(mkEvent('E100', 'Dog U', 'Fav U', { date: past, final: true, homeScore: 10, awayScore: 24 }));
+  env.props.lastAutoScoreFetch = '0';
+  env.ctx.invalidateStateCache();
+  env.call('getState');
+  const ext = rowsOf(env, 'Games').find(g => g.source === 'external');
+  eq(ext.isFinal, true, 'external Upset Special game must be scored automatically');
+  eq(env.call('getStandings').standings.find(s => s.playerId === 'p2').upsetWins, 1);
+  eq(rowsOf(env, 'Picks').filter(p => p.isAutoDefault === true && p.gameId === ext.gameId).length, 0, 'never auto-default an external game');
 });
 
 test('ESPN date ranges are fetched in parallel (fetchAll), deduped', () => {

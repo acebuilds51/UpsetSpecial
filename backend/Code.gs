@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v3-perf-diagnostics-sep25';
+var CODE_VERSION = 'v4-external-scores-lockflush-sep27';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -501,6 +501,15 @@ function requireAdmin(payload) {
   const players = sheetToObjects(SHEET_NAMES.PLAYERS);
   const player = players.find(p => p.id === payload.adminId);
   if (!player || !player.isAdmin) throw new Error('Admin access required.');
+}
+
+// Always release the script lock through this. Sheets buffers writes until the
+// execution ends, so without flush() the NEXT request to take the lock can read the
+// sheet before our writes land -- defeating the lock (e.g. two copies of the same
+// external Upset Special game, or a pick submission overwritten by stale data).
+function releaseLock_(lock) {
+  try { SpreadsheetApp.flush(); } catch (e) {}
+  lock.releaseLock();
 }
 
 // For admin endpoints whose frontend calls historically sent `playerId` rather than
@@ -1555,7 +1564,9 @@ function hasLiveGamesThisWeek_(shared) {
     if (Number(g.week) !== currentWeek) return false;
     if (g.isFinal === true || g.isFinal === 'TRUE') return false;
     var kickoff = g.kickoff ? new Date(g.kickoff) : null;
-    return kickoff && now >= kickoff;
+    // stop polling for a game 4 days after kickoff (cancelled/postponed games never
+    // go final; the nightly diagnostics report flags them for the admin instead)
+    return kickoff && now >= kickoff && now - kickoff < 4 * 86400000;
   });
 }
 
@@ -1581,7 +1592,7 @@ function maybeAutoFetchScores_(shared) {
     Logger.log('Auto score fetch failed: ' + e.message);
     return false;
   } finally {
-    lock.releaseLock();
+    releaseLock_(lock);
   }
 }
 
@@ -1631,18 +1642,23 @@ function invalidateTrophyCache(playerId) {
 // fetches current ESPN scores for all non-final games in a given week and updates the sheet.
 // only touches finalAwayScore, finalHomeScore, and isFinal -- never touches lines or kickoffs.
 function autoFetchScoresForWeek(week) {
-  const allWeekGames = sheetToObjects(SHEET_NAMES.GAMES).filter(g =>
-    Number(g.week) === week && g.source !== 'external'
-  );
+  const weekGames = sheetToObjects(SHEET_NAMES.GAMES).filter(g => Number(g.week) === week);
+  const allWeekGames = weekGames.filter(g => g.source !== 'external'); // the 10-game board
 
-  const scoreFetchGames = allWeekGames.filter(g =>
+  // Scores are fetched for EVERY game this week that has kicked off -- including
+  // Upset Special games outside the board (source 'external'). Those used to be
+  // skipped here, so they sat "pending" until an admin ran Fetch Results.
+  const now = new Date();
+  const scoreFetchGames = weekGames.filter(g =>
     !(g.isFinal === true || g.isFinal === 'TRUE') &&
-    g.espnEventId && !String(g.espnEventId).startsWith('TEST_')
+    g.espnEventId && !String(g.espnEventId).startsWith('TEST_') &&
+    g.kickoff && new Date(g.kickoff) <= now
   );
 
   if (scoreFetchGames.length > 0) {
-    // fetch live ESPN scoreboard
-    const events = fetchEspnScoreboard();
+    // ESPN scoreboard for the dates these games were played (the bare "current"
+    // scoreboard misses Thursday/Friday games once ESPN rolls its default view)
+    const events = fetchEspnEventsForGames_(scoreFetchGames);
     const eventMap = {};
     events.forEach(ev => { eventMap[ev.id] = ev; });
 
@@ -2272,7 +2288,7 @@ function apiSubmitSlate(payload) {
   invalidateStateCache();
   return { ok: true };
   } finally {
-    lock.releaseLock();
+    releaseLock_(lock);
   }
 }
 
@@ -4764,7 +4780,7 @@ function apiSubmitPicks(payload) {
   try {
     return apiSubmitPicks_(payload, week, playerId, picks);
   } finally {
-    lock.releaseLock();
+    releaseLock_(lock);
   }
 }
 
@@ -5208,7 +5224,7 @@ function applyNoPickDefaults_(week) {
     invalidateStateCache();
     return newRows.length;
   } finally {
-    lock.releaseLock();
+    releaseLock_(lock);
   }
 }
 
@@ -5346,7 +5362,7 @@ function apiAdminClearBowlPhase(payload) {
       setSeasonConfig('bowlChampionWinner', '');
     }
   } finally {
-    lock.releaseLock();
+    releaseLock_(lock);
   }
   return { ok: true };
 }
@@ -5443,7 +5459,7 @@ function apiSubmitBowlPicks(payload) {
     const submittedAt = new Date().toISOString();
     appendObjects_(SHEET_NAMES.BOWL_PICKS, picks.map(p => ({ phase, playerId, gameId: p.gameId, pickedTeam: p.pickedTeam, isUpset: !!p.isUpset, isAutoDefault: false, submittedAt: submittedAt })));
   } finally {
-    lock.releaseLock();
+    releaseLock_(lock);
   }
   return { ok: true };
 }
@@ -5460,7 +5476,7 @@ function apiSubmitBowlChampion(payload) {
     deleteRowsByMatch(SHEET_NAMES.BOWL_CHAMPION, c => c.playerId === playerId);
     appendObject(SHEET_NAMES.BOWL_CHAMPION, { playerId, teamPicked, isAutoDefault: false, submittedAt: new Date().toISOString() });
   } finally {
-    lock.releaseLock();
+    releaseLock_(lock);
   }
   return { ok: true };
 }
@@ -5557,7 +5573,7 @@ function apiAdminApplyBowlNoPickDefaults(payload) {
       count += champRows.length;
     }
   } finally {
-    lock.releaseLock();
+    releaseLock_(lock);
   }
   return { ok: true, defaultsApplied: count };
 }

@@ -140,7 +140,7 @@ function checkGameFinalNotifications() {
       try { archivePerfectWeeks_(week); } catch (e) { Logger.log('Perfect week archive error: ' + e.message); }
     }
   } finally {
-    lock.releaseLock();
+    releaseLock_(lock);
   }
 }
 
