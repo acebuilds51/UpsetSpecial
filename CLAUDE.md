@@ -15,6 +15,11 @@ public repo (they contain player names / Drive IDs). Never put credentials in `.
 Script Properties (e.g. `FCM_SERVICE_ACCOUNT_JSON`).
 Verify a backend deploy took effect: every API response carries `_version` (= `CODE_VERSION` in Code.gs); bump it on each backend change.
 
+## Helper scripts (pre-approved as `node tools/*` for automated sessions)
+- `node tools/git.js <args>` — GitHub Desktop's git (git isn't on PATH); refuses `push`.
+- `node tools/wt.js <YYYY-MM-DD> <script.js>` — run a tools/ script inside the weekly worktree `../UpsetSpecial-weekly-<date>`.
+- `node tools/diag.js` — read-only fetch of the live nightly diagnostics summary (no player names).
+
 ## Checks (run before every deploy; CI runs them on push)
 - `node tools/check-syntax.js` — parses every inline script in index.html + Code.gs
 - `node tools/backend-tests.js` — runs Code.gs under Node against in-memory fakes of SpreadsheetApp/Cache/Lock/ESPN (never touches the real sheet). Add a test for every bug fix.
