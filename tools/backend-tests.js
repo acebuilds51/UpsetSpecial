@@ -533,6 +533,19 @@ test('runDiagnostics completes and writes a report', () => {
   eq(env.ss.getSheetByName('DiagnosticsHistory')._data.length, 2);
 });
 
+test('client-side failures are recorded in PerfLog and surfaced by diagnostics', () => {
+  const env = loadBackend(); seedLeague(env);
+  env.call('getStandings'); // ensure PerfLog exists (sample or not, create it)
+  if (!env.ss.getSheetByName('PerfLog')) env.ss.insertSheet('PerfLog').appendRow(['timestamp', 'action', 'ms', 'ok', 'error', 'reason', 'notes']);
+  const r = env.call('logClientError', { failedAction: 'submitPicks', message: 'timed out after 25s', playerId: 'p2', at: '2026-09-26T22:58:00Z' });
+  ok(r.ok);
+  const rows = env.ss.getSheetByName('PerfLog')._data;
+  const row = rows.find(x => x[1] === 'client:submitPicks');
+  ok(row, 'client row written'); eq(row[5], 'client'); ok(/TEAM2/.test(row[6]));
+  const rep = env.ctx.runDiagnostics();
+  ok(rep.warnings.some(w => /phones/.test(w) && /TEAM2/.test(w)), JSON.stringify(rep.warnings));
+});
+
 test('requests no longer write a DebugLog row each', () => {
   const env = loadBackend(); seedLeague(env);
   for (let i = 0; i < 5; i++) env.call('getStandings');

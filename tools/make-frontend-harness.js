@@ -24,7 +24,7 @@ const mock = `<script>
   for (var i = 1; i <= 10; i++) games.push({ week: 1, gameId: 'g' + i, espnEventId: 'E' + i, awayTeam: 'Away ' + i, homeTeam: 'Home ' + i, favorite: 'Home ' + i, spread: 3.5, source: 'espn', kickoff: kickoff, locked: true, isFinal: false, finalAwayScore: '', finalHomeScore: '' });
   var state = { ok: true, players: [{ id: 'p1', name: 'Test Admin', teamName: 'TESTERS', isAdmin: true, active: true }, { id: 'p2', name: 'Pat', teamName: 'PATS', isAdmin: false, active: true }],
     season: [{ key: 'year', value: 2026 }, { key: 'currentWeek', value: 1 }, { key: 'leagueName', value: 'Upset Special League' }, { key: 'entryFee', value: 100 }],
-    rotation: [], games: games, picks: [], ledger: [], bowlGames: [], bowlPicks: [], bowlChampion: [], bowlLedger: [], snapshotCount: 0 };
+    rotation: [{ week: 1, playerId: 'p2', status: 'posted', assignedAt: '' }], games: games, picks: [], ledger: [], bowlGames: [], bowlPicks: [], bowlChampion: [], bowlLedger: [], snapshotCount: 0 };
   var realFetch = window.fetch.bind(window);
   window.fetch = function(url, opts) {
     if (String(url).indexOf('script.google.com') < 0) return realFetch(url, opts);

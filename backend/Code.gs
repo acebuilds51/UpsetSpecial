@@ -98,7 +98,7 @@ var READ_ONLY_ACTIONS = {
   adminGetNameClaims: 1, getCareerHistory: 1, getAvatars: 1, getGameSummary: 1,
   adminGetPending: 1, getWeeklyEspnSlate: 1, getPickerSlateFromSnapshot: 1,
   searchEspnGames: 1, searchSnapshotGames: 1, fetchEspnGamesByDateRange: 1,
-  getStandings: 1, getBowlStandings: 1, adminListEmailTemplates: 1, adminGetEmailTemplate: 1,
+  getStandings: 1, getBowlStandings: 1, adminListEmailTemplates: 1, adminGetEmailTemplate: 1, logClientError: 1,
   adminPreviewCustomEmail: 1, adminGenerateResultsEmail: 1, adminSendTemplateEmail: 1,
   adminSendCustomEmail: 1, registerFcmToken: 0 /* fcmToken is in the cached player list */
 };
@@ -208,6 +208,7 @@ function handle(e) {
       case 'adminApplyBowlNoPickDefaults': result = apiAdminApplyBowlNoPickDefaults(payload); break;
       case 'adminBowlLedgerEntry': result = apiAdminBowlLedgerEntry(payload); break;
       case 'getBowlStandings': result = apiGetBowlStandings(payload); break;
+      case 'logClientError': result = apiLogClientError(payload); break;
 
       default: result = { ok: false, error: 'Unknown action: ' + action };
     }
@@ -6521,6 +6522,28 @@ function logPerf_(action, ms, result) {
   } catch (e) { /* perf logging must never break a request */ }
 }
 
+// Failures the SERVER never sees: a save that timed out or hit Google's error page
+// on the player's phone, or a submit the app blocked before sending. The frontend
+// reports them here so they land in PerfLog as `client:<action>` rows -- this is
+// the evidence that was missing when a player said "it wouldn't let me change my pick".
+function apiLogClientError(payload) {
+  try {
+    var sheet = getSS().getSheetByName('PerfLog');
+    if (!sheet) return { ok: true };
+    var player = sheetToObjects(SHEET_NAMES.PLAYERS).find(function(p) { return p.id === payload.playerId; });
+    sheet.appendRow([
+      new Date().toISOString(),
+      'client:' + String(payload.failedAction || 'unknown').slice(0, 40),
+      Number(payload.ms) || '',
+      false,
+      String(payload.message || '').slice(0, 200),
+      'client',
+      JSON.stringify({ team: player ? player.teamName : '', at: String(payload.at || '').slice(0, 30), view: String(payload.view || '').slice(0, 20), detail: String(payload.detail || '').slice(0, 150) })
+    ]);
+  } catch (e) {}
+  return { ok: true };
+}
+
 function installDiagnosticsTrigger() {
   ScriptApp.getProjectTriggers().forEach(function(t) {
     if (t.getHandlerFunction() === 'runDiagnostics') ScriptApp.deleteTrigger(t);
@@ -6713,7 +6736,11 @@ function diagIntegrity_(report, warn, info) {
 function diagPerfLog_(report, warn, info) {
   var sheet = getSS().getSheetByName('PerfLog');
   if (!sheet || sheet.getLastRow() < 2) { info('PerfLog is empty (it fills as people use the app).'); return; }
-  var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues();
+  var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).getValues();
+  // players' own failed saves (reported from their phones) -- always surfaced
+  var clientFails = rows.filter(function(r) { return r[5] === 'client' && new Date(r[0]).getTime() >= Date.now() - 86400000; });
+  if (clientFails.length) warn(clientFails.length + ' failure(s) reported from players\' phones in the last 24h: ' +
+    clientFails.slice(0, 5).map(function(r) { var n = {}; try { n = JSON.parse(r[6] || '{}'); } catch (e) {} return (n.team || '?') + ' ' + r[1] + ' "' + r[4] + '"'; }).join('; '));
   var since = Date.now() - 7 * 86400000;
   var byAction = {};
   rows.forEach(function(r) {

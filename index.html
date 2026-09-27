@@ -449,6 +449,20 @@ let _chatUnread = { general: 0, commissioner: 0 };
 const RETRYABLE_ACTIONS = { getState: 1, getMessages: 1, getCareerHistory: 1, getAvatars: 1, getAllEspnScores: 1, getAllTimeLeaderboard: 1, getTrophyRoom: 1, getStandings: 1, getBowlStandings: 1 };
 const RETRY_DELAYS_MS = [1500, 4000];
 
+// Fire-and-forget report of a problem the backend can't see on its own (see
+// apiLogClientError in Code.gs). Throttled to one report per 20s, delayed a few
+// seconds so it doesn't compete with a retry, and never shows anything to the player.
+let _lastClientReport = 0;
+function reportClientIssue(failedAction, message, detail) {
+  if (failedAction === 'logClientError' || Date.now() - _lastClientReport < 20000) return;
+  _lastClientReport = Date.now();
+  const payload = {
+    failedAction, message: String(message || ''), detail: detail || '',
+    playerId: State.player ? State.player.id : '', view: State.view || '', at: new Date().toISOString()
+  };
+  setTimeout(() => { api('logClientError', payload, true).catch(() => {}); }, 3000);
+}
+
 async function api(action, payload, silent) {
   payload = payload || {};
   payload.action = action;
@@ -485,6 +499,12 @@ async function api(action, payload, silent) {
     }
   }
   const err = lastErr;
+  // The server never saw this failure (timeout / Google error page / network) --
+  // report it so it shows up in the PerfLog tab. Real "ok:false" answers are
+  // already logged server-side, so they aren't re-reported.
+  if (err.transient || err.name === 'AbortError' || err.name === 'TypeError') {
+    reportClientIssue(action, err.name === 'AbortError' ? 'timed out after ' + (ms / 1000) + 's' : err.message);
+  }
   if (!silent) {
     if (err.message === 'Server returned non-JSON response') showToast('Server error — try again in a moment', 'error');
     else showToast(err.name === 'AbortError' ? 'Request timed out — try again' : (err.message || 'Network error'), 'error');
@@ -2115,12 +2135,15 @@ function renderPicksBoard(content, week, games, earlyWarning) {
     `}
     <p class="helptext" style="text-align:center; margin-top:10px;">Upset Special locks 5 mins before the first game. Straight picks lock per-game. Picks stay hidden until each game kicks off.</p>
   `;
+  // Wire the submit button FIRST, so a problem rendering any section below can never
+  // leave it dead. (It's absent once every game has started.)
+  const submitBtn = document.getElementById('submit-picks-btn');
+  if (submitBtn) submitBtn.onclick = () => submitMyPicks(week, games);
   renderGamesBoard(games, week);
   renderUpsetSearchArea(week, games);
   content.querySelectorAll('[data-upsetmode]').forEach(btn => {
     btn.onclick = () => { _upsetMode = btn.dataset.upsetmode; renderPicksBoard(content, week, games); };
   });
-  document.getElementById('submit-picks-btn').onclick = () => submitMyPicks(week, games);
 }
 
 function renderGamesBoard(games, week) {
@@ -2185,7 +2208,18 @@ function renderGamesBoard(games, week) {
   }).join('');
 
   wrap.querySelectorAll('.team-pick').forEach(el => {
-    if (el.style.cursor === 'default') return; // handles both locked games and upset-picked team
+    if (el.classList.contains('is-locked')) {
+      // Tapping a locked game used to do nothing at all -- no message -- which reads
+      // as the app being broken. Say why, and record it for the PerfLog tab.
+      el.onclick = () => {
+        const game = games.find(g => g.gameId === el.dataset.gameid);
+        const lockAt = game && game.kickoff ? new Date(new Date(game.kickoff).getTime() - 5 * 60 * 1000) : null;
+        showToast(lockAt ? `This game locked at ${lockAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} (5 min before kickoff)` : 'This game has locked', 'error');
+        reportClientIssue('pickTap', 'tapped a locked game', game ? game.awayTeam + ' @ ' + game.homeTeam + ' -> ' + el.dataset.team : '');
+      };
+      return;
+    }
+    if (el.style.cursor === 'default') return; // the team already chosen as this game's Upset Special
     el.onclick = () => {
       const gameId = el.dataset.gameid;
       const team = el.dataset.team;
@@ -2219,6 +2253,12 @@ function renderRevealedPicksForGame(g) {
 
 function renderUpsetSearchArea(week, games) {
   const area = document.getElementById('upset-search-area');
+  // Once the week's first game kicks off, the Upset Special section is replaced by
+  // the "🔒 Locked" card and this element doesn't exist. Without this guard the
+  // render threw here -- BEFORE the Update My Picks button was wired -- so after the
+  // first kickoff every week the button silently did nothing (weeks 2-4 of 2026:
+  // zero pick changes saved after noon Saturday).
+  if (!area) return;
   if (_upsetMode === 'board') {
     area.innerHTML = games.map(g => {
       const draft = _draftPicks[g.gameId] || {};
@@ -2424,15 +2464,15 @@ async function submitMyPicks(week, games) {
     return { gameId: g.gameId, pickedTeam: d.pickedTeam, isUpset: false };
   }).filter(Boolean);
 
-  if (picks.length !== games.length) { showToast(`Pick all ${games.length} games before submitting`, 'error'); return; }
+  if (picks.length !== games.length) { showToast(`Pick all ${games.length} games before submitting`, 'error'); reportClientIssue('submitPicks', 'blocked: incomplete picks', picks.length + '/' + games.length); return; }
 
   let upsetPick = null;
   if (_upsetMode === 'board') {
     const upsetGameId = Object.keys(_draftPicks).find(gid => _draftPicks[gid].isUpset);
-    if (!upsetGameId) { showToast('Select your Upset Special pick', 'error'); return; }
+    if (!upsetGameId) { showToast('Select your Upset Special pick', 'error'); reportClientIssue('submitPicks', 'blocked: no upset special (board mode)'); return; }
     upsetPick = { gameId: upsetGameId, pickedTeam: _draftPicks[upsetGameId].pickedTeam, isUpset: true };
   } else {
-    if (!_upsetSelection) { showToast('Search and select your Upset Special pick', 'error'); return; }
+    if (!_upsetSelection) { showToast('Search and select your Upset Special pick', 'error'); reportClientIssue('submitPicks', 'blocked: no upset special (search mode)'); return; }
     upsetPick = {
       gameId: _upsetSelection.gameId || '', espnEventId: _upsetSelection.espnEventId,
       awayTeam: _upsetSelection.awayTeam, homeTeam: _upsetSelection.homeTeam,
