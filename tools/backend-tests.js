@@ -68,6 +68,9 @@ function makeCache() {
 }
 const counters = { appendRow: 0, deleteRow: 0, deleteRows: 0, fetch: 0, fetchAll: 0, mails: 0 };
 const sentRequests = []; // every request passed to UrlFetchApp.fetchAll (pushes included)
+let mockWeekday = null;   // Utilities.formatDate(..., 'u') override: 1=Mon .. 7=Sun
+let mailQuota = 100;      // MailApp.getRemainingDailyQuota()
+const sentMails = [];     // every MailApp.sendEmail call
 const pushes = () => sentRequests.filter(r => String(r.url).indexOf('fcm.googleapis.com') >= 0).map(r => JSON.parse(r.payload).message);
 
 // ESPN fake: events keyed by date; tests mutate espnEvents
@@ -104,14 +107,14 @@ function loadBackend() {
     LockService: { getScriptLock: () => ({ waitLock: () => {}, tryLock: () => true, releaseLock: () => {} }) },
     Utilities: {
       getUuid: () => require('crypto').randomUUID(),
-      formatDate: (d, tz, fmt) => d.toISOString().slice(0, 10).replace(/-/g, '')
+      formatDate: (d, tz, fmt) => fmt === 'u' ? String(mockWeekday != null ? mockWeekday : ((d.getDay() + 6) % 7) + 1) : d.toISOString().slice(0, 10).replace(/-/g, '')
     },
     Session: { getScriptTimeZone: () => 'America/New_York', getEffectiveUser: () => ({ getEmail: () => 'owner@example.com' }) },
     UrlFetchApp: {
       fetch: () => { counters.fetch++; return espnResponse(); },
       fetchAll: reqs => { counters.fetchAll++; sentRequests.push(...reqs); return reqs.map(() => espnResponse()); }
     },
-    MailApp: { sendEmail: () => { counters.mails++; }, getRemainingDailyQuota: () => 100 },
+    MailApp: { sendEmail: m => { counters.mails++; sentMails.push(m); }, getRemainingDailyQuota: () => mailQuota },
     ScriptApp: (() => {
       const chain = { create() { triggers.push({ getHandlerFunction: () => chain._fn }); return chain; } };
       ['timeBased', 'everyDays', 'atHour', 'everyMinutes', 'everyHours', 'onWeekDay', 'at', 'forSpreadsheet', 'onChange'].forEach(m => { chain[m] = () => chain; });
@@ -565,6 +568,116 @@ test('requests with no action are answered without touching the sheet or PerfLog
   const r = JSON.parse(env.ctx.handle({ parameter: {} })._s);
   eq(r.ok, false); ok(r._version);
   eq((env.ss.getSheetByName('PerfLog') || { _data: [] })._data.length, before);
+});
+
+// ---------------------------------------------------------------- default-PIN email
+function setupPins(env) {
+  const pl = env.ss.getSheetByName('Players'); const h = pl._data[0];
+  const set = (id, pin, email, active) => pl._data.forEach((row, i) => { if (i && row[h.indexOf('id')] === id) { row[h.indexOf('pin')] = pin; row[h.indexOf('email')] = email; row[h.indexOf('active')] = active; } });
+  set('p1', '9876', 'admin@example.com', true);   // changed PIN
+  set('p2', '1234', 'pat@example.com', true);     // qualifies (numeric-looking string)
+  set('p3', 1234, 'sam@example.com', true);       // qualifies (Sheets returns a number)
+  const hdr = h;
+  pl.appendRow(hdr.map(k => ({ id: 'p4', name: 'Old Timer', teamName: 'GONE', pin: '1234', active: false, email: 'gone@example.com' })[k] ?? '')); // inactive
+  pl.appendRow(hdr.map(k => ({ id: 'p5', name: 'No Mail', teamName: 'NOMAIL', pin: '1234', active: true, email: '' })[k] ?? ''));           // no email
+  env.ctx._sheetDataCache = {};
+}
+
+test('PIN email goes only to active players still on 1234 with an email, once per week', () => {
+  const env = loadBackend(); seedLeague(env); setupPins(env);
+  sentMails.length = 0; mailQuota = 100; mockWeekday = 2; // Tuesday
+  const r = env.ctx.sendDefaultPinEmails();
+  eq(r.sent, 2);
+  eq(sentMails.map(m => m.to).sort(), ['pat@example.com', 'sam@example.com']);
+  ok(/TEAM2/.test(sentMails.find(m => m.to === 'pat@example.com').htmlBody), 'personalized with their team name');
+  ok(/Profile/.test(sentMails[0].htmlBody) && /Update PIN/.test(sentMails[0].htmlBody), 'has the how-to steps');
+  eq(env.ctx.sendDefaultPinEmails().sent, 0, 'not re-sent within 6 days');
+  mockWeekday = null;
+});
+
+test('PIN email refuses weekend/Monday sends and protects the daily quota', () => {
+  const env = loadBackend(); seedLeague(env); setupPins(env);
+  sentMails.length = 0;
+  mockWeekday = 6; mailQuota = 100;  // Saturday -- pick-reminder day
+  eq(env.ctx.sendDefaultPinEmails().skipped, 'day');
+  mockWeekday = 3; mailQuota = 41;   // Wednesday but only 41 left: 2 + 40 reserve > 41
+  eq(env.ctx.sendDefaultPinEmails().skipped, 'quota');
+  eq(sentMails.length, 0);
+  mockWeekday = null; mailQuota = 100;
+});
+
+test('changePin rejects 1234 and non-digit PINs', () => {
+  const env = loadBackend(); seedLeague(env); setupPins(env);
+  eq(env.call('changePin', { playerId: 'p2', currentPin: '1234', newPin: '1234' }).ok, false);
+  eq(env.call('changePin', { playerId: 'p2', currentPin: '1234', newPin: 'abcd' }).ok, false);
+  eq(env.call('changePin', { playerId: 'p2', currentPin: '1234', newPin: '1234567' }).ok, false);
+  ok(/start with 0/.test(env.call('changePin', { playerId: 'p2', currentPin: '1234', newPin: '0123' }).error), 'leading 0 rejected');
+  ok(/start with 0/.test(env.call('registerPlayer', { name: 'New Guy', teamName: 'NEWGUY', pin: '0456', email: 'n@example.com' }).error), 'leading 0 rejected at sign-up');
+  eq(env.call('adminUpdatePlayer', { adminId: 'p1', id: 'p3', pin: '0999' }).ok, false);
+  ok(env.call('adminUpdatePlayer', { adminId: 'p1', id: 'p3', active: true }).ok, 'admin edits without a PIN still work');
+  ok(env.call('changePin', { playerId: 'p2', currentPin: '1234', newPin: '8642' }).ok);
+});
+
+// ---------------------------------------------------------------- AI results-email checker
+// Modeled on the real Week 4 2026 recap (player names replaced): 3 false alarms
+// the old checker raised, 4 real errors it missed.
+function week4RecapFixture() {
+  const game = (awayTeam, a, homeTeam, h, favorite, spread) => {
+    const dog = favorite === homeTeam ? awayTeam : homeTeam;
+    const favMargin = favorite === homeTeam ? h - a : a - h;
+    return { awayTeam, homeTeam, awayScore: a, homeScore: h, favorite, dog, spread, winner: a > h ? awayTeam : homeTeam, coveringTeam: favMargin > spread ? favorite : dog };
+  };
+  const perf = (team, correct, upsetHit, weekPts) => ({ team, correct, total: 10, upsetHit, upsetMiss: null, weekPts, perfect: false });
+  const performances = [
+    perf('ALPHA', 8, 'Minnesota Golden Gophers +10', 18), perf('BRAVO', 7, 'Minnesota Golden Gophers +10', 17),
+    perf('CHARLIE', 4, 'Wake Forest Demon Deacons +12.5', 16.5), perf('DELTA', 6, 'Wisconsin Badgers +9.5', 15.5),
+    perf('ECHO', 8, 'Cincinnati Bearcats +6.5', 14.5), perf('FOXTROT', 7, 'UAB Blazers +7', 14),
+    perf('GOLF', 7, 'Cincinnati Bearcats +6.5', 13.5), perf('HOTEL', 3, 'Minnesota Golden Gophers +10', 13),
+    perf('INDIA', 8, 'Iowa Hawkeyes +5.5', 13.5), perf('JULIETT', 7, 'Iowa Hawkeyes +5.5', 12.5),
+    perf('KILO', 6, 'Cincinnati Bearcats +6.5', 12.5), perf('LIMA', 6, 'Iowa Hawkeyes +5.5', 11.5)
+  ];
+  return {
+    performances, upsetHitters: performances.filter(p => p.upsetHit), perfectWeeks: [],
+    gameResults: [
+      game('Texas Longhorns', 20, 'Tennessee Volunteers', 17, 'Texas Longhorns', 5.5),
+      game('Iowa Hawkeyes', 20, 'Michigan Wolverines', 19, 'Michigan Wolverines', 5.5),
+      game('South Carolina Gamecocks', 18, 'Alabama Crimson Tide', 49, 'Alabama Crimson Tide', 12.5),
+      game('Oklahoma Sooners', 13, 'Georgia Bulldogs', 41, 'Georgia Bulldogs', 14),
+      game('Texas A&M Aggies', 6, 'LSU Tigers', 35, 'LSU Tigers', 8.5)
+    ]
+  };
+}
+const P = t => '<p style="margin-bottom:16px;">' + t + '</p>';
+const WEEK4_GOOD = [
+  P('Michigan didn\'t just lose the game — they failed to cover by a mile. Tennessee held <strong>Texas</strong> to a 3-point win, meaning the <strong>Volunteers</strong> covered too.'),
+  P('<strong>ALPHA</strong> leads at 18 pts. <strong>BRAVO</strong> (17 pts, 7/10) also hit the Minnesota ticket. Close behind: <strong>CHARLIE</strong> at 16.5 pts, <strong>DELTA</strong> cashes at 15.5 pts, and <strong>ECHO</strong> lands at 14.5 pts.'),
+  '<ul style="list-style:none;"><li>&rarr; ALPHA — 18 pts</li><li>&rarr; CHARLIE — 16.5 pts</li></ul>',
+  P('The <strong>Minnesota Golden Gophers</strong> +10 rewarded ALPHA, BRAVO, and HOTEL. The <strong>Cincinnati Bearcats</strong> +6.5 paid out ECHO, GOLF, and KILO. The Iowa Hawkeyes +5.5 made INDIA, JULIETT, and LIMA look smart. FOXTROT rode UAB alone.'),
+  P('Alabama did the same to South Carolina, 49–18, a 31-point margin. Georgia covered the 14 with ease.')
+].join('');
+
+test('recap checker: no false alarms on a correct recap (points, "failed to cover", underdog covering)', () => {
+  const env = loadBackend();
+  eq(env.ctx.validateRecapAccuracy_(WEEK4_GOOD, week4RecapFixture()), []);
+});
+
+test('recap checker: catches the real Week 4 mistakes (wrong group, margin, "most popular", wrong cover, cut-off)', () => {
+  const env = loadBackend();
+  const bad = WEEK4_GOOD
+    .replace('The <strong>Minnesota Golden Gophers</strong> +10 rewarded', 'The <strong>Minnesota Golden Gophers</strong> +10 was the most popular ticket, rewarding')
+    .replace('paid out ECHO, GOLF, and KILO', 'paid out ECHO, FOXTROT, GOLF, and KILO')
+    .replace('a 31-point margin', 'a 36-point margin')
+    .replace('Georgia covered the 14 with ease.', 'Georgia covered the 14 with ease. Texas covered the 5.5.')
+    + '<hr style="border:none;border-top:1px solid #ebe5d8;margin:';
+  const errs = env.ctx.validateRecapAccuracy_(bad, week4RecapFixture());
+  const has = re => ok(errs.some(e => re.test(e)), 'expected ' + re + ' in:\n  ' + errs.join('\n  '));
+  has(/FOXTROT is grouped with the Cincinnati Bearcats.*UAB Blazers/);
+  has(/most popular.*tied at 3/);
+  has(/margin as 36.*31-point/);
+  has(/says Texas Longhorns covered, but Tennessee Volunteers/);
+  has(/cut off/);
+  ok(!errs.some(e => /credited with/.test(e)), 'no false point-total alarms: ' + errs.join(' | '));
+  ok(!errs.some(e => /Michigan Wolverines covered/.test(e)), 'no false Michigan alarm');
 });
 
 test('requests no longer write a DebugLog row each', () => {

@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v6-cheap-keepwarm-sep27';
+var CODE_VERSION = 'v7-pins-recap-checker-sep27';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -1799,6 +1799,10 @@ function autoApplyDefaultPicksForWeek(week, games) {
 
 function apiAdminAddPlayer(payload) {
   requireAdmin(payload);
+  if (payload.pin) {
+    const pinErr = pinProblem_(payload.pin);
+    if (pinErr) return { ok: false, error: pinErr };
+  }
   const id = genId('p');
   const player = {
     id, name: payload.name, teamName: payload.teamName || payload.name,
@@ -1823,7 +1827,8 @@ function apiRegisterPlayer(payload) {
 
   if (!name) return { ok: false, error: 'Full name is required.' };
   if (!teamName) return { ok: false, error: 'Team name is required.' };
-  if (!pin || pin.length < 4) return { ok: false, error: 'PIN must be at least 4 digits.' };
+  const pinErr = pinProblem_(pin);
+  if (pinErr) return { ok: false, error: pinErr };
   if (!email || !email.includes('@')) return { ok: false, error: 'A valid email is required.' };
 
   const players = sheetToObjects(SHEET_NAMES.PLAYERS);
@@ -1943,6 +1948,10 @@ function apiAdminUpdatePlayer(payload) {
   ['name', 'teamName', 'pin', 'isAdmin', 'active', 'careerPoints', 'deactivatedAt'].forEach(k => {
     if (payload[k] !== undefined) updates[k] = payload[k];
   });
+  if (updates.pin !== undefined) {
+    const pinErr = pinProblem_(updates.pin);
+    if (pinErr) return { ok: false, error: pinErr };
+  }
   const found = updateRowByMatch(SHEET_NAMES.PLAYERS, r => r.id === payload.id, updates);
   return { ok: found };
 }
@@ -4620,9 +4629,8 @@ function apiChangePin(payload) {
   if (!playerId || !currentPin || !newPin) {
     return { ok: false, error: 'Missing required fields.' };
   }
-  if (newPin.length < 4) {
-    return { ok: false, error: 'New PIN must be at least 4 digits.' };
-  }
+  var pinErr = pinProblem_(newPin);
+  if (pinErr) return { ok: false, error: pinErr };
 
   var players = sheetToObjects(SHEET_NAMES.PLAYERS);
   var player  = players.find(function(p) { return p.id === playerId; });
@@ -6203,6 +6211,142 @@ function apiAdminSendCustomEmail(payload) {
   return { ok: true, sent: sent, failed: failed, testOnly: testOnly, quotaLeft: MailApp.getRemainingDailyQuota() };
 }
 
+// ── Default-PIN security email ─────────────────────────────────────────────────
+// Every player imported from the old spreadsheet started with PIN 1234. This
+// emails the ones still using it, with step-by-step instructions to change it.
+//
+// HOW TO USE (Apps Script editor):
+//   previewDefaultPinEmail()  -- logs who would get it and emails ONE sample copy
+//                                to the script owner. Sends nothing to players.
+//   scheduleDefaultPinEmails() -- schedules the real send for next Tuesday 10 AM.
+//   sendDefaultPinEmails()     -- the send itself (what the trigger runs). Only
+//                                sends Tue-Thu, keeps a quota reserve, skips anyone
+//                                already emailed in the last 6 days, and re-checks
+//                                PINs at send time (people who already changed it
+//                                are skipped automatically).
+var DEFAULT_PIN = '1234';
+var PIN_EMAIL_SEND_DAYS = [2, 3, 4];   // Tue, Wed, Thu -- no automated league emails go out these days
+var PIN_EMAIL_QUOTA_RESERVE = 40;      // leave room for anything else that needs to send the same day
+
+// The one PIN rule, used wherever a PIN is chosen. Returns an error message or ''.
+//  - 4–6 digits
+//  - must not start with 0: Google Sheets can turn "0123" into the number 123,
+//    after which "0123" no longer matches at login and the player is locked out
+//  - must not be the old league-wide default 1234
+function pinProblem_(pin) {
+  pin = String(pin == null ? '' : pin).trim();
+  if (!/^\d{4,6}$/.test(pin)) return 'PIN must be 4–6 digits.';
+  if (pin.charAt(0) === '0') return 'PIN can\'t start with 0 — please pick one that starts with 1–9.';
+  if (pin === DEFAULT_PIN) return '1234 is the old league-wide default — please choose a different PIN.';
+  return '';
+}
+
+function defaultPinPlayers_() {
+  return sheetToObjects(SHEET_NAMES.PLAYERS).filter(function(p) {
+    return (p.active === true || p.active === 'TRUE') &&
+      String(p.pin).trim() === DEFAULT_PIN &&
+      p.email && String(p.email).indexOf('@') > 0;
+  });
+}
+
+function buildDefaultPinEmail_(player) {
+  var first = String(player.name || '').trim().split(/\s+/)[0] || 'there';
+  var team = escapeHtmlGs_(player.teamName || player.name || '');
+  var step = function(n, html) {
+    return '<tr><td style="vertical-align:top;padding:6px 12px 6px 0;"><span style="display:inline-block;width:26px;height:26px;border-radius:13px;background:#1a1a2e;color:#FFB800;font-weight:800;text-align:center;line-height:26px;font-size:13px;">' + n + '</span></td>' +
+      '<td style="vertical-align:top;padding:8px 0;">' + html + '</td></tr>';
+  };
+  var body =
+    '<p style="margin:0 0 16px;">Hi ' + escapeHtmlGs_(first) + ',</p>' +
+    '<p style="margin:0 0 16px;">When the league moved into the app, every account started with the same PIN: <strong>1234</strong>. ' +
+    'Your account (<strong>' + team + '</strong>) is still using it. Team names are listed on the standings page for everyone to see, ' +
+    'so right now anyone in the league could log in as you.</p>' +
+    '<div style="border-left:4px solid #FF6B35;background:#fff5f0;border-radius:0 8px 8px 0;padding:14px 16px;margin:18px 0;font-size:14px;line-height:1.7;">' +
+      '<strong style="color:#b84a1a;text-transform:uppercase;font-size:12px;letter-spacing:0.08em;display:block;margin-bottom:6px;">Why it matters</strong>' +
+      'Someone logged in as you could:' +
+      '<ul style="margin:6px 0 0;padding-left:20px;">' +
+        '<li>change your picks, including your Upset Special</li>' +
+        '<li>change your Venmo / PayPal info, which is where your winnings get sent</li>' +
+        '<li>post in the league chat under your name</li>' +
+        '<li>change your PIN and lock you out of your own account</li>' +
+      '</ul>' +
+    '</div>' +
+    '<p style="margin:22px 0 8px;font-weight:800;font-size:16px;">How to change it (about a minute)</p>' +
+    '<table cellpadding="0" cellspacing="0" style="font-size:15px;line-height:1.5;">' +
+      step(1, 'Open the app and log in with your team name <strong>' + team + '</strong> (or your name) and PIN <strong>1234</strong>.') +
+      step(2, 'Tap <strong>Profile</strong> in the menu at the bottom of the screen.') +
+      step(3, 'Scroll down to <strong>Change PIN</strong>.') +
+      step(4, 'Enter <strong>1234</strong> as your Current PIN, then type a new <strong>4–6 digit</strong> PIN twice. It can\'t start with 0.') +
+      step(5, 'Tap <strong>Update PIN</strong>. You\'ll see "PIN updated successfully."') +
+    '</table>' +
+    '<div style="text-align:center;margin:26px 0;">' +
+      '<a href="' + EMAIL_APP_URL + '" style="display:inline-block;background:#1a1a2e;color:#FFB800;font-weight:800;text-decoration:none;padding:13px 28px;border-radius:8px;font-size:15px;">Open the App</a>' +
+    '</div>' +
+    '<p style="margin:0 0 10px;font-size:14px;color:#4a5068;"><strong>Pick something only you know.</strong> Skip easy ones like 1111 or 4321. PINs can\'t start with 0, and 1234 won\'t be accepted.</p>' +
+    '<p style="margin:0 0 10px;font-size:14px;color:#4a5068;">Next time you log in, use your new PIN. If you ever forget it, just reply to this email and we\'ll reset it for you.</p>' +
+    '<p style="margin:18px 0 0;">Thanks — and good luck this week.<br>— Upset Special League</p>';
+  return {
+    subject: '🔐 Action needed: change your Upset Special PIN',
+    html: buildEmailHtml('Time to change your PIN', 'Your account is still using the league\'s default PIN, 1234.', body)
+  };
+}
+
+function previewDefaultPinEmail() {
+  var list = defaultPinPlayers_();
+  Logger.log(list.length + ' active player(s) with PIN 1234 and an email on file: ' + list.map(function(p) { return p.teamName; }).join(', '));
+  var noEmail = sheetToObjects(SHEET_NAMES.PLAYERS).filter(function(p) {
+    return (p.active === true || p.active === 'TRUE') && String(p.pin).trim() === DEFAULT_PIN && !(p.email && String(p.email).indexOf('@') > 0);
+  });
+  if (noEmail.length) Logger.log('Still on 1234 but NO email on file (contact directly): ' + noEmail.map(function(p) { return p.teamName; }).join(', '));
+  var me = Session.getEffectiveUser().getEmail();
+  var sample = buildDefaultPinEmail_(list[0] || { name: 'Sample Player', teamName: 'SAMPLETEAM' });
+  MailApp.sendEmail({ to: me, subject: '[PREVIEW] ' + sample.subject, htmlBody: sample.html, name: 'Upset Special League' });
+  Logger.log('Sample copy sent to ' + me + '. Remaining email quota today: ' + MailApp.getRemainingDailyQuota());
+}
+
+function scheduleDefaultPinEmails() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'sendDefaultPinEmails') ScriptApp.deleteTrigger(t);
+  });
+  var when = new Date();
+  when.setDate(when.getDate() + ((2 - when.getDay() + 7) % 7 || 7)); // next Tuesday
+  when.setHours(10, 0, 0, 0);
+  ScriptApp.newTrigger('sendDefaultPinEmails').timeBased().at(when).create();
+  Logger.log('PIN emails scheduled for ' + when.toString() + ' (' + defaultPinPlayers_().length + ' player(s) currently qualify).');
+}
+
+function sendDefaultPinEmails() {
+  var day = Number(Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/New_York', 'u')) % 7; // 1=Mon..7=Sun -> 0=Sun
+  if (PIN_EMAIL_SEND_DAYS.indexOf(day) < 0) {
+    Logger.log('Not a PIN-email day (Tue-Thu only, to stay clear of weekend pick-reminder emails). Nothing sent.');
+    return { sent: 0, skipped: 'day' };
+  }
+  var props = PropertiesService.getScriptProperties();
+  var recent = JSON.parse(props.getProperty('pinEmailSentAt') || '{}');
+  var list = defaultPinPlayers_().filter(function(p) {
+    return !recent[p.id] || Date.now() - new Date(recent[p.id]).getTime() > 6 * 86400000;
+  });
+  if (list.length === 0) { Logger.log('Nobody left on the default PIN (or all were emailed this week). Nothing sent.'); return { sent: 0 }; }
+  var quota = MailApp.getRemainingDailyQuota();
+  if (quota - list.length < PIN_EMAIL_QUOTA_RESERVE) {
+    Logger.log('Email quota too low today (' + quota + ' left, need ' + list.length + ' + ' + PIN_EMAIL_QUOTA_RESERVE + ' reserve). Nothing sent — run again tomorrow.');
+    return { sent: 0, skipped: 'quota' };
+  }
+  var sent = 0, failed = [];
+  list.forEach(function(p) {
+    try {
+      var msg = buildDefaultPinEmail_(p);
+      MailApp.sendEmail({ to: String(p.email).trim(), subject: msg.subject, htmlBody: msg.html, name: 'Upset Special League' });
+      recent[p.id] = new Date().toISOString();
+      sent++;
+    } catch (e) { failed.push(p.teamName); Logger.log('PIN email failed for ' + p.teamName + ': ' + e.message); }
+  });
+  props.setProperty('pinEmailSentAt', JSON.stringify(recent));
+  logEmailSend_('🔐 Action needed: change your Upset Special PIN', sent, 'pin-reminder', 'system');
+  Logger.log('PIN emails sent: ' + sent + (failed.length ? ' | failed: ' + failed.join(', ') : '') + ' | quota left: ' + MailApp.getRemainingDailyQuota());
+  return { sent: sent, failed: failed };
+}
+
 // Preview the wrapped HTML without sending.
 function apiAdminPreviewCustomEmail(payload) {
   requireAdmin(payload);
@@ -6340,6 +6484,12 @@ function apiAdminGenerateResultsEmail(payload) {
     'UPSET SPECIALS HIT: ' + (recap.upsetHitters.length
       ? recap.upsetHitters.map(function(p) { return p.team + ' (' + p.upsetHit + ')'; }).join(', ')
       : 'NONE — nobody hit their upset this week') + '\n' +
+    'UPSET SPECIALS BY TEAM (number of winners, then who): ' + (function() {
+      var groups = {};
+      recap.upsetHitters.forEach(function(p) { (groups[p.upsetHit] = groups[p.upsetHit] || []).push(p.team); });
+      var keys = Object.keys(groups).sort(function(a, b) { return groups[b].length - groups[a].length; });
+      return keys.length ? keys.map(function(k) { return k + ' — ' + groups[k].length + ': ' + groups[k].join(', '); }).join('; ') : 'none';
+    })() + '\n' +
     'PERFECT WEEKS (' + recap.gameLines.length + '/' + recap.gameLines.length + '): ' + (recap.perfectWeeks.length
       ? recap.perfectWeeks.map(function(p) { return p.team; }).join(', ')
       : 'none') + '\n';
@@ -6364,6 +6514,9 @@ function apiAdminGenerateResultsEmail(payload) {
     '- When you state a player\'s point total, it must exactly match the number in PLAYER PERFORMANCE. Always ' +
     'write points and scores as numerals (19, not "nineteen") so they can be verified.\n' +
     '- The number of games in a week VARIES (it is not always 10) -- read the actual count from the data.\n' +
+    '- When you group Upset Special winners by the team they picked, copy the groups exactly from UPSET SPECIALS BY TEAM. ' +
+    'Never put a player in a group they are not listed in. Only call a pick "the most popular" if it has strictly more winners than every other pick.\n' +
+    '- If you state a margin of victory, compute it from the final score (winner minus loser).\n' +
     '- Before finalizing, re-check every score, margin, and point total you wrote against the data above.\n\n' +
     'OUTPUT: raw HTML fragment only. No <html>, <head>, <body>, or <style> tags. No markdown, no code fences.\n\n' +
     'Use exactly these inline-styled building blocks:\n' +
@@ -6390,7 +6543,10 @@ function apiAdminGenerateResultsEmail(payload) {
         headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         payload: JSON.stringify({
           model: 'claude-sonnet-4-6',
-          max_tokens: 2000,
+          // A 350-500 word recap in inline-styled HTML runs ~1,500-3,000 tokens; the old
+          // 2,000 cap cut Week 4's recap off mid-tag. The cap is only a ceiling -- the
+          // model still stops when the recap is done.
+          max_tokens: 8000,
           system: system,
           messages: [{ role: 'user', content: userMsg }]
         }),
@@ -6399,16 +6555,24 @@ function apiAdminGenerateResultsEmail(payload) {
       var code = resp.getResponseCode();
       if (code !== 200) return { ok: false, error: 'Anthropic API error ' + code + ': ' + resp.getContentText().slice(0, 300) };
       var data = JSON.parse(resp.getContentText());
-      bodyHtml = (data.content && data.content[0] && data.content[0].text) || '';
-      if (!bodyHtml) return { ok: false, error: 'Empty response from Claude.' };
+      bodyHtml = (data.content || []).filter(function(b) { return b.type === 'text'; }).map(function(b) { return b.text; }).join('');
+      if (!bodyHtml) return { ok: false, error: 'Empty response from Claude' + (data.stop_reason ? ' (stop_reason: ' + data.stop_reason + ')' : '') + '.' };
       bodyHtml = bodyHtml.replace(/```html/g, '').replace(/```/g, '').trim();
     } catch (e) {
       return { ok: false, error: 'Generation failed: ' + e.message };
     }
     lastErrors = validateRecapAccuracy_(bodyHtml, recap);
+    // The API marks a reply that hit the length cap with stop_reason "max_tokens" --
+    // that recap is incomplete no matter what the content checks say.
+    if (data.stop_reason === 'max_tokens') {
+      lastErrors.unshift('Your previous recap was cut off before it finished. Write a complete recap within the 350-500 word target.');
+    }
     if (lastErrors.length === 0) { verified = true; break; }
     Logger.log('Recap validation attempt ' + attempt + ' found issues: ' + lastErrors.join(' | '));
   }
+
+  // Never let a cut-off tag swallow the box score appended below it
+  bodyHtml = bodyHtml.replace(/<[^>]*$/, '');
 
   var headline = 'Week ' + recap.week + ' Results';
   var sub = recap.upsetHitters.length
@@ -6481,29 +6645,187 @@ function findTeamMentions_(textLower, fullTeamName) {
   return [];
 }
 
+// ---- recap checker helpers -------------------------------------------------
+// Plain text with block boundaries preserved as newlines (so a list item or
+// paragraph never bleeds into the next one), split into sentences. Claims are
+// always checked WITHIN the sentence they appear in -- the old fixed 60-150
+// character windows attributed one player's "17 pts" to the next player named.
+function recapSentences_(html) {
+  var text = String(html)
+    .replace(/<\/(p|div|li|ul|ol|h\d)>|<br\s*\/?>|<hr[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&rarr;/g, ' ').replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ').replace(/&[a-z]+;/g, ' ');
+  var out = [];
+  text.split(/\n+/).forEach(function(block) {
+    block.split(/(?<=[.!?])\s+(?=[A-Z"'(])/).forEach(function(s) {
+      s = s.replace(/\s+/g, ' ').trim();
+      if (s) out.push({ text: s, lower: s.toLowerCase() });
+    });
+  });
+  return out;
+}
+
+function reEscape_(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+// Whole-word, case-insensitive occurrences of `needle` in `lower` (already lowercased).
+function wordHits_(lower, needle) {
+  var re = new RegExp('(?<![a-z0-9])' + reEscape_(String(needle).toLowerCase()) + '(?![a-z0-9])', 'g');
+  var hits = [], m;
+  while ((m = re.exec(lower))) { hits.push({ start: m.index, end: m.index + m[0].length }); }
+  return hits;
+}
+
+// Maps every way prose refers to a college team ("Alabama", "Crimson Tide",
+// "Alabama Crimson Tide") to that team. An alias shared by two teams goes to the
+// one it describes most completely ("Texas" -> Longhorns, not Texas A&M;
+// "Michigan" -> Wolverines, not Michigan State); a true tie ("Tigers" for Auburn
+// and LSU) is dropped rather than guessed.
+function buildTeamAliases_(teamNames) {
+  var byAlias = {};
+  teamNames.forEach(function(full) {
+    var words = String(full).toLowerCase().split(/\s+/).filter(Boolean);
+    var add = function(alias, leftover) {
+      if (!alias || alias.length < 3) return;
+      (byAlias[alias] = byAlias[alias] || []).push({ team: full, leftover: leftover });
+    };
+    for (var n = words.length; n >= 1; n--) add(words.slice(0, n).join(' '), words.length - n); // school prefixes
+    if (words.length >= 2) add(words[words.length - 1], words.length - 1);                          // mascot
+    if (words.length >= 3) add(words.slice(-2).join(' '), words.length - 2);                        // two-word mascot
+  });
+  var aliases = [];
+  Object.keys(byAlias).forEach(function(alias) {
+    var cands = byAlias[alias].slice().sort(function(a, b) { return a.leftover - b.leftover; });
+    var uniqueTeams = cands.filter(function(c, i) { return cands.findIndex(function(x) { return x.team === c.team; }) === i; });
+    if (uniqueTeams.length > 1 && uniqueTeams[0].leftover === uniqueTeams[1].leftover) return; // genuine tie
+    aliases.push({ alias: alias, team: uniqueTeams[0].team });
+  });
+  return aliases.sort(function(a, b) { return b.alias.length - a.alias.length; });
+}
+
+// Team mentions in one sentence, longest alias first, no overlaps.
+function teamMentionsIn_(lower, aliases) {
+  var taken = [], out = [];
+  aliases.forEach(function(a) {
+    wordHits_(lower, a.alias).forEach(function(h) {
+      if (taken.some(function(t) { return h.start < t.end && t.start < h.end; })) return;
+      taken.push(h);
+      out.push({ team: a.team, start: h.start, end: h.end });
+    });
+  });
+  return out.sort(function(a, b) { return a.start - b.start; });
+}
+
+var RECAP_NEGATION_ = /(\bnot\b|\bnever\b|\bfail(ed|s)?\b|\bfell\b|\bshort\b|n't|n’t|\bno\b)/;
+
 function validateRecapAccuracy_(bodyHtml, recap) {
   var errors = [];
   var text = bodyHtml.replace(/<[^>]+>/g, ' '); // strip HTML tags so name/number matching isn't broken by markup
   var textLower = text.toLowerCase();
+  var sentences = recapSentences_(bodyHtml);
 
-  // Any player named in the text, where the text ALSO makes a specific point-
-  // total claim near their name, must have that claim match their real total.
-  // A player merely listed by name (e.g. grouped with others who share an
-  // upset pick, with no number attached to any of them) makes no claim at all
-  // and has nothing to verify -- flagging that as an error was the bug.
-  recap.performances.slice(0, 12).forEach(function(p) {
-    var mentions = findExactMentions_(textLower, p.team); // exact match -- this is a player name, not a school name
-    var foundCorrect = false, wrongClaims = [];
-    mentions.forEach(function(m) {
-      var windowText = text.slice(Math.max(0, m.start - 60), m.start + m.len + 60);
-      var match = windowText.match(/(\d+(\.\d+)?)\s*(pts|points)/i);
-      if (match) {
-        if (match[1] === String(p.weekPts)) foundCorrect = true;
-        else wrongClaims.push(match[1]);
-      }
+  // 0. Cut-off / broken HTML (the AI hit its length limit mid-tag, or left blocks unclosed)
+  var html = String(bodyHtml);
+  if (html.lastIndexOf('<') > html.lastIndexOf('>')) {
+    errors.push('The recap is cut off mid-HTML-tag at the end -- it is incomplete.');
+  } else {
+    ['div', 'p', 'ul', 'li'].forEach(function(tag) {
+      var opens = (html.match(new RegExp('<' + tag + '(\\s|>)', 'gi')) || []).length;
+      var closes = (html.match(new RegExp('</' + tag + '>', 'gi')) || []).length;
+      if (opens !== closes) errors.push('The recap HTML is broken: ' + opens + ' <' + tag + '> tags opened but ' + closes + ' closed.');
     });
-    if (!foundCorrect && wrongClaims.length > 0) {
-      errors.push(p.team + ' is mentioned with ' + wrongClaims[0] + ' pts nearby, but their actual total this week is ' + p.weekPts + ' pts.');
+  }
+
+  // Player names, longest first so e.g. a short name inside a longer one isn't double-counted
+  var players = recap.performances.slice().sort(function(a, b) { return String(b.team).length - String(a.team).length; });
+  function playerMentionsIn_(lower) {
+    var taken = [], out = [];
+    players.forEach(function(p) {
+      wordHits_(lower, p.team).forEach(function(h) {
+        if (taken.some(function(t) { return h.start < t.end && t.start < h.end; })) return;
+        taken.push(h);
+        out.push({ p: p, start: h.start, end: h.end });
+      });
+    });
+    return out.sort(function(a, b) { return a.start - b.start; });
+  }
+
+  // Upset Special winners grouped by the team they hit ("Minnesota Golden Gophers" -> [players])
+  var hitTeamOf = {}, hittersByTeam = {};
+  (recap.upsetHitters || []).forEach(function(p) {
+    var t = String(p.upsetHit).replace(/\s*\+[\d.]+\s*$/, '');
+    hitTeamOf[p.team] = t;
+    (hittersByTeam[t] = hittersByTeam[t] || []).push(p.team);
+  });
+  var allTeams = [];
+  (recap.gameResults || []).forEach(function(g) { allTeams.push(g.awayTeam, g.homeTeam); });
+  Object.keys(hittersByTeam).forEach(function(t) { if (allTeams.indexOf(t) < 0) allTeams.push(t); });
+  var aliases = buildTeamAliases_(allTeams);
+  var gameOf = {};
+  (recap.gameResults || []).forEach(function(g) { gameOf[g.awayTeam] = g; gameOf[g.homeTeam] = g; });
+
+  sentences.forEach(function(s) {
+    var pm = playerMentionsIn_(s.lower);
+    var tm = teamMentionsIn_(s.lower, aliases);
+
+    // 1. "N pts" belongs to the nearest player named BEFORE it in the same sentence
+    var ptsRe = /(\d+(?:\.\d+)?)\s*(?:pts|points)\b/g, m;
+    while ((m = ptsRe.exec(s.lower))) {
+      if (/\bby\s*$/.test(s.lower.slice(Math.max(0, m.index - 4), m.index))) continue; // "won by 3 points" is a margin, not a total
+      var owner = null;
+      pm.forEach(function(x) { if (x.end <= m.index) owner = x; });
+      if (!owner) continue;
+      if (Number(m[1]) !== Number(owner.p.weekPts)) {
+        errors.push(owner.p.team + ' is credited with ' + m[1] + ' pts, but their actual total this week is ' + owner.p.weekPts + ' pts.');
+      }
+    }
+
+    // 2. A sentence about ONE upset team must only name players who hit THAT team
+    var hitTeamsHere = tm.map(function(x) { return x.team; })
+      .filter(function(t, i, arr) { return hittersByTeam[t] && arr.indexOf(t) === i; });
+    if (hitTeamsHere.length === 1) {
+      pm.forEach(function(x) {
+        var actual = hitTeamOf[x.p.team];
+        if (actual && actual !== hitTeamsHere[0]) {
+          errors.push(x.p.team + ' is grouped with the ' + hitTeamsHere[0] + ' Upset Special winners, but their Upset Special was actually ' + x.p.upsetHit + '.');
+        }
+      });
+    }
+
+    // 3. "most popular" must point at the team with the uniquely most winners
+    if (/most (popular|picked|common)|most-picked/.test(s.lower) && hitTeamsHere.length) {
+      var counts = Object.keys(hittersByTeam).map(function(t) { return hittersByTeam[t].length; });
+      var max = Math.max.apply(null, counts);
+      var leaders = Object.keys(hittersByTeam).filter(function(t) { return hittersByTeam[t].length === max; });
+      var claimed = hitTeamsHere[0];
+      if (hittersByTeam[claimed].length < max || leaders.length > 1) {
+        errors.push('The text calls ' + claimed + ' the most popular Upset Special, but ' +
+          (leaders.length > 1 ? leaders.join(', ') + ' are tied at ' + max + ' winners each.' : leaders[0] + ' had the most winners (' + max + ').'));
+      }
+    }
+
+    // 4. Stated margins must match the final score (only when the sentence is about one game)
+    var gamesHere = tm.map(function(x) { return gameOf[x.team]; }).filter(function(g, i, arr) { return g && arr.indexOf(g) === i; });
+    if (gamesHere.length === 1) {
+      var g = gamesHere[0], margin = Math.abs(g.awayScore - g.homeScore);
+      var marginRe = /(\d+(?:\.\d+)?)[-\s]point (margin|win|victory|blowout|loss|beatdown)|\bwon by (\d+(?:\.\d+)?)\b/g, mm;
+      while ((mm = marginRe.exec(s.lower))) {
+        var n = Number(mm[1] || mm[3]);
+        if (n !== margin) errors.push('The text gives the ' + g.awayTeam + ' at ' + g.homeTeam + ' margin as ' + n + ', but the final score (' + g.awayScore + '-' + g.homeScore + ') is a ' + margin + '-point margin.');
+      }
+    }
+
+    // 5. "covered": the team named right before the word must be the one that actually covered
+    var coverRe = /\bcover(ed|s|ing)?\b/g, cm;
+    while ((cm = coverRe.exec(s.lower))) {
+      var subj = null;
+      tm.forEach(function(x) { if (x.end <= cm.index) subj = x; });
+      if (!subj || !gameOf[subj.team]) continue;
+      var gg = gameOf[subj.team];
+      var between = s.lower.slice(subj.end, cm.index);
+      if (RECAP_NEGATION_.test(between)) continue; // "Michigan ... failed to cover" is a correct negative claim
+      if (subj.team !== gg.coveringTeam) {
+        errors.push('The text says ' + subj.team + ' covered, but ' + gg.coveringTeam + ' is the team that covered (' + gg.awayTeam + ' ' + gg.awayScore + ', ' + gg.homeTeam + ' ' + gg.homeScore + ', ' + gg.favorite + ' favored by ' + gg.spread + ').');
+      }
     }
   });
 
@@ -6531,26 +6853,8 @@ function validateRecapAccuracy_(bodyHtml, recap) {
     }
   });
 
-  // If a game's FAVORITE is mentioned near "cover"/"covered" language, verify
-  // they actually covered. Catches claims like "Notre Dame barely covered a
-  // 29.5 spread" when they won by only 17 -- i.e. did NOT cover, the underdog
-  // did. Deliberately narrow: only checks the favorite's proximity to cover
-  // language, so a correct statement about the underdog covering is never
-  // flagged.
-  (recap.gameResults || []).forEach(function(g) {
-    if (g.coveringTeam === g.favorite) return; // favorite actually covered -- nothing to check
-    var favMentions = findTeamMentions_(textLower, g.favorite); // prefix match -- school name
-    var dogLower = String(g.dog).toLowerCase();
-    var flagged = favMentions.some(function(m) {
-      var windowText = textLower.slice(Math.max(0, m.start - 150), m.start + m.len + 150);
-      return windowText.indexOf('cover') !== -1 && windowText.indexOf(dogLower) !== -1;
-    });
-    if (flagged) {
-      errors.push(g.favorite + ' did NOT cover against ' + g.dog + ' (won/lost by a margin smaller than the ' + g.spread + '-point spread) -- but the text near "' + g.favorite + '" mentions covering. ' + g.dog + ' is the team that actually covered here.');
-    }
-  });
-
-  return errors;
+  // de-duplicate (the same wrong claim can appear in both the prose and a list)
+  return errors.filter(function(e, i) { return errors.indexOf(e) === i; });
 }
 
 // Builds a plain, deterministic box score table straight from recap data --
@@ -6825,6 +7129,15 @@ function diagIntegrity_(report, warn, info) {
   report.integrity.push({ check: 'Active players still on default PIN 1234', count: defaultPin.length });
   if (defaultPin.length) warn(defaultPin.length + ' active player(s) still use the default PIN 1234 (anyone can log in as them): ' + defaultPin.map(function(p) { return p.teamName; }).join(', '),
     defaultPin.length + ' active player(s) still use the default PIN 1234.');
+
+  // PINs chosen with a leading 0 before that was blocked: Sheets may have stored
+  // "0123" as 123, so the player's real PIN no longer matches at login.
+  var shortPin = sheetToObjects(SHEET_NAMES.PLAYERS).filter(function(p) {
+    return isTrue(p.active) && String(p.pin).trim() !== '' && String(p.pin).trim().length < 4;
+  });
+  report.integrity.push({ check: 'Active players whose stored PIN lost a leading 0', count: shortPin.length });
+  if (shortPin.length) warn(shortPin.length + ' player(s) have a stored PIN under 4 digits (a leading 0 was probably dropped, so they may be locked out) -- reset in the Players tab: ' + shortPin.map(function(p) { return p.teamName; }).join(', '),
+    shortPin.length + ' player(s) have a stored PIN under 4 digits (a leading 0 was probably dropped).');
 
   // current week board health
   var board = games.filter(function(g) { return Number(g.week) === week && g.source !== 'external'; });

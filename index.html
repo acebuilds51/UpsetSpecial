@@ -529,6 +529,16 @@ function saveSession(player) {
     }
   } catch(e) {}
 }
+// Same PIN rule the server enforces (pinProblem_ in Code.gs): 4–6 digits, no
+// leading 0 (Sheets can turn "0123" into 123 and lock the player out), not 1234.
+function pinProblem(pin) {
+  pin = String(pin || '').trim();
+  if (!/^\d{4,6}$/.test(pin)) return 'PIN must be 4–6 digits';
+  if (pin[0] === '0') return 'PIN can\'t start with 0 — pick one that starts with 1–9';
+  if (pin === '1234') return '1234 is the old league-wide default — please choose a different PIN';
+  return '';
+}
+
 function loadSession() { try { return JSON.parse(localStorage.getItem('usl_player') || 'null'); } catch(e) { return null; } }
 function clearSession() { try { localStorage.removeItem('usl_player'); } catch(e) {} }
 function loadSavedAvatar(playerId) { try { return localStorage.getItem('usl_avatar_' + playerId) || ''; } catch(e) { return ''; } }
@@ -1220,7 +1230,7 @@ function renderRegister() {
         </div>
         <div class="field"><label>Email</label><input type="email" id="reg-email" placeholder="your@email.com" autocomplete="email"></div>
         <div class="field">
-          <label>Choose a PIN <span style="font-weight:400; text-transform:none; letter-spacing:0;">(4–6 digits)</span></label>
+          <label>Choose a PIN <span style="font-weight:400; text-transform:none; letter-spacing:0;">(4–6 digits, can't start with 0)</span></label>
           <input type="password" id="reg-pin" inputmode="numeric" placeholder="e.g. 4567" maxlength="6">
         </div>
         <div class="field">
@@ -1255,7 +1265,8 @@ async function submitRegistration() {
   if (!name) { showToast('Enter your full name', 'error'); return; }
   if (!teamName) { showToast('Enter a team name', 'error'); return; }
   if (!email || !email.includes('@')) { showToast('Enter a valid email', 'error'); return; }
-  if (!pin || pin.length < 4) { showToast('PIN must be at least 4 digits', 'error'); return; }
+  const pinErr = pinProblem(pin);
+  if (pinErr) { showToast(pinErr, 'error'); return; }
   if (pin !== pin2) { showToast('PINs don\'t match', 'error'); return; }
 
   const btn = document.getElementById('reg-submit-btn');
@@ -3104,7 +3115,7 @@ async function renderProfile(content) {
 
     <div class="section-label">Change PIN</div>
     <div class="card">
-      <p class="helptext" style="margin-bottom:12px; line-height:1.6;">Choose a 4–6 digit PIN that only you know.</p>
+      <p class="helptext" style="margin-bottom:12px; line-height:1.6;">Choose a 4–6 digit PIN that only you know. It can't start with 0, and 1234 isn't allowed.</p>
       <label class="field-label">Current PIN</label>
       <input type="password" id="pin-current" inputmode="numeric" placeholder="Current PIN" maxlength="6"
         style="width:100%; background:var(--surface-2); border:1px solid var(--hairline); border-radius:var(--radius-sm); color:var(--text); padding:10px 12px; font-size:15px; margin-bottom:10px; box-sizing:border-box;">
@@ -3308,7 +3319,8 @@ async function renderProfile(content) {
     const newPin  = document.getElementById('pin-new').value.trim();
     const confirm = document.getElementById('pin-confirm').value.trim();
     if (!current) { showToast('Enter your current PIN', 'error'); return; }
-    if (newPin.length < 4) { showToast('New PIN must be at least 4 digits', 'error'); return; }
+    const pinErr = pinProblem(newPin);
+    if (pinErr) { showToast(pinErr, 'error'); return; }
     if (newPin !== confirm) { showToast('New PINs do not match', 'error'); return; }
     if (newPin === current) { showToast('New PIN must be different from current PIN', 'error'); return; }
     const btn = document.getElementById('change-pin-btn');
