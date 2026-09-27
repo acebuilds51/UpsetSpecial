@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v5-diag-summary-sep27';
+var CODE_VERSION = 'v6-cheap-keepwarm-sep27';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -492,6 +492,7 @@ function deleteRowsByMatchFast_(sheetName, matchFn) {
   if (keptRows.length > 0) {
     sheet.getRange(2, 1, keptRows.length, headers.length).setValues(keptRows);
   }
+  invalidateSheetCache(sheetName); // later reads in this request must not see deleted rows
 }
 
 function genId(prefix) { return prefix + '_' + Utilities.getUuid().split('-')[0]; }
@@ -1360,6 +1361,7 @@ function autoBackfillMissingLines() {
     added++;
   });
   appendObjects_(SHEET_NAMES.LINE_SNAPSHOT, newRows); // one write (was one appendObject per game)
+  if (newRows.length) invalidateStateCache(); // snapshotCount is part of the cached state
   // recorded for the nightly diagnostics report
   try {
     PropertiesService.getScriptProperties().setProperty('lastLineBackfill', JSON.stringify({ at: snapshotAt, week: week, added: added, stillNoLine: stillNoLine }));
@@ -1487,9 +1489,23 @@ function computeMemberSinceMap_() {
 // Freshness: handle() invalidates the cache after every write action (see
 // READ_ONLY_ACTIONS), and a generation counter stops a slow builder (keepWarm or
 // a cache-miss request) from re-caching data it read BEFORE a concurrent write.
+//
+// Manual sheet edits never go through handle(). Without the onSheetChange trigger
+// (installSheetChangeTrigger) keepWarm rebuilds every 5 min to pick them up. With it,
+// a manual edit busts the cache immediately, so keepWarm only rebuilds when the cache
+// is missing or older than STATE_MAX_AGE_WATCHED_MS (a safety net for script-side
+// writes run from the editor, which don't fire onChange either).
 var STATE_CACHE_KEY = 'appState_v3';
 var STATE_CACHE_TTL = 360; // > the 5-min keepWarm interval, so the cache never goes cold between runs
+var STATE_CACHE_TTL_WATCHED = 1500; // outlives STATE_MAX_AGE_WATCHED + one keepWarm interval
+var STATE_MAX_AGE_WATCHED_MS = 15 * 60 * 1000;
 var CACHE_CHUNK = 90000;
+
+// True once installSheetChangeTrigger() has run (runDiagnostics re-syncs this flag
+// with the real trigger list every night).
+function sheetChangeWatched_() {
+  try { return PropertiesService.getScriptProperties().getProperty('sheetChangeTrigger') === '1'; } catch (e) { return false; }
+}
 
 function cachePutChunked_(cache, key, str, ttl) {
   var n = Math.ceil(str.length / CACHE_CHUNK);
@@ -1520,6 +1536,8 @@ function stateCacheGen_(cache) { return cache.get('appStateGen') || '0'; }
 // Builds the cacheable half of getState from the sheets (used by getState on a
 // cache miss AND by keepWarm, which used to keep its own copy of this logic).
 function buildSharedState_() {
+  // _row (sheet row number) is server-only bookkeeping -- the app never reads it
+  var noRow = function(rows) { return rows.map(function(r) { var o = Object.assign({}, r); delete o._row; return o; }); };
   var memberSinceMap = computeMemberSinceMap_();
   var players = sheetToObjects(SHEET_NAMES.PLAYERS).map(function(p) { return {
     id: p.id, name: p.name, teamName: p.teamName, isAdmin: !!p.isAdmin, active: !!p.active,
@@ -1534,11 +1552,11 @@ function buildSharedState_() {
   return {
     players: players,
     season: season,
-    rotation: sheetToObjects(SHEET_NAMES.ROTATION),
-    games: sheetToObjects(SHEET_NAMES.GAMES),
-    bowlGames: sheetToObjects(SHEET_NAMES.BOWL_GAMES),
-    bowlChampion: sheetToObjects(SHEET_NAMES.BOWL_CHAMPION),
-    bowlLedger: sheetToObjects(SHEET_NAMES.BOWL_LEDGER),
+    rotation: noRow(sheetToObjects(SHEET_NAMES.ROTATION)),
+    games: noRow(sheetToObjects(SHEET_NAMES.GAMES)),
+    bowlGames: noRow(sheetToObjects(SHEET_NAMES.BOWL_GAMES)),
+    bowlChampion: noRow(sheetToObjects(SHEET_NAMES.BOWL_CHAMPION)),
+    bowlLedger: noRow(sheetToObjects(SHEET_NAMES.BOWL_LEDGER)),
     snapshotCount: sheetToObjects(SHEET_NAMES.LINE_SNAPSHOT).filter(function(r) { return Number(r.week) === currentWeek; }).length
   };
 }
@@ -1551,7 +1569,10 @@ function rebuildStateCache_() {
   var shared = buildSharedState_();
   try {
     if (stateCacheGen_(cache) === genBefore) {
-      cachePutChunked_(cache, STATE_CACHE_KEY, JSON.stringify(shared), STATE_CACHE_TTL);
+      var ttl = sheetChangeWatched_() ? STATE_CACHE_TTL_WATCHED : STATE_CACHE_TTL;
+      if (cachePutChunked_(cache, STATE_CACHE_KEY, JSON.stringify(shared), ttl)) {
+        cache.put(STATE_CACHE_KEY + '_builtAt', String(Date.now()), ttl);
+      }
     }
   } catch(e) { Logger.log('state cache write: ' + e.message); }
   return shared;
@@ -1629,10 +1650,32 @@ function apiGetState(payload) {
   }
 
   // Picks/ledger/bowlPicks are always read fresh (never cached) — they change constantly
-  shared.picks = sheetToObjects(SHEET_NAMES.PICKS);
-  shared.ledger = sheetToObjects(SHEET_NAMES.LEDGER);
-  shared.bowlPicks = sheetToObjects(SHEET_NAMES.BOWL_PICKS);
+  shared.picks = slimPicksForClient_(sheetToObjects(SHEET_NAMES.PICKS), currentWeekOf_(shared));
+  shared.ledger = sheetToObjects(SHEET_NAMES.LEDGER).map(withoutRow_);
+  shared.bowlPicks = sheetToObjects(SHEET_NAMES.BOWL_PICKS).map(withoutRow_);
   return Object.assign({ ok: true }, shared);
+}
+
+function withoutRow_(r) { var o = Object.assign({}, r); delete o._row; return o; }
+
+function currentWeekOf_(shared) {
+  var wk = 1;
+  (shared.season || []).forEach(function(r) { if (r.key === 'currentWeek') wk = Number(r.value || 1); });
+  return wk;
+}
+
+// Picks are most of the getState payload (every pick of the season, re-downloaded on
+// every app open and poll). The app only reads submittedAt for the player's own
+// current-week picks (the draft-sync fingerprint in renderPicksBoard), so it is
+// dropped for weeks that ended before last week (last week is kept in case the
+// admin advanced the week while a game was still open), and _row is never read at
+// all. Every other field is kept.
+function slimPicksForClient_(picks, currentWeek) {
+  return picks.map(function(p) {
+    var o = withoutRow_(p);
+    if (Number(p.week) < currentWeek - 1) delete o.submittedAt;
+    return o;
+  });
 }
 
 // Bust the state cache whenever players, games, or season config changes.
@@ -2488,6 +2531,7 @@ function weeklyMondaySnapshot() {
   ensureSheets();
   const week = Number(getSeasonConfig().currentWeek || 1);
   const count = snapshotWeeklyLines(week);
+  invalidateStateCache(); // trigger run, not via handle() -- snapshotCount is cached
   // DISABLED as of week 3 -- see the matching note in autoBackfillMissingLines.
   // Auto-correcting board games from the snapshot risks silently overwriting a
   // correct, early-captured board line with a wrong, later-captured snapshot
@@ -2937,15 +2981,25 @@ function apiAdminFixCareerMapping(payload) {
   if (!sheet) return { ok: false, error: 'CareerHistory sheet not found.' };
 
   var data = sheet.getDataRange().getValues();
-  var updated = 0;
+  var changes = [];
   for (var r = 1; r < data.length; r++) {
     if (norm(data[r][2]) === norm(teamName) && data[r][5] === 'NO') {
-      sheet.getRange(r + 1, 1, 1, 6).setValues([[player.id, player.name, player.teamName, data[r][3], data[r][4], 'YES']]);
-      updated++;
+      changes.push({ row: r + 1, values: [player.id, player.name, player.teamName, data[r][3], data[r][4], 'YES'] });
     }
   }
+  // Same rows/values as before, but consecutive rows go out in one setValues each,
+  // and the career cache is busted (it wasn't, so the leaderboard/trophy room kept
+  // showing the old unmatched rows until the cache expired).
+  var i = 0;
+  while (i < changes.length) {
+    var j = i;
+    while (j + 1 < changes.length && changes[j + 1].row === changes[j].row + 1) j++;
+    sheet.getRange(changes[i].row, 1, j - i + 1, 6).setValues(changes.slice(i, j + 1).map(function(c) { return c.values; }));
+    i = j + 1;
+  }
+  if (changes.length) { invalidateSheetCache('CareerHistory'); invalidateCareerHistoryCache(); }
 
-  return { ok: true, updated: updated, player: player.name };
+  return { ok: true, updated: changes.length, player: player.name };
 }
 
 function apiGetMessages(payload) {
@@ -4133,29 +4187,36 @@ function apiAdminReviewNameClaim(payload) {
   return { ok: true, decision: payload.decision };
 }
 
-// Cached CareerHistory read — avoids re-reading 200+ rows on every Trophy Room or Leaderboard call
+// Cached CareerHistory read — avoids re-reading 200+ rows on every Trophy Room or Leaderboard call.
+// CareerHistory only changes at season archive / name-claim review / admin fixes, all
+// of which call invalidateCareerHistoryCache(). The old 5-min TTL equalled the keepWarm
+// interval, so the cache was almost always expired when keepWarm or a user arrived;
+// it's now chunked (no 90KB ceiling) and kept for 6h when manual edits are watched
+// (onSheetChange), 6 min otherwise so hand edits still show up about as fast as before.
+var CAREER_CACHE_KEY = 'careerHistory_v2';
 function getCareerHistoryCached() {
   var cache = CacheService.getScriptCache();
-  var cached = cache.get('careerHistory');
-  if (cached) {
-    try { return JSON.parse(cached); } catch(e) {}
-  }
+  try {
+    var cached = cacheGetChunked_(cache, CAREER_CACHE_KEY);
+    if (cached) return JSON.parse(cached);
+  } catch(e) {}
   var rows = sheetToObjects('CareerHistory');
   try {
-    var cacheStr = JSON.stringify(rows);
-    if (cacheStr.length < 90000) cache.put('careerHistory', cacheStr, 300); // 5 min TTL, 90KB limit
+    cachePutChunked_(cache, CAREER_CACHE_KEY, JSON.stringify(rows), sheetChangeWatched_() ? 21600 : 360);
   } catch(e) {}
   return rows;
 }
 
-// Call this after any CareerHistory write to invalidate the cache
+// Call this after any CareerHistory write to invalidate the cache. The shared state
+// carries memberSince (derived from CareerHistory), so it is busted too.
 function invalidateCareerHistoryCache() {
-  try { CacheService.getScriptCache().remove('careerHistory'); } catch(e) {}
+  try { CacheService.getScriptCache().remove(CAREER_CACHE_KEY + '_n'); } catch(e) {}
+  invalidateStateCache();
 }
 
 // Run this manually from Apps Script editor if trophy room shows stale data
 function clearCareerCache() {
-  CacheService.getScriptCache().remove('careerHistory');
+  invalidateCareerHistoryCache();
   Logger.log('CareerHistory cache cleared.');
 }
 
@@ -4275,17 +4336,33 @@ function keepWarm() {
     _sheetDataCache = {};
     _perfNotes = {};
 
+    // The cached state (if any) answers the live-games check without re-reading the
+    // Season + Games sheets, and tells us whether a rebuild is needed at all.
+    var cache = CacheService.getScriptCache();
+    var cachedShared = null;
+    try { var raw = cacheGetChunked_(cache, STATE_CACHE_KEY); if (raw) cachedShared = JSON.parse(raw); } catch (e) {}
+
     // During live games, refresh scores + auto-default picks HERE (on the trigger)
     // so real users' getState calls don't have to pay for the ESPN fetch + writes.
-    maybeAutoFetchScores_(null);
+    var fetched = maybeAutoFetchScores_(cachedShared);
 
-    // Re-build and cache the state so the next real user gets it instantly.
-    // TTL (360s) now outlives the 5-min trigger interval -- the old 120s TTL meant the
-    // cache sat empty for ~3 of every 5 minutes, so most users hit a cold rebuild.
-    var shared = rebuildStateCache_();
+    // Re-build and cache the state so the next real user gets it instantly -- but
+    // only when something could have changed. This used to rebuild every run
+    // (~7s x 288 runs/day, a big share of the daily trigger-runtime quota) even
+    // overnight when nothing had moved. Writes through the app bust the cache
+    // themselves; manual edits do too once installSheetChangeTrigger() has run.
+    var builtAt = Number(cache.get(STATE_CACHE_KEY + '_builtAt') || 0);
+    var fresh = cachedShared && sheetChangeWatched_() && (Date.now() - builtAt) < STATE_MAX_AGE_WATCHED_MS;
+    if (fetched) invalidateStateCache();
+    if (fetched || !fresh) {
+      var shared = rebuildStateCache_();
+      perfNote_('keepWarm', 'rebuilt');
+      Logger.log('keepWarm: state cache pre-built, ' + JSON.stringify(shared).length + ' bytes');
+    } else {
+      perfNote_('keepWarm', 'fresh');
+    }
     // Also warm career history (the leaderboard/trophy room/champion rings all use it)
     getCareerHistoryCached();
-    Logger.log('keepWarm: state cache pre-built, ' + JSON.stringify(shared).length + ' bytes');
     logPerf_('keepWarm', Date.now() - t0, { ok: true });
   } catch(e) {
     Logger.log('keepWarm error: ' + e.message);
@@ -4304,6 +4381,24 @@ function installKeepWarmTrigger() {
     .everyMinutes(5)
     .create();
   Logger.log('keepWarm trigger installed — fires every 5 minutes.');
+}
+
+// Installable onChange trigger: fires when a PERSON edits the spreadsheet (typing,
+// pasting, inserting/deleting rows) -- never for the app's own script writes, which
+// already bust the cache in handle(). Run installSheetChangeTrigger() ONCE from the
+// Apps Script editor; after that manual fixes show up in the app immediately and
+// keepWarm can skip rebuilding the state when nothing changed.
+function onSheetChange(e) {
+  invalidateCareerHistoryCache(); // also busts the state cache (memberSince comes from it)
+}
+
+function installSheetChangeTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'onSheetChange') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('onSheetChange').forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet()).onChange().create();
+  PropertiesService.getScriptProperties().setProperty('sheetChangeTrigger', '1');
+  Logger.log('onSheetChange trigger installed -- manual sheet edits now refresh the app immediately.');
 }
 
 function removeKeepWarmTrigger() {
@@ -6594,6 +6689,10 @@ function diagTriggers_(report, warn, info) {
   info('Installed triggers: ' + (handlers.length ? handlers.join(', ') : '(none)'));
   if (handlers.indexOf('keepWarm') < 0) warn('keepWarm trigger is NOT installed -- the state cache is cold for most users. Run installKeepWarmTrigger().');
   if (handlers.indexOf('weeklyMondaySnapshot') < 0) warn('Weekly line snapshot trigger is NOT installed -- opening lines won\'t be frozen automatically. Run installWeeklyTrigger().');
+  // keepWarm only skips rebuilds while this flag is set -- keep it in sync with reality
+  var watched = handlers.indexOf('onSheetChange') >= 0;
+  try { PropertiesService.getScriptProperties().setProperty('sheetChangeTrigger', watched ? '1' : ''); } catch (e) {}
+  if (!watched) info('onSheetChange trigger not installed -- keepWarm rebuilds the state every run (~288/day). Run installSheetChangeTrigger() once to cut that and make manual sheet edits show up instantly.');
   if (handlers.indexOf('autoBackfillMissingLines') < 0) warn('Missing-lines ESPN check is NOT installed -- games that get a line mid-week never become pickable. Run installAutoBackfillTrigger().');
   try {
     // An early "season finalized" flag blocks the real end-of-season archive (see
@@ -6840,7 +6939,21 @@ function saveDiagnosticsSummary_(r) {
       integrity: r.integrity,
       sheets: r.sheets.slice(0, 10).map(function(s) { return { name: /^Week \d+$|^[A-Z][A-Za-z]+$/.test(s.name) ? s.name : '(other)', rows: s.rows, allocatedCells: s.allocatedCells }; })
     };
-    PropertiesService.getScriptProperties().setProperty('lastDiagnosticsSummary', JSON.stringify(summary).slice(0, 8500));
+    // Script Properties hold ~9KB per value. Cutting the JSON string at 8500 chars (as
+    // before) produced invalid JSON whenever the report was big -- exactly the busy
+    // weeks it's needed for. Shrink the least important parts until it fits instead.
+    summary = JSON.parse(JSON.stringify(summary)); // own copy -- the report is still emailed after this
+    var fit = function() { return JSON.stringify(summary).length <= 8500; };
+    var clip = function(s, n) { s = String(s || ''); return s.length > n ? s.slice(0, n) + '…' : s; };
+    if (!fit()) summary.perf.forEach(function(p) { p.topError = clip(p.topError, 60); });
+    if (!fit()) summary.warnings = summary.warnings.map(function(w) { return clip(w, 200); });
+    if (!fit()) summary.timings.forEach(function(t) { t.error = clip(t.error, 60); });
+    if (!fit()) summary.sheets = summary.sheets.slice(0, 5);
+    while (!fit() && summary.perf.length > 5) summary.perf.pop();
+    while (!fit() && summary.warnings.length > 3) summary.warnings.pop();
+    summary.truncated = !fit() || undefined;
+    var json = JSON.stringify(summary);
+    PropertiesService.getScriptProperties().setProperty('lastDiagnosticsSummary', json.length <= 8500 ? json : JSON.stringify({ generatedAt: r.generatedAt, codeVersion: r.codeVersion, truncated: true, warnings: summary.warnings.slice(0, 3) }));
   } catch (e) { Logger.log('Diagnostics summary save failed: ' + e.message); }
 }
 

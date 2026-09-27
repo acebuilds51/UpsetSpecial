@@ -114,7 +114,7 @@ function loadBackend() {
     MailApp: { sendEmail: () => { counters.mails++; }, getRemainingDailyQuota: () => 100 },
     ScriptApp: (() => {
       const chain = { create() { triggers.push({ getHandlerFunction: () => chain._fn }); return chain; } };
-      ['timeBased', 'everyDays', 'atHour', 'everyMinutes', 'everyHours', 'onWeekDay', 'at'].forEach(m => { chain[m] = () => chain; });
+      ['timeBased', 'everyDays', 'atHour', 'everyMinutes', 'everyHours', 'onWeekDay', 'at', 'forSpreadsheet', 'onChange'].forEach(m => { chain[m] = () => chain; });
       return {
         WeekDay: { MONDAY: 'MONDAY', SUNDAY: 'SUNDAY' },
         getProjectTriggers: () => triggers.slice(),
@@ -571,6 +571,132 @@ test('requests no longer write a DebugLog row each', () => {
   const env = loadBackend(); seedLeague(env);
   for (let i = 0; i < 5; i++) env.call('getStandings');
   eq(env.ss.getSheetByName('DebugLog'), null);
+});
+
+// ---------------------------------------------------------------- keepWarm / caches (2026-09-27)
+function countBuilds(env) {
+  const orig = env.ctx.buildSharedState_;
+  const c = { n: 0 };
+  env.ctx.buildSharedState_ = function() { c.n++; return orig(); };
+  return c;
+}
+
+test('keepWarm without the onSheetChange trigger still rebuilds every run (old behavior)', () => {
+  const env = loadBackend(); seedLeague(env);
+  const b = countBuilds(env);
+  env.ctx.keepWarm(); env.ctx.keepWarm();
+  eq(b.n, 2);
+});
+
+test('keepWarm skips the rebuild when watched and nothing changed; rebuilds after writes, manual edits, or 15 min', () => {
+  const env = loadBackend(); seedLeague(env);
+  env.ctx.installSheetChangeTrigger();
+  ok(env.triggers.some(t => t.getHandlerFunction() === 'onSheetChange'), 'trigger installed');
+  const b = countBuilds(env);
+  env.ctx.keepWarm(); eq(b.n, 1, 'cold cache -> build');
+  env.ctx.keepWarm(); env.ctx.keepWarm(); eq(b.n, 1, 'fresh cache -> no rebuild');
+  // app write -> handle() busts the cache
+  ok(env.call('adminOverrideLine', { adminId: 'p1', gameId: 'g1', favorite: 'Away1', spread: 7 }).ok);
+  env.ctx.keepWarm(); eq(b.n, 2, 'rebuilt after a write');
+  eq(env.call('getState').games.find(g => g.gameId === 'g1').favorite, 'Away1');
+  // manual edit in the sheet UI -> onSheetChange
+  const gs = env.ss.getSheetByName('Games'); const h = gs._data[0];
+  gs._data.forEach((row, i) => { if (i && row[h.indexOf('gameId')] === 'g2') row[h.indexOf('spread')] = 11; });
+  env.ctx.onSheetChange({ changeType: 'EDIT' });
+  eq(env.call('getState').games.find(g => g.gameId === 'g2').spread, 11, 'manual edit visible immediately');
+  const n = b.n;
+  env.ctx.keepWarm(); eq(b.n, n, 'getState already rebuilt it');
+  // safety net: an old build is always rebuilt
+  env.cache.put('appState_v3_builtAt', String(Date.now() - 16 * 60000));
+  env.ctx.keepWarm(); eq(b.n, n + 1, 'rebuilt after 15 min');
+});
+
+test('keepWarm during live games fetches scores and re-caches them', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env, { kickoffOffset: -3600000 });
+  env.ctx.installSheetChangeTrigger();
+  env.ctx.keepWarm();
+  espnEvents = [];
+  for (let i = 1; i <= 10; i++) espnEvents.push(mkEvent('E' + i, 'Away' + i, 'Home' + i, { date: kickoff, homeScore: 7, awayScore: 3 }));
+  env.props.lastAutoScoreFetch = '0';
+  env.ctx.keepWarm();
+  const cached = JSON.parse(env.ctx.cacheGetChunked_(env.cache, 'appState_v3'));
+  eq(String(cached.games.find(g => g.gameId === 'g1').finalHomeScore), '7', 'fresh scores in the cache');
+});
+
+test('diagnostics keeps the sheetChangeTrigger flag in sync with the real trigger list', () => {
+  const env = loadBackend(); seedLeague(env);
+  env.ctx.installSheetChangeTrigger();
+  eq(env.props.sheetChangeTrigger, '1');
+  env.ctx.ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'onSheetChange').forEach(t => env.ctx.ScriptApp.deleteTrigger(t));
+  env.ctx.runDiagnostics();
+  eq(env.props.sheetChangeTrigger, '', 'flag cleared when the trigger is gone');
+  const b = countBuilds(env);
+  env.ctx.keepWarm(); env.ctx.keepWarm();
+  eq(b.n, 2, 'falls back to rebuilding every run');
+});
+
+test('the Monday snapshot / missing-lines jobs bust the cached snapshotCount', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  eq(env.call('getState').snapshotCount, 1);
+  espnEvents.push(mkEvent('E300', 'Late A', 'Late B', { date: kickoff, odds: 'LAT -4' }));
+  env.ctx._sheetDataCache = {};
+  env.ctx.autoBackfillMissingLines();
+  eq(env.call('getState').snapshotCount, 2);
+});
+
+test('career history cache: served from cache, and adminFixCareerMapping updates rows + busts it', () => {
+  const env = loadBackend(); seedLeague(env);
+  const ch = env.ss.getSheetByName('CareerHistory');
+  ch._data.length = 0;
+  ch.appendRow(['playerId', 'name', 'teamName', 'year', 'points', 'matched']);
+  ch.appendRow(['legacy', '', 'Old Team2', 2019, 50, 'NO']);
+  ch.appendRow(['legacy', '', 'Old Team2', 2020, 60, 'NO']);
+  ch.appendRow(['legacy', '', 'Someone Else', 2020, 70, 'NO']);
+  ch.appendRow(['legacy', '', 'OLD TEAM2', 2021, 80, 'NO']);
+  env.ctx._sheetDataCache = {};
+  env.ctx.clearCareerCache(); // seeding's getState cached the empty sheet
+  eq(env.ctx.getCareerHistoryCached().length, 4);
+  ch.appendRow(['legacy', '', 'Sneaky', 2022, 1, 'NO']); // script-side write with no invalidation
+  env.ctx._sheetDataCache = {};
+  eq(env.ctx.getCareerHistoryCached().length, 4, 'second read comes from cache');
+  const r = env.call('adminFixCareerMapping', { adminId: 'p1', teamName: 'old team2', playerId: 'p2' });
+  ok(r.ok, r.error); eq(r.updated, 3);
+  env.ctx._sheetDataCache = {};
+  const rows = env.ctx.getCareerHistoryCached();
+  eq(rows.length, 5, 'cache was busted');
+  eq(rows.filter(x => x.playerId === 'p2').map(x => x.year), [2019, 2020, 2021]);
+  eq(rows.find(x => x.teamName === 'Someone Else').matched, 'NO', 'other rows untouched');
+  eq(env.call('getState').players.find(p => p.id === 'p2').memberSince, 2019, 'memberSince refreshed too');
+});
+
+test('getState payload: no _row anywhere; submittedAt dropped only for weeks before last week', () => {
+  const env = loadBackend(); seedLeague(env);
+  env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' }));
+  const pk = env.ss.getSheetByName('Picks'); const h = pk._data[0];
+  const old = h.map(c => ({ week: 1, playerId: 'p3', gameId: 'gOld', pickedTeam: 'X', isUpset: false, isAutoDefault: false, submittedAt: '2026-09-01T00:00:00Z' })[c] ?? '');
+  pk.appendRow(old);
+  env.ctx._sheetDataCache = {};
+  env.ctx.setSeasonConfig('currentWeek', 3); env.ctx.invalidateStateCache();
+  pk._data.forEach((row, i) => { if (i && row[h.indexOf('gameId')] !== 'gOld') row[h.indexOf('week')] = 2; });
+  const s = env.call('getState');
+  ok(!/"_row"/.test(JSON.stringify(s)), '_row leaked');
+  const mine = s.picks.filter(p => p.playerId === 'p2');
+  eq(mine.length, 11); ok(mine.every(p => p.submittedAt), 'last week keeps submittedAt');
+  const o = s.picks.find(p => p.gameId === 'gOld');
+  eq(o.submittedAt, undefined); eq(o.pickedTeam, 'X'); eq(o.isUpset, false);
+  eq(env.call('getStandings').ok, true);
+});
+
+test('diagnostics summary stays valid JSON even when the report is huge', () => {
+  const env = loadBackend(); seedLeague(env);
+  const rep = env.ctx.runDiagnostics();
+  for (let i = 0; i < 40; i++) rep.publicWarnings.push('warning number ' + i + ' ' + 'x'.repeat(400));
+  for (let i = 0; i < 30; i++) rep.perf.push({ action: 'act' + i, logged: 9, p50: 1, p95: 2, max: 3, slow: 0, errors: 1, topError: 'e'.repeat(300) });
+  env.ctx.saveDiagnosticsSummary_(rep);
+  const r = env.call('getDiagnosticsSummary');
+  ok(r.summary && r.summary.generatedAt, 'summary parsed: ' + JSON.stringify(r).slice(0, 200));
+  ok(env.props.lastDiagnosticsSummary.length <= 8500);
+  eq(rep.perf[rep.perf.length - 1].topError.length, 300, 'report itself (emailed later) not modified');
 });
 
 // ---------------------------------------------------------------- report
