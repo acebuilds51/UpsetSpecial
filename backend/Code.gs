@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v4-external-scores-lockflush-sep27';
+var CODE_VERSION = 'v5-diag-summary-sep27';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -98,7 +98,7 @@ var READ_ONLY_ACTIONS = {
   adminGetNameClaims: 1, getCareerHistory: 1, getAvatars: 1, getGameSummary: 1,
   adminGetPending: 1, getWeeklyEspnSlate: 1, getPickerSlateFromSnapshot: 1,
   searchEspnGames: 1, searchSnapshotGames: 1, fetchEspnGamesByDateRange: 1,
-  getStandings: 1, getBowlStandings: 1, adminListEmailTemplates: 1, adminGetEmailTemplate: 1, logClientError: 1,
+  getStandings: 1, getBowlStandings: 1, adminListEmailTemplates: 1, adminGetEmailTemplate: 1, logClientError: 1, getDiagnosticsSummary: 1,
   adminPreviewCustomEmail: 1, adminGenerateResultsEmail: 1, adminSendTemplateEmail: 1,
   adminSendCustomEmail: 1, registerFcmToken: 0 /* fcmToken is in the cached player list */
 };
@@ -115,7 +115,6 @@ function handle(e) {
   _sheetDataCache = {};
   _perfNotes = {};
 
-  ensureSheets();
   let action = (e.parameter && e.parameter.action) || '';
   let payload = {};
   try {
@@ -124,6 +123,16 @@ function handle(e) {
       action = payload.action || action;
     }
   } catch (err) { /* fall back to query params */ }
+
+  // Requests with no action at all come from bots / link previews / someone opening
+  // the URL -- never the app. Answer immediately: no sheet work, no PerfLog row
+  // (they were showing up as ~70 "Unknown action" errors a week in diagnostics).
+  if (!action) {
+    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'No action.', _version: CODE_VERSION }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
+  ensureSheets();
 
   let result;
   try {
@@ -209,6 +218,7 @@ function handle(e) {
       case 'adminBowlLedgerEntry': result = apiAdminBowlLedgerEntry(payload); break;
       case 'getBowlStandings': result = apiGetBowlStandings(payload); break;
       case 'logClientError': result = apiLogClientError(payload); break;
+      case 'getDiagnosticsSummary': result = apiGetDiagnosticsSummary(); break;
 
       default: result = { ok: false, error: 'Unknown action: ' + action };
     }
@@ -6554,8 +6564,9 @@ function installDiagnosticsTrigger() {
 
 function runDiagnostics() {
   var started = Date.now();
-  var report = { generatedAt: new Date().toISOString(), codeVersion: CODE_VERSION, warnings: [], info: [], timings: [], perf: [], sheets: [], integrity: [] };
-  var warn = function(msg) { report.warnings.push(msg); };
+  var report = { generatedAt: new Date().toISOString(), codeVersion: CODE_VERSION, warnings: [], publicWarnings: [], info: [], timings: [], perf: [], sheets: [], integrity: [] };
+  // publicMsg: version of the warning without player names, for getDiagnosticsSummary
+  var warn = function(msg, publicMsg) { report.warnings.push(msg); report.publicWarnings.push(publicMsg || msg); };
   var info = function(msg) { report.info.push(msg); };
   var section = function(name, fn) {
     try { fn(); } catch (e) { warn(name + ' check crashed: ' + e.message); }
@@ -6570,6 +6581,7 @@ function runDiagnostics() {
 
   report.durationMs = Date.now() - started;
   writeDiagnosticsReport_(report);
+  saveDiagnosticsSummary_(report);
   if (report.warnings.length) emailDiagnostics_(report);
   Logger.log(renderDiagnosticsText_(report));
   return report;
@@ -6633,7 +6645,8 @@ function diagSheets_(report, warn, info) {
   }
   // Avatars stored inline in Players are read on nearly every request
   var big = sheetToObjects(SHEET_NAMES.PLAYERS).filter(function(p) { return p.avatar && String(p.avatar).length > 45000; });
-  if (big.length) warn(big.length + ' player avatar(s) are near the 50,000-character cell limit: ' + big.map(function(p) { return p.teamName; }).join(', '));
+  if (big.length) warn(big.length + ' player avatar(s) are near the 50,000-character cell limit: ' + big.map(function(p) { return p.teamName; }).join(', '),
+    big.length + ' player avatar(s) are near the 50,000-character cell limit.');
 }
 
 // Times each read feature the way a real request would run it (fresh request cache).
@@ -6711,7 +6724,8 @@ function diagIntegrity_(report, warn, info) {
     return isTrue(p.active) && String(p.pin).trim() === '1234';
   });
   report.integrity.push({ check: 'Active players still on default PIN 1234', count: defaultPin.length });
-  if (defaultPin.length) warn(defaultPin.length + ' active player(s) still use the default PIN 1234 (anyone can log in as them): ' + defaultPin.map(function(p) { return p.teamName; }).join(', '));
+  if (defaultPin.length) warn(defaultPin.length + ' active player(s) still use the default PIN 1234 (anyone can log in as them): ' + defaultPin.map(function(p) { return p.teamName; }).join(', '),
+    defaultPin.length + ' active player(s) still use the default PIN 1234.');
 
   // current week board health
   var board = games.filter(function(g) { return Number(g.week) === week && g.source !== 'external'; });
@@ -6740,7 +6754,9 @@ function diagPerfLog_(report, warn, info) {
   // players' own failed saves (reported from their phones) -- always surfaced
   var clientFails = rows.filter(function(r) { return r[5] === 'client' && new Date(r[0]).getTime() >= Date.now() - 86400000; });
   if (clientFails.length) warn(clientFails.length + ' failure(s) reported from players\' phones in the last 24h: ' +
-    clientFails.slice(0, 5).map(function(r) { var n = {}; try { n = JSON.parse(r[6] || '{}'); } catch (e) {} return (n.team || '?') + ' ' + r[1] + ' "' + r[4] + '"'; }).join('; '));
+    clientFails.slice(0, 5).map(function(r) { var n = {}; try { n = JSON.parse(r[6] || '{}'); } catch (e) {} return (n.team || '?') + ' ' + r[1] + ' "' + r[4] + '"'; }).join('; '),
+    clientFails.length + ' failure(s) reported from players\' phones in the last 24h: ' +
+    clientFails.slice(0, 5).map(function(r) { return r[1] + ' "' + r[4] + '"'; }).join('; '));
   var since = Date.now() - 7 * 86400000;
   var byAction = {};
   rows.forEach(function(r) {
@@ -6812,6 +6828,27 @@ function writeDiagnosticsReport_(r) {
   }
   var t = function(name) { var x = r.timings.filter(function(tt) { return tt.name === name; })[0]; return x ? x.ms : ''; };
   hist.appendRow([r.generatedAt, r.codeVersion, r.warnings.length, t('getState (cache warm)'), t('getState (cold rebuild)'), t('getStandings'), t('getAllTimeLeaderboard'), t('ESPN scoreboard fetch'), r.warnings.join(' | ').slice(0, 1000)]);
+}
+
+// Name-free copy of the latest report, served by getDiagnosticsSummary so the weekly
+// improvement session can read real timings (the Drive connector can't read cells).
+function saveDiagnosticsSummary_(r) {
+  try {
+    var summary = {
+      generatedAt: r.generatedAt, codeVersion: r.codeVersion, durationMs: r.durationMs,
+      warnings: r.publicWarnings, timings: r.timings, perf: r.perf.slice(0, 25),
+      integrity: r.integrity,
+      sheets: r.sheets.slice(0, 10).map(function(s) { return { name: /^Week \d+$|^[A-Z][A-Za-z]+$/.test(s.name) ? s.name : '(other)', rows: s.rows, allocatedCells: s.allocatedCells }; })
+    };
+    PropertiesService.getScriptProperties().setProperty('lastDiagnosticsSummary', JSON.stringify(summary).slice(0, 8500));
+  } catch (e) { Logger.log('Diagnostics summary save failed: ' + e.message); }
+}
+
+function apiGetDiagnosticsSummary() {
+  var raw = PropertiesService.getScriptProperties().getProperty('lastDiagnosticsSummary');
+  if (!raw) return { ok: true, summary: null };
+  try { return { ok: true, summary: JSON.parse(raw) }; }
+  catch (e) { return { ok: true, summary: null, note: 'summary was truncated; see DiagnosticsReport tab' }; }
 }
 
 function emailDiagnostics_(r) {

@@ -546,6 +546,27 @@ test('client-side failures are recorded in PerfLog and surfaced by diagnostics',
   ok(rep.warnings.some(w => /phones/.test(w) && /TEAM2/.test(w)), JSON.stringify(rep.warnings));
 });
 
+test('getDiagnosticsSummary serves the latest report with NO player names', () => {
+  const env = loadBackend(); seedLeague(env);
+  const pl = env.ss.getSheetByName('Players'); const h = pl._data[0];
+  pl._data.slice(1).forEach(row => { row[h.indexOf('pin')] = '1234'; }); // trigger the PIN warning
+  env.ctx.runDiagnostics();
+  const r = env.call('getDiagnosticsSummary');
+  ok(r.ok && r.summary, 'summary present');
+  ok(r.summary.timings.length >= 7);
+  const text = JSON.stringify(r.summary);
+  ok(/default PIN 1234/.test(text), 'PIN warning kept as a count');
+  ok(!/TEAM2|TEAM3|VOLZ/.test(text), 'no team names leak: ' + text.slice(0, 300));
+});
+
+test('requests with no action are answered without touching the sheet or PerfLog', () => {
+  const env = loadBackend(); seedLeague(env);
+  const before = (env.ss.getSheetByName('PerfLog') || { _data: [] })._data.length;
+  const r = JSON.parse(env.ctx.handle({ parameter: {} })._s);
+  eq(r.ok, false); ok(r._version);
+  eq((env.ss.getSheetByName('PerfLog') || { _data: [] })._data.length, before);
+});
+
 test('requests no longer write a DebugLog row each', () => {
   const env = loadBackend(); seedLeague(env);
   for (let i = 0; i < 5; i++) env.call('getStandings');
