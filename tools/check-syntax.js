@@ -26,8 +26,9 @@ while ((m = re.exec(html))) {
   check('index.html <script #' + n + ' @ line ' + line + '>', m[1]);
 }
 
-const gs = path.join(root, 'backend', 'Code.gs');
-if (fs.existsSync(gs)) check('backend/Code.gs', fs.readFileSync(gs, 'utf8'));
+const backend = path.join(root, 'backend');
+const gsFiles = fs.existsSync(backend) ? fs.readdirSync(backend).filter(f => f.endsWith('.gs')) : [];
+gsFiles.forEach(f => check('backend/' + f, fs.readFileSync(path.join(backend, f), 'utf8')));
 
 if (failed) process.exit(1);
-console.log('OK — ' + n + ' inline scripts + Code.gs parse cleanly');
+console.log('OK — ' + n + ' inline scripts + ' + gsFiles.join(', ') + ' parse cleanly');

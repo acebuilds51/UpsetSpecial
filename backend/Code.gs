@@ -5028,7 +5028,14 @@ function apiAdminArchiveSeasonTrophies(payload) {
 // after each week's results are fetched. Idempotent — skips weeks already archived.
 function apiAdminArchivePerfectWeeks(payload) {
   requireAdmin(payload);
-  var targetWeek = payload.week ? Number(payload.week) : null; // null = all weeks
+  return archivePerfectWeeks_(payload.week ? Number(payload.week) : null);
+}
+
+// The ONE place perfect weeks are decided and recorded (against the spread, same
+// rule as the standings). Called by the admin button, by Fetch Results, and by the
+// Notifications.gs week-final job. Idempotent -- skips anything already archived.
+function archivePerfectWeeks_(targetWeek) { // null = all weeks
+  targetWeek = targetWeek ? Number(targetWeek) : null;
   var season = getSeasonConfig();
   var currentYear = Number(season.year || new Date().getFullYear());
 
@@ -5142,7 +5149,7 @@ function apiAdminFetchResults(payload) {
   // Auto-archive perfect weeks for this week now that results are in.
   // (Previously passed playerId/isAdmin, but requireAdmin checks adminId -- so this
   // threw every time and the empty catch hid it: perfect weeks never auto-archived.)
-  try { apiAdminArchivePerfectWeeks({ adminId: payload.adminId, week: week }); } catch(e) { Logger.log('Perfect week auto-archive failed: ' + e.message); }
+  try { archivePerfectWeeks_(week); } catch(e) { Logger.log('Perfect week auto-archive failed: ' + e.message); }
   return { ok: true, updates };
 }
 
@@ -6537,6 +6544,14 @@ function diagTriggers_(report, warn, info) {
   if (handlers.indexOf('keepWarm') < 0) warn('keepWarm trigger is NOT installed -- the state cache is cold for most users. Run installKeepWarmTrigger().');
   if (handlers.indexOf('weeklyMondaySnapshot') < 0) warn('Weekly line snapshot trigger is NOT installed -- opening lines won\'t be frozen automatically. Run installWeeklyTrigger().');
   if (handlers.indexOf('autoBackfillMissingLines') < 0) warn('Missing-lines ESPN check is NOT installed -- games that get a line mid-week never become pickable. Run installAutoBackfillTrigger().');
+  try {
+    // An early "season finalized" flag blocks the real end-of-season archive (see
+    // autoFinalizeSeasonIfComplete in Notifications.gs, fixed Sep 2026).
+    var yr = Number(getSeasonConfig().year || new Date().getFullYear());
+    var fin = PropertiesService.getScriptProperties().getProperty('season_finalized_' + yr);
+    var mo = new Date().getMonth() + 1;
+    if (fin && mo >= 8) warn('Season ' + yr + ' is marked finalized (' + fin + ') while the season is still in progress. Delete Script Property season_finalized_' + yr + ' so the real January archive runs; CareerHistory ' + yr + ' rows are partial until then.');
+  } catch (e) {}
   try {
     var bf = JSON.parse(PropertiesService.getScriptProperties().getProperty('lastLineBackfill') || 'null');
     if (bf) {

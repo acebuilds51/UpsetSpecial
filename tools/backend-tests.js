@@ -67,6 +67,8 @@ function makeCache() {
   };
 }
 const counters = { appendRow: 0, deleteRow: 0, deleteRows: 0, fetch: 0, fetchAll: 0, mails: 0 };
+const sentRequests = []; // every request passed to UrlFetchApp.fetchAll (pushes included)
+const pushes = () => sentRequests.filter(r => String(r.url).indexOf('fcm.googleapis.com') >= 0).map(r => JSON.parse(r.payload).message);
 
 // ESPN fake: events keyed by date; tests mutate espnEvents
 let espnEvents = [];
@@ -92,6 +94,8 @@ function loadBackend() {
   const ss = makeSpreadsheet();
   const cache = makeCache();
   const props = {};
+  const triggers = [];
+  sentRequests.length = 0;
   const ctx = {
     console,
     SpreadsheetApp: { getActiveSpreadsheet: () => ss },
@@ -105,17 +109,30 @@ function loadBackend() {
     Session: { getScriptTimeZone: () => 'America/New_York', getEffectiveUser: () => ({ getEmail: () => 'owner@example.com' }) },
     UrlFetchApp: {
       fetch: () => { counters.fetch++; return espnResponse(); },
-      fetchAll: reqs => { counters.fetchAll++; return reqs.map(() => espnResponse()); }
+      fetchAll: reqs => { counters.fetchAll++; sentRequests.push(...reqs); return reqs.map(() => espnResponse()); }
     },
     MailApp: { sendEmail: () => { counters.mails++; }, getRemainingDailyQuota: () => 100 },
-    ScriptApp: { getProjectTriggers: () => [], newTrigger: () => ({ timeBased: () => ({ everyDays: () => ({ atHour: () => ({ create: () => {} }) }), everyMinutes: () => ({ create: () => {} }) }) }), deleteTrigger: () => {} },
+    ScriptApp: (() => {
+      const chain = { create() { triggers.push({ getHandlerFunction: () => chain._fn }); return chain; } };
+      ['timeBased', 'everyDays', 'atHour', 'everyMinutes', 'everyHours', 'onWeekDay', 'at'].forEach(m => { chain[m] = () => chain; });
+      return {
+        WeekDay: { MONDAY: 'MONDAY', SUNDAY: 'SUNDAY' },
+        getProjectTriggers: () => triggers.slice(),
+        newTrigger: fn => { chain._fn = fn; return chain; },
+        deleteTrigger: t => { const i = triggers.indexOf(t); if (i >= 0) triggers.splice(i, 1); }
+      };
+    })(),
     Logger: { log: () => {} },
     ContentService: { createTextOutput: s => ({ _s: s, setMimeType() { return this; } }), MimeType: { JSON: 'json' } }
   };
   vm.createContext(ctx);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'backend', 'Code.gs'), 'utf8'), ctx, { filename: 'Code.gs' });
+  // Apps Script shares one global scope across every file in the project -- load them all
+  const dir = path.join(__dirname, '..', 'backend');
+  ['Code.gs'].concat(fs.readdirSync(dir).filter(f => f.endsWith('.gs') && f !== 'Code.gs').sort()).forEach(f => {
+    vm.runInContext(fs.readFileSync(path.join(dir, f), 'utf8'), ctx, { filename: f });
+  });
   const call = (action, payload = {}) => JSON.parse(ctx.handle({ parameter: {}, postData: { contents: JSON.stringify(Object.assign({ action }, payload)) } })._s);
-  return { ctx, ss, cache, props, call };
+  return { ctx, ss, cache, props, call, triggers };
 }
 
 // ---------------------------------------------------------------- tiny test runner
@@ -359,6 +376,113 @@ test('re-running the snapshot never overwrites a frozen line, only adds new game
   eq(e100[0].spread, 14, 'frozen spread untouched');
   eq(e100[0].favorite, 'Fav U', 'frozen favorite untouched');
   ok(snap.some(r => String(r.espnEventId) === 'E200'), 'new game captured');
+});
+
+// ---------------------------------------------------------------- Notifications.gs
+function enablePush(env) {
+  const pl = env.ss.getSheetByName('Players');
+  const hdr = pl._data[0];
+  pl._data.slice(1).forEach((row, i) => { row[hdr.indexOf('fcmToken')] = 'tok' + i + 'a,tok' + i + 'b'; });
+  env.props.FCM_SERVICE_ACCOUNT_JSON = JSON.stringify({ project_id: 'proj' });
+  env.cache.put('fcm_access_token', 'at');
+}
+// home (favorite, -3) wins by `margin`; E100 external upset: Dog U beats Fav U
+function finishWeek(env, kickoff, margin) {
+  espnEvents = [];
+  for (let i = 1; i <= 10; i++) espnEvents.push(mkEvent('E' + i, 'Away' + i, 'Home' + i, { date: kickoff, final: true, homeScore: 20 + margin, awayScore: 20 }));
+  espnEvents.push(mkEvent('E100', 'Dog U', 'Fav U', { date: kickoff, final: true, homeScore: 10, awayScore: 24 }));
+  const r = env.call('adminFetchResults', { adminId: 'p1', week: 1 });
+  ok(r.ok, r.error);
+}
+
+test('week-final job scores straight picks AGAINST THE SPREAD and counts external Upset Specials', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env); enablePush(env);
+  env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U' }));
+  finishWeek(env, kickoff, 2); // favorites win by 2 but the spread is 3 -> underdogs cover
+  env.ctx._sheetDataCache = {};
+  env.ctx.checkGameFinalNotifications();
+  const uh = rowsOf(env, 'UpsetHistory').find(r => r.teamName === 'TEAM2');
+  eq(uh.correctCount, 0, 'picked all favorites, none covered');
+  eq(uh.hit, true, 'external Upset Special counted');
+  eq(uh.upsetPts, 14); eq(uh.weekPts, 14);
+  const st = env.call('getStandings').standings.find(s => s.playerId === 'p2');
+  eq(st.points, uh.weekPts, 'UpsetHistory must match the standings');
+  const finals = pushes().filter(m => /Final/.test(m.notification.title));
+  eq(finals.length, 10 * 3 * 2, '10 games x 3 players x 2 devices, each token separately');
+  ok(/Away1 covered — 0\/1 players correct/.test(finals[0].notification.body), finals[0].notification.body);
+});
+
+test('week-final job notifies each game once and does nothing when nothing is new', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env); enablePush(env);
+  finishWeek(env, kickoff, 10);
+  env.ctx._sheetDataCache = {};
+  env.ctx.checkGameFinalNotifications();
+  const n = pushes().length;
+  ok(n > 0);
+  env.ctx._sheetDataCache = {};
+  env.ctx.checkGameFinalNotifications();
+  eq(pushes().length, n, 'second run sends nothing');
+});
+
+test('perfect weeks are recorded exactly once (Fetch Results + week-final job)', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' }));
+  finishWeek(env, kickoff, 10); // favorites cover -> p2 perfect
+  env.ctx._sheetDataCache = {};
+  env.ctx.checkGameFinalNotifications();
+  eq(rowsOf(env, 'PerfectWeeks').filter(r => r.playerId === 'p2').length, 1);
+  eq(rowsOf(env, 'UpsetHistory').find(r => r.teamName === 'TEAM2').isPerfect, true);
+});
+
+test('season archive writes exactly the standings totals to CareerHistory', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U' }));
+  finishWeek(env, kickoff, 10);
+  env.ctx._sheetDataCache = {};
+  env.ctx.updateCareerHistoryForSeason(2026);
+  const ch = rowsOf(env, 'CareerHistory').filter(r => r.year === 2026);
+  const st = env.call('getStandings').standings;
+  eq(ch.find(r => r.playerId === 'p2').points, st.find(s => s.playerId === 'p2').points);
+  eq(ch.find(r => r.playerId === 'p2').points, 10 + 14);
+});
+
+test('season is never auto-finalized during the season (Sep-Dec)', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  finishWeek(env, kickoff, 10);
+  env.ctx._sheetDataCache = {};
+  const realDate = env.ctx.Date;
+  env.ctx.autoFinalizeSeasonIfComplete(); // test runs "today" -- guard only matters Aug-Jan 19
+  const month = new Date().getMonth() + 1;
+  if (month >= 8 || (month === 1 && new Date().getDate() < 20)) eq(env.props['season_finalized_2026'], undefined);
+});
+
+test('repairThisSeasonHistory rebuilds weeks and flags (not deletes) bad perfect weeks', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' }));
+  finishWeek(env, kickoff, 2); // favorites don't cover -> p2 NOT perfect ATS
+  const pw = env.ss.getSheetByName('PerfectWeeks'); // simulate a v1 (outright-winner) row
+  pw.appendRow(['p2', 'TEAM2', 1, 2026, 10]);
+  env.ctx._sheetDataCache = {};
+  env.ctx.repairThisSeasonHistory();
+  eq(rowsOf(env, 'UpsetHistory').find(r => r.teamName === 'TEAM2').correctCount, 0);
+  eq(rowsOf(env, 'PerfectWeeks').length, 1, 'suspect row is listed, never deleted');
+});
+
+test('retired checkPickReminders removes its own trigger instead of sending', () => {
+  const env = loadBackend(); seedLeague(env); enablePush(env);
+  env.ctx.ScriptApp.newTrigger('checkPickReminders').timeBased().everyMinutes(15).create();
+  const before = pushes().length;
+  env.ctx.checkPickReminders();
+  eq(env.triggers.filter(t => t.getHandlerFunction() === 'checkPickReminders').length, 0);
+  eq(pushes().length, before);
+});
+
+test('only ONE apiRegisterFcmToken / apiGetCareerHistory exists across backend files', () => {
+  const dir = path.join(__dirname, '..', 'backend');
+  const all = fs.readdirSync(dir).filter(f => f.endsWith('.gs')).map(f => fs.readFileSync(path.join(dir, f), 'utf8')).join('\n');
+  const names = [...all.matchAll(/^function\s+([A-Za-z0-9_$]+)\s*\(/gm)].map(m => m[1]);
+  const dupes = names.filter((n, i) => names.indexOf(n) !== i);
+  eq([...new Set(dupes)], [], 'duplicate top-level functions across files silently override each other');
 });
 
 test('runDiagnostics completes and writes a report', () => {

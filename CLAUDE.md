@@ -5,10 +5,14 @@ College football pick'em PWA. Two parts with **two completely separate deploy pa
 | Part | File | How it goes live |
 |---|---|---|
 | Frontend | `index.html` (single file, no build) | Commit + push to `main` (GitHub Desktop) → GitHub Pages serves it immediately |
-| Backend | `backend/Code.gs` (Google Apps Script bound to the league Google Sheet) | **Not deployed by git.** Paste into the Apps Script editor, save, then Deploy → Manage deployments → Edit (pencil) → Version: *New version* → Deploy. No clasp. |
+| Backend | `backend/Code.gs` + `backend/Notifications.gs` (Google Apps Script bound to the league Google Sheet) | **Not deployed by git.** Paste each file into the same-named file in the Apps Script editor, save, then Deploy → Manage deployments → Edit (pencil) → Version: *New version* → Deploy. No clasp. |
 
-Editing `backend/Code.gs` locally does nothing to the live app until it is pasted and redeployed.
-`backend/Code.gs` in this repo is a mirror of what is in the Apps Script editor — keep them in sync.
+Editing `backend/*.gs` locally does nothing to the live app until it is pasted and redeployed.
+The `.gs` files here mirror the Apps Script project — keep them in sync. All files share ONE global
+namespace: a function name defined in two files silently overrides (a test fails on duplicates).
+The Apps Script project also holds one-time migration/test files that are deliberately NOT in this
+public repo (they contain player names / Drive IDs). Never put credentials in `.gs` files — use
+Script Properties (e.g. `FCM_SERVICE_ACCOUNT_JSON`).
 Verify a backend deploy took effect: every API response carries `_version` (= `CODE_VERSION` in Code.gs); bump it on each backend change.
 
 ## Checks (run before every deploy; CI runs them on push)
