@@ -210,6 +210,9 @@ function updateUpsetHistoryForWeek(week) {
   var out = keep.concat(batchRows).map(function(r) { r = r.slice(0, width); while (r.length < width) r.push(''); return r; });
   uh.getRange(1, 1, Math.max(data.length, out.length), width).clearContent();
   uh.getRange(1, 1, out.length, width).setValues(out);
+  // flush first: the Trophy Room caches a summary of this tab for hours, and a visit
+  // between the bust and the end of this run would otherwise re-cache the old rows
+  SpreadsheetApp.flush();
   invalidateSheetCache('UpsetHistory');
   Logger.log('UpsetHistory updated for ' + year + ' Week ' + week + ': ' + batchRows.length + ' players');
 }

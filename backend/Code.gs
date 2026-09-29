@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v13-admin-week-sep29';
+var CODE_VERSION = 'v14-trophy-fast-sep29';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -378,6 +378,7 @@ var PICKS_BUNDLE_SHEETS = { Picks: 1, Ledger: 1, BowlPicks: 1 };
 function invalidateSheetCache(sheetName) {
   delete _sheetDataCache[sheetName];
   if (PICKS_BUNDLE_SHEETS[sheetName]) invalidatePicksBundle_();
+  if (sheetName === SHEET_NAMES.UPSET_HISTORY) invalidateUpsetHistoryIndex_();
 }
 
 // Reads the sheet's LIVE header row rather than trusting the hardcoded HEADERS
@@ -1635,17 +1636,23 @@ function hasLiveGamesThisWeek_(shared) {
 // guarded by the script lock. The lock (tryLock(0) = skip if busy, never wait) fixes
 // a race where two simultaneous callers both passed the 4-minute check and BOTH
 // inserted the same auto-default picks (duplicate picks inflate scores). The
-// primary caller is now the keepWarm trigger, so real users rarely pay for this.
-// Returns true if a fetch ran.
-function maybeAutoFetchScores_(shared) {
+// primary caller is the keepWarm trigger (every 5 min, minAgeMs = 4 min, so every
+// run fetches). Players' getState passes USER_SCORE_FETCH_MIN_AGE_MS: with the same
+// 4 min, anyone opening the app in the last minute before each keepWarm run paid
+// for the whole ESPN fetch + writes + state rebuild -- ~20% of game-time app loads.
+// Now they only do it if keepWarm has actually missed a run. Returns true if a fetch ran.
+var AUTO_SCORE_FETCH_MIN_AGE_MS = 4 * 60 * 1000;
+var USER_SCORE_FETCH_MIN_AGE_MS = 7 * 60 * 1000;
+function maybeAutoFetchScores_(shared, minAgeMs) {
+  minAgeMs = minAgeMs || AUTO_SCORE_FETCH_MIN_AGE_MS;
   if (!hasLiveGamesThisWeek_(shared)) return false;
   var props = PropertiesService.getScriptProperties();
-  if (Date.now() - Number(props.getProperty('lastAutoScoreFetch') || 0) <= 4 * 60 * 1000) return false;
+  if (Date.now() - Number(props.getProperty('lastAutoScoreFetch') || 0) <= minAgeMs) return false;
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(0)) return false;
   try {
     // re-check inside the lock -- another execution may have just finished a fetch
-    if (Date.now() - Number(props.getProperty('lastAutoScoreFetch') || 0) <= 4 * 60 * 1000) return false;
+    if (Date.now() - Number(props.getProperty('lastAutoScoreFetch') || 0) <= minAgeMs) return false;
     props.setProperty('lastAutoScoreFetch', String(Date.now()));
     autoFetchScoresForWeek(Number(getSeasonConfig().currentWeek || 1));
     return true;
@@ -1657,23 +1664,24 @@ function maybeAutoFetchScores_(shared) {
   }
 }
 
-function apiGetState(payload) {
-  var cache = CacheService.getScriptCache();
-  var shared = null;
-
+// The cached shared state, rebuilt from the sheets on a miss. Also used by endpoints
+// that only need players/season/games (e.g. the Trophy Room) so they don't re-read
+// those sheets. Returns a fresh object each call (safe to add fields to).
+function getSharedState_() {
   try {
-    var cached = cacheGetChunked_(cache, STATE_CACHE_KEY);
-    if (cached) { shared = JSON.parse(cached); perfNote_('stateCache', 'hit'); }
+    var cached = cacheGetChunked_(CacheService.getScriptCache(), STATE_CACHE_KEY);
+    if (cached) { perfNote_('stateCache', 'hit'); return JSON.parse(cached); }
   } catch(e) { /* cache miss — fall through to full read */ }
+  perfNote_('stateCache', 'miss');
+  return rebuildStateCache_();
+}
 
-  if (!shared) {
-    perfNote_('stateCache', 'miss');
-    shared = rebuildStateCache_();
-  }
+function apiGetState(payload) {
+  var shared = getSharedState_();
 
-  // Fallback only -- keepWarm normally does this every 5 min. If live games are in
-  // progress and nobody has fetched scores in 4+ min, do it now (skipped if busy).
-  if (maybeAutoFetchScores_(shared)) {
+  // Fallback only -- keepWarm fetches every 5 min. If live games are in progress and
+  // keepWarm has missed a run (no fetch in 7+ min), do it now (skipped if busy).
+  if (maybeAutoFetchScores_(shared, USER_SCORE_FETCH_MIN_AGE_MS)) {
     invalidateStateCache();
     shared = rebuildStateCache_();
   }
@@ -1702,8 +1710,13 @@ function apiGetState(payload) {
 // manual edits once installSheetChangeTrigger has run), and it expires after 10 min
 // as a safety net for raw writes that bypass the helpers. A generation counter stops
 // a slow build from caching data it read before a concurrent write.
+// When manual edits are watched, the 10-min expiry made keepWarm (every 5 min)
+// re-read the whole Picks tab -- the biggest sheet -- on every other run even with
+// nothing changed. Then it lives as long as the state cache and keepWarm refreshes
+// both on the same 15-min safety-net schedule (STATE_MAX_AGE_WATCHED_MS).
 var PICKS_BUNDLE_KEY = 'picksBundle_v1';
 var PICKS_BUNDLE_TTL = 600;
+var PICKS_BUNDLE_TTL_WATCHED = 1500;
 
 var _picksDirty = false; // this execution wrote to Picks/Ledger/BowlPicks (see releaseLock_ / handle)
 function invalidatePicksBundle_() {
@@ -1733,7 +1746,9 @@ function getPicksBundle_(currentWeek) {
     bowlPicks: sheetToObjects(SHEET_NAMES.BOWL_PICKS).map(withoutRow_)
   };
   try {
-    if ((cache.get('picksBundleGen') || '0') === genBefore) cachePutChunked_(cache, PICKS_BUNDLE_KEY, JSON.stringify(bundle), PICKS_BUNDLE_TTL);
+    if ((cache.get('picksBundleGen') || '0') === genBefore) {
+      cachePutChunked_(cache, PICKS_BUNDLE_KEY, JSON.stringify(bundle), sheetChangeWatched_() ? PICKS_BUNDLE_TTL_WATCHED : PICKS_BUNDLE_TTL);
+    }
   } catch (e) { Logger.log('picks cache write: ' + e.message); }
   return bundle;
 }
@@ -1798,7 +1813,7 @@ function invalidateStateCache() {
 }
 
 function invalidateTrophyCache(playerId) {
-  try { CacheService.getScriptCache().remove('trophy_v3_' + playerId); } catch(e) {}
+  try { CacheService.getScriptCache().remove('trophy_v4_' + playerId); } catch(e) {}
 }
 
 
@@ -3325,12 +3340,77 @@ function apiAdminRecordBowlWinners(payload) {
   return { ok: true, winners: top3.map(function(r) { return { position: r[4], teamName: r[2], points: r[5] }; }) };
 }
 
+// ---- UpsetHistory index (Trophy Room) ----------------------------------------
+// UpsetHistory is the biggest history tab (5k+ rows) and the Trophy Room used to read
+// all of it on every visit to count one player's upsets. It only changes when a week
+// is wrapped up, so it is summarised once per team name and cached:
+//   { NORM: { a: attempts, h: hits, p: upsetPts, b: biggest hit {team, spread, year,
+//     week, pts, i: row order}, w: { year: [weeks with a row] } } }
+// Busted by invalidateSheetCache('UpsetHistory') (the week wrap-up) and onSheetChange.
+var UPSET_INDEX_KEY = 'upsetIndex_v1';
+function trophyNorm_(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g,'').trim(); }
+
+function getUpsetHistoryIndex_() {
+  var cache = CacheService.getScriptCache();
+  try {
+    var cached = cacheGetChunked_(cache, UPSET_INDEX_KEY);
+    if (cached) return JSON.parse(cached);
+  } catch (e) {}
+  var genBefore = cache.get('upsetIndexGen') || '0';
+  var idx = {};
+  sheetToObjects(SHEET_NAMES.UPSET_HISTORY).forEach(function(r, i) {
+    var n = trophyNorm_(r.teamName);
+    var e = idx[n] || (idx[n] = { a: 0, h: 0, p: 0, b: null, w: {} });
+    var yr = Number(r.year);
+    (e.w[yr] = e.w[yr] || []).push(Number(r.week));
+    if (r.attempted === true || r.attempted === 'TRUE') e.a++;
+    e.p += Number(r.upsetPts) || 0;
+    if (r.hit === true || r.hit === 'TRUE') {
+      e.h++;
+      var pts = Number(r.upsetPts);
+      if (!e.b || pts > e.b.pts) e.b = { team: r.upsetPick, spread: Number(r.spread), year: yr, week: Number(r.week), pts: pts, i: i };
+    }
+  });
+  try {
+    if ((cache.get('upsetIndexGen') || '0') === genBefore) {
+      cachePutChunked_(cache, UPSET_INDEX_KEY, JSON.stringify(idx), sheetChangeWatched_() ? 21600 : 360);
+    }
+  } catch (e) {}
+  return idx;
+}
+
+function invalidateUpsetHistoryIndex_() {
+  try {
+    var cache = CacheService.getScriptCache();
+    cache.put('upsetIndexGen', String(Date.now()) + Math.random().toString(36).slice(2, 6), 21600);
+    cache.remove(UPSET_INDEX_KEY + '_n');
+  } catch (e) {}
+}
+
+// Reads one player's avatar without loading every player's photo (the Players tab
+// is mostly base64 avatars): header row + id column + the one cell.
+function readPlayerAvatar_(playerId) {
+  var sheet = getSheet(SHEET_NAMES.PLAYERS);
+  if (!sheet) return '';
+  var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return '';
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var idCol = headers.indexOf('id'), avCol = headers.indexOf('avatar');
+  if (idCol < 0 || avCol < 0) return '';
+  var ids = sheet.getRange(2, idCol + 1, lastRow - 1, 1).getValues();
+  for (var i = 0; i < ids.length; i++) {
+    if (ids[i][0] === playerId) return sheet.getRange(i + 2, avCol + 1).getValue() || '';
+  }
+  return '';
+}
+
 function apiGetTrophyRoom(payload) {
   var targetPlayerId = payload.playerId;
   if (!targetPlayerId) return { ok: false, error: 'Missing playerId.' };
 
   // CacheService cache — 5 min TTL, busted on bio/profile updates
-  var cacheKey = 'trophy_v3_' + targetPlayerId;
+  // (v4: this season's Upset Specials are no longer double-counted)
+  var cacheKey = 'trophy_v4_' + targetPlayerId;
   try {
     var cached = CacheService.getScriptCache().get(cacheKey);
     if (cached) {
@@ -3339,12 +3419,13 @@ function apiGetTrophyRoom(payload) {
     }
   } catch(e) {}
 
-  // Use request-scoped cache for all sheet reads
-  var players = sheetToObjects(SHEET_NAMES.PLAYERS);
-  var player  = players.find(function(p) { return p.id === targetPlayerId; });
+  // Players, season and games come from the cached shared state (the Players tab is
+  // mostly avatars; only this player's is read, below)
+  var shared = getSharedState_();
+  var player  = (shared.players || []).find(function(p) { return p.id === targetPlayerId; });
   if (!player) return { ok: false, error: 'Player not found.' };
 
-  var norm = function(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g,'').trim(); };
+  var norm = trophyNorm_;
 
   // Build myTeamNorms from NameClaims only — no CareerHistory scan needed
   // Current team name + any approved claimed names
@@ -3387,27 +3468,31 @@ function apiGetTrophyRoom(payload) {
   } catch(e) {}
 
   // Upset stats from UpsetHistory — match any teamName this player has ever used
-  var upsetRows = sheetToObjects(SHEET_NAMES.UPSET_HISTORY).filter(function(r) {
-    return myTeamNorms.indexOf(norm(r.teamName)) >= 0;
-  });
-  var upsetAttempts = upsetRows.filter(function(r) { return r.attempted === true || r.attempted === 'TRUE'; }).length;
-  var upsetHits     = upsetRows.filter(function(r) { return r.hit === true || r.hit === 'TRUE'; }).length;
-  var totalUpsetPts = upsetRows.reduce(function(sum, r) { return sum + (Number(r.upsetPts) || 0); }, 0);
-  var biggestUpset  = null;
-  upsetRows.filter(function(r) { return r.hit === true || r.hit === 'TRUE'; })
-    .sort(function(a, b) { return Number(b.upsetPts) - Number(a.upsetPts); })
-    .forEach(function(r, i) { if (i === 0) biggestUpset = { team: r.upsetPick, spread: Number(r.spread), year: Number(r.year), week: Number(r.week) }; });
-
-  // Current season — Picks and Games already in request cache
-  var config = getSeasonConfig();
+  var config = {};
+  (shared.season || []).forEach(function(r) { config[r.key] = r.value; });
   var currentYear = Number(config.year || new Date().getFullYear());
-  var games = sheetToObjects(SHEET_NAMES.GAMES);
-  // Only load this player's picks — no need to scan all players' picks here
-  var allPicks = sheetToObjects(SHEET_NAMES.PICKS);
-  var myPicks  = allPicks.filter(function(p) { return p.playerId === targetPlayerId; });
-  // Free allPicks from memory — we only needed it for myPicks
-  allPicks = null;
-  var myUpsettPicks = myPicks.filter(function(p) { return p.isUpset === true || p.isUpset === 'TRUE'; });
+  var upsetIndex = getUpsetHistoryIndex_();
+  var upsetAttempts = 0, upsetHits = 0, totalUpsetPts = 0, best = null;
+  var weeksInHistory = {}; // this season's weeks already wrapped up into UpsetHistory
+  myTeamNorms.forEach(function(n) {
+    var e = upsetIndex[n];
+    if (!e) return;
+    upsetAttempts += e.a; upsetHits += e.h; totalUpsetPts += e.p;
+    if (e.b && (!best || e.b.pts > best.pts || (e.b.pts === best.pts && e.b.i < best.i))) best = e.b;
+    (e.w[currentYear] || []).forEach(function(wk) { weeksInHistory[wk] = true; });
+  });
+  var biggestUpset = best ? { team: best.team, spread: best.spread, year: best.year, week: best.week } : null;
+
+  // Current season — only weeks NOT yet in UpsetHistory. The week wrap-up
+  // (checkGameFinalNotifications) writes each finished week there, so counting those
+  // weeks' picks again double-counted every Upset Special of this season.
+  // Picks come from the cached picks bundle (not a read of the whole Picks tab).
+  var games = shared.games || [];
+  var packed = getPicksBundle_(currentWeekOf_(shared)).picksCompact;
+  var myPIdx = packed.p.indexOf(String(targetPlayerId));
+  var myUpsettPicks = myPIdx < 0 ? [] : packed.r.filter(function(row) {
+    return row[1] === myPIdx && (row[4] & 1) && !weeksInHistory[row[0]];
+  }).map(function(row) { return { week: row[0], gameId: packed.g[row[2]], pickedTeam: packed.t[row[3]] }; });
   myUpsettPicks.forEach(function(pk) {
     var game = games.find(function(g) { return g.gameId === pk.gameId && (g.isFinal === true || g.isFinal === 'TRUE'); });
     if (!game) return;
@@ -3446,7 +3531,7 @@ function apiGetTrophyRoom(payload) {
 
   var result = {
     ok: true,
-    player: { id: player.id, name: player.name, teamName: player.teamName, avatar: player.avatar || '', joinedSeason: player.joinedSeason || '', memberSince: (computeMemberSinceMap_()[player.id]) || player.joinedSeason || '' },
+    player: { id: player.id, name: player.name, teamName: player.teamName, avatar: player.hasAvatar ? readPlayerAvatar_(player.id) : '', joinedSeason: player.joinedSeason || '', memberSince: player.memberSince || player.joinedSeason || '' },
     trophies: trophies, bowlTrophies: bowlTrophies,
     upsetAttempts: upsetAttempts, upsetHits: upsetHits,
     totalUpsetPts: Math.round(totalUpsetPts * 10) / 10,
@@ -4322,12 +4407,22 @@ function apiAdminReviewNameClaim(payload) {
       var chPlayerIdCol = chHeaders.indexOf('playerId');
       var chTeamNameCol = chHeaders.indexOf('teamName');
       var chMatchedCol = chHeaders.indexOf('matched');
+      // Update in memory, then write each changed column back in ONE setValues
+      // (this used to be 1-2 setValue calls per matching row).
+      var chChanged = false;
       for (var j = 1; j < chData.length; j++) {
         var rowTeam = String(chData[j][chTeamNameCol] || '').trim().toUpperCase();
         if (rowTeam === claimedTeamName) {
-          chSheet.getRange(j + 1, chPlayerIdCol + 1).setValue(claimPlayerId);
-          if (chMatchedCol >= 0) chSheet.getRange(j + 1, chMatchedCol + 1).setValue('YES');
+          chData[j][chPlayerIdCol] = claimPlayerId;
+          if (chMatchedCol >= 0) chData[j][chMatchedCol] = 'YES';
+          chChanged = true;
         }
+      }
+      if (chChanged && chPlayerIdCol >= 0) {
+        [chPlayerIdCol, chMatchedCol].forEach(function(col) {
+          if (col < 0) return;
+          chSheet.getRange(2, col + 1, chData.length - 1, 1).setValues(chData.slice(1).map(function(r) { return [r[col]]; }));
+        });
       }
     }
     invalidateCareerHistoryCache();
@@ -4395,6 +4490,7 @@ function invalidateCareerHistoryCache() {
 // Run this manually from Apps Script editor if trophy room shows stale data
 function clearCareerCache() {
   invalidateCareerHistoryCache();
+  invalidateUpsetHistoryIndex_();
   Logger.log('CareerHistory cache cleared.');
 }
 
@@ -4530,8 +4626,12 @@ function keepWarm() {
     // overnight when nothing had moved. Writes through the app bust the cache
     // themselves; manual edits do too once installSheetChangeTrigger() has run.
     var builtAt = Number(cache.get(STATE_CACHE_KEY + '_builtAt') || 0);
-    var fresh = cachedShared && sheetChangeWatched_() && (Date.now() - builtAt) < STATE_MAX_AGE_WATCHED_MS;
+    var watched = sheetChangeWatched_();
+    var fresh = cachedShared && watched && (Date.now() - builtAt) < STATE_MAX_AGE_WATCHED_MS;
+    // The 15-min safety-net rebuild refreshes the (long-lived) picks cache too, for
+    // raw script writes that bypassed the helpers and never busted it.
     if (fetched) invalidateStateCache();
+    else if (cachedShared && watched && !fresh) invalidatePicksBundle_();
     if (fetched || !fresh) {
       var shared = rebuildStateCache_();
       perfNote_('keepWarm', 'rebuilt');
@@ -4573,6 +4673,7 @@ function installKeepWarmTrigger() {
 // keepWarm can skip rebuilding the state when nothing changed.
 function onSheetChange(e) {
   invalidateCareerHistoryCache(); // also busts the state cache (memberSince comes from it)
+  invalidateUpsetHistoryIndex_();
 }
 
 function installSheetChangeTrigger() {

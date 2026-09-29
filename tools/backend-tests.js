@@ -15,6 +15,7 @@ function makeSheet(name) {
   const lastCol = () => data.reduce((m, row) => { let c = row.length; while (c > 0 && (row[c - 1] === '' || row[c - 1] == null)) c--; return Math.max(m, c); }, 0);
   const cell = (r, c) => (data[r - 1] && data[r - 1][c - 1] !== undefined ? data[r - 1][c - 1] : '');
   const range = (r, c, nr, nc) => ({
+    getValue: () => cell(r, c),
     getValues: () => Array.from({ length: nr }, (_, i) => Array.from({ length: nc }, (_, j) => cell(r + i, c + j))),
     setValues: (vals) => {
       if (vals.length !== nr || vals.some(v => v.length !== nc)) throw new Error('setValues dimension mismatch on ' + name);
@@ -1069,6 +1070,108 @@ test('pick reminders tell a partial saver exactly what is left', () => {
   eq(toPat.length, 1); ok(/3 games and your Upset Special/.test(toPat[0].htmlBody), 'says what is left');
   eq(sentMails.filter(m => m.to === 'sam@example.com').length, 0, 'complete player not reminded');
   ok(/5 minutes before/.test(toPat[0].htmlBody) && !/10 minutes/.test(toPat[0].htmlBody), 'lock time is 5 minutes');
+});
+
+// ---------------------------------------------------------------- 2026-09-29 pass
+function countSheetReads(env) {
+  const orig = env.ctx.sheetToObjects;
+  const c = {};
+  env.ctx.sheetToObjects = function(name) { if (!env.ctx._sheetDataCache[name]) c[name] = (c[name] || 0) + 1; return orig(name); };
+  return c;
+}
+
+test('BUG FIX: Trophy Room counts this season\'s Upset Specials once (not again after the week wrap-up)', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  const pl = env.ss.getSheetByName('Players'); const ph = pl._data[0];
+  pl._data.forEach((row, i) => { if (i && row[ph.indexOf('id')] === 'p2') row[ph.indexOf('avatar')] = 'data:image/png;base64,AAA'; });
+  env.ctx.invalidateStateCache();
+  env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U' }));
+  finishWeek(env, kickoff, 2);
+  const room = () => { env.cache.remove('trophy_v4_p2'); return env.call('getTrophyRoom', { playerId: 'p2' }); };
+  let t = room();
+  ok(t.ok, t.error);
+  eq([t.upsetAttempts, t.upsetHits, t.totalUpsetPts], [1, 1, 14], 'before the wrap-up: counted from picks');
+  eq(t.biggestUpset.spread, 14);
+  eq(t.player.avatar, 'data:image/png;base64,AAA', 'own avatar still returned');
+  eq(t.player.teamName, 'TEAM2');
+  env.ctx._sheetDataCache = {};
+  env.ctx.checkGameFinalNotifications(); // writes week 1 to UpsetHistory
+  t = room();
+  eq([t.upsetAttempts, t.upsetHits, t.totalUpsetPts], [1, 1, 14], 'after the wrap-up: counted once (was 2/2/28)');
+  // older seasons from UpsetHistory still add up, biggest hit wins; other teams ignored
+  const uh = env.ss.getSheetByName('UpsetHistory'); const uhh = uh._data[0];
+  const add = o => uh.appendRow(uhh.map(h => o[h] ?? ''));
+  add({ year: 2019, week: 3, teamName: 'TEAM2', upsetPick: 'Old Dog', spread: 20, attempted: true, hit: true, upsetPts: 20 });
+  add({ year: 2019, week: 4, teamName: 'TEAM2', upsetPick: 'Miss', spread: 5, attempted: true, hit: false, upsetPts: 0 });
+  add({ year: 2019, week: 3, teamName: 'TEAM3', upsetPick: 'Huge', spread: 40, attempted: true, hit: true, upsetPts: 40 });
+  env.ctx.onSheetChange({ changeType: 'EDIT' });
+  t = room();
+  eq([t.upsetAttempts, t.upsetHits, t.totalUpsetPts], [3, 2, 34]);
+  eq(t.biggestUpset, { team: 'Old Dog', spread: 20, year: 2019, week: 3 });
+  // a repeat visit reads neither the whole Picks nor UpsetHistory nor Players tab
+  const reads = countSheetReads(env);
+  env.ctx._sheetDataCache = {};
+  t = room();
+  ok(t.ok); eq([reads.Picks, reads.UpsetHistory, reads.Players], [undefined, undefined, undefined], JSON.stringify(reads));
+});
+
+test('keepWarm keeps the picks cache as long as the state cache when watched; the 15-min rebuild refreshes it', () => {
+  const env = loadBackend(); seedLeague(env);
+  const ttls = {};
+  const putAll = env.cache.putAll;
+  env.cache.putAll = (o, ttl) => { Object.keys(o).forEach(k => { ttls[k.replace(/_(\d+|n)$/, '')] = ttl; }); return putAll(o, ttl); };
+  env.ctx.keepWarm();
+  eq(ttls.picksBundle_v1, 600, 'unwatched: unchanged 10 min');
+  env.ctx.installSheetChangeTrigger();
+  env.ctx.invalidateStateCache();
+  env.ctx.keepWarm();
+  eq(ttls.picksBundle_v1, 1500, 'watched: outlives the 15-min safety net');
+  // a raw script write that bypassed the helpers shows up after the 15-min rebuild
+  const pk = env.ss.getSheetByName('Picks'); const h = pk._data[0];
+  pk.appendRow(h.map(c => ({ week: 1, playerId: 'p3', gameId: 'g2', pickedTeam: 'Home2', isUpset: false })[c] ?? ''));
+  env.ctx.keepWarm();
+  eq(env.call('getState', { compact: 1 }).picksCompact.r.length, 0, 'still cached (fresh)');
+  env.cache.put('appState_v3_builtAt', String(Date.now() - 16 * 60000));
+  env.ctx.keepWarm();
+  eq(env.call('getState', { compact: 1 }).picksCompact.r.length, 1, 'refreshed with the state');
+});
+
+test('live games: players\' getState leaves the score fetch to keepWarm unless keepWarm missed a run', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env, { kickoffOffset: -3600000 });
+  espnEvents = [];
+  for (let i = 1; i <= 10; i++) espnEvents.push(mkEvent('E' + i, 'Away' + i, 'Home' + i, { date: kickoff, homeScore: 7, awayScore: 3 }));
+  const ago = min => String(Date.now() - min * 60000);
+  env.props.lastAutoScoreFetch = ago(4.5);
+  env.call('getState');
+  ok(Number(env.props.lastAutoScoreFetch) < Date.now() - 4 * 60000, 'user did not fetch');
+  env.ctx.keepWarm();
+  ok(Number(env.props.lastAutoScoreFetch) > Date.now() - 60000, 'keepWarm fetched');
+  env.props.lastAutoScoreFetch = ago(8);
+  const s = env.call('getState');
+  ok(Number(env.props.lastAutoScoreFetch) > Date.now() - 60000, 'user fetched after keepWarm missed a run');
+  eq(String(s.games.find(g => g.gameId === 'g1').finalHomeScore), '7', 'and got the fresh scores');
+});
+
+test('approving a name claim links CareerHistory in one write per column, touching only matching rows', () => {
+  const env = loadBackend(); seedLeague(env);
+  const ch = env.ss.getSheetByName('CareerHistory');
+  ch._data.length = 0;
+  ch.appendRow(['playerId', 'name', 'teamName', 'year', 'points', 'matched']);
+  ch.appendRow(['', '', 'Old Team2', 2019, 50, 'NO']);
+  ch.appendRow(['x9', '', 'Someone Else', 2020, 70, 'NO']);
+  ch.appendRow(['', '', 'OLD TEAM2', 2021, 80, 'NO']);
+  const nc = env.ss.getSheetByName('NameClaims'); const nh = nc._data[0];
+  nc.appendRow(nh.map(h => ({ claimId: 'c1', playerId: 'p2', claimedTeamName: 'old team2', status: 'pending' })[h] ?? ''));
+  env.ctx._sheetDataCache = {};
+  let setValueCalls = 0;
+  const getRange = ch.getRange;
+  ch.getRange = (...a) => { const r = getRange(...a); const sv = r.setValue; r.setValue = v => { setValueCalls++; return sv(v); }; return r; };
+  const r = env.call('adminReviewNameClaim', { adminId: 'p1', claimId: 'c1', decision: 'approved' });
+  ok(r.ok, r.error);
+  eq(setValueCalls, 0, 'no per-cell writes');
+  const rows = rowsOf(env, 'CareerHistory');
+  eq(rows.map(x => [x.playerId, x.matched]), [['p2', 'YES'], ['x9', 'NO'], ['p2', 'YES']]);
+  eq(rows.map(x => x.points), [50, 70, 80], 'other columns untouched');
 });
 
 // ---------------------------------------------------------------- report
