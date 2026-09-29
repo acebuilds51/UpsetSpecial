@@ -696,6 +696,24 @@ test('REGRESSION (wk5): ESPN odds using a shorter team code still find the favor
   eq(env.ctx.extractEspnLine(ev2, c2, c2.competitors[0], c2.competitors[1]).favorite, 'Alabama Crimson Tide');
 });
 
+test('compact picks: server packing + the app\'s own unpackPicks() round-trip exactly, and much smaller', () => {
+  const env = loadBackend(); seedLeague(env);
+  env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U' }));
+  env.call('submitPicks', picksPayload('p3', { gameId: 'g1', pickedTeam: 'Away1' }));
+  const full = env.call('getState');
+  const packed = env.call('getState', { compact: 1 });
+  ok(Array.isArray(full.picks) && !full.picksCompact, 'old app versions still get plain picks');
+  ok(packed.picksCompact && !packed.picks, 'new app versions get packed picks');
+  // run the REAL unpackPicks from index.html
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  const src = html.slice(html.indexOf('function unpackPicks('), html.indexOf('function seasonArrToObj('));
+  const ctx = {}; vm.createContext(ctx); vm.runInContext(src, ctx);
+  const round = ctx.unpackPicks(JSON.parse(JSON.stringify(packed)));
+  eq(JSON.parse(JSON.stringify(round)), JSON.parse(JSON.stringify(full.picks)), 'identical after unpacking');
+  eq(ctx.unpackPicks({ picks: [{ week: 1 }] }), [{ week: 1 }], 'an older cached copy with plain picks still loads');
+  ok(JSON.stringify(packed.picksCompact).length < JSON.stringify(full.picks).length / 2, 'at least 2x smaller even on tiny data');
+});
+
 test('requests no longer write a DebugLog row each', () => {
   const env = loadBackend(); seedLeague(env);
   for (let i = 0; i < 5; i++) env.call('getStandings');

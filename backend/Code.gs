@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v8-espn-fav-fix-overload-sep28';
+var CODE_VERSION = 'v9-compact-picks-sep28';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -1650,7 +1650,11 @@ function apiGetState(payload) {
   }
 
   // Picks/ledger/bowlPicks are always read fresh (never cached) — they change constantly
-  shared.picks = slimPicksForClient_(sheetToObjects(SHEET_NAMES.PICKS), currentWeekOf_(shared));
+  var picks = slimPicksForClient_(sheetToObjects(SHEET_NAMES.PICKS), currentWeekOf_(shared));
+  // App versions that ask for it get picks packed ~10x smaller (see compactPicks_).
+  // Older cached app versions still get the plain list until they update.
+  if (payload && payload.compact) shared.picksCompact = compactPicks_(picks);
+  else shared.picks = picks;
   shared.ledger = sheetToObjects(SHEET_NAMES.LEDGER).map(withoutRow_);
   shared.bowlPicks = sheetToObjects(SHEET_NAMES.BOWL_PICKS).map(withoutRow_);
   return Object.assign({ ok: true }, shared);
@@ -1676,6 +1680,32 @@ function slimPicksForClient_(picks, currentWeek) {
     if (Number(p.week) < currentWeek - 1) delete o.submittedAt;
     return o;
   });
+}
+
+// Packs picks for the wire. Picks were ~85% of getState (440KB of 517KB by week 4,
+// +~600 picks a week), and Google's web-app layer started DROPPING replies that big
+// ("No action." errors). Each pick becomes a short row of indexes into shared
+// lists instead of repeating field names and full team names:
+//   { v: 1, p: [playerIds], g: [gameIds], t: [teamNames],
+//     r: [[week, pIdx, gIdx, tIdx, flags(1=isUpset, 2=isAutoDefault), submittedAt?], ...] }
+// Row order is preserved. The app's unpackPicks() rebuilds identical objects.
+function compactPicks_(picks) {
+  var lists = { p: [], g: [], t: [] }, index = { p: {}, g: {}, t: {} };
+  var idx = function(kind, val) {
+    val = val == null ? '' : String(val);
+    if (!(val in index[kind])) { index[kind][val] = lists[kind].length; lists[kind].push(val); }
+    return index[kind][val];
+  };
+  var truthy = function(v) { return v === true || v === 'TRUE' || v === 'true'; };
+  var rows = picks.map(function(pk) {
+    var row = [Number(pk.week), idx('p', pk.playerId), idx('g', pk.gameId), idx('t', pk.pickedTeam),
+      (truthy(pk.isUpset) ? 1 : 0) | (truthy(pk.isAutoDefault) ? 2 : 0)];
+    if (pk.submittedAt !== undefined && pk.submittedAt !== '') {
+      row.push(pk.submittedAt instanceof Date ? pk.submittedAt.toISOString() : pk.submittedAt);
+    }
+    return row;
+  });
+  return { v: 1, p: lists.p, g: lists.g, t: lists.t, r: rows };
 }
 
 // Bust the state cache whenever players, games, or season config changes.

@@ -31,6 +31,7 @@ Verify a backend deploy took effect: every API response carries `_version` (= `C
 - Read-modify-write paths that can race (picks, defaults, slates) take `LockService.getScriptLock()`.
 - The shared getState cache is invalidated by `handle()` after any action NOT in `READ_ONLY_ACTIONS`. New read-only endpoint → add it there.
 - Script writes that bypass `handle()` (time triggers, editor-run fixes) must call `invalidateStateCache()` / `invalidateCareerHistoryCache()` themselves. Once `installSheetChangeTrigger()` has run, keepWarm only rebuilds the state when it was busted or is >15 min old, and CareerHistory is cached 6h.
+- Keep web-app replies small: Google's web-app layer drops large replies (getState at ~440KB came back as `No action.`). getState sends picks packed (`compactPicks_` ↔ `unpackPicks()` in index.html) when the app asks with `compact: 1`; the plain form remains for old cached app versions. Don't add bulky fields to getState.
 - Frontend: all callers share one in-flight `getState` (`refreshState`); background callers pass `{shared:true}`, post-write callers use the default. Don't add new `getState` calls per render.
 
 ## League rules the code must keep

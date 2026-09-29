@@ -711,7 +711,7 @@ async function boot() {
           State.season   = seasonArrToObj(c.season || []);
           State.rotation = c.rotation || [];
           State.games    = c.games    || [];
-          State.picks    = c.picks    || [];
+          State.picks    = unpackPicks(c);
           State.ledger   = c.ledger   || [];
           State.bowlGames    = c.bowlGames    || [];
           State.bowlPicks    = c.bowlPicks    || [];
@@ -853,7 +853,8 @@ async function _doRefreshState() {
   // Always fetch fresh data from server — silent:true so background failures don't toast.
   // (Cached state is loaded once in boot(); it is intentionally NOT re-applied here, since
   // doing so before a failed fetch used to wipe out just-submitted local changes.)
-  const data = await api('getState', {}, true);
+  // compact:1 = picks arrive packed ~10x smaller (Google was dropping the full-size reply)
+  const data = await api('getState', { compact: 1 }, true);
   State._lastRefreshTs = Date.now();
   // One stringify serves both change detection (covers EVERY field, including
   // players/ledger/bowl data the old games+picks-only check missed) and the cache write.
@@ -866,7 +867,7 @@ async function _doRefreshState() {
   State.season = seasonArrToObj(data.season);
   State.rotation = data.rotation || [];
   State.games = data.games || [];
-  State.picks = data.picks || [];
+  State.picks = unpackPicks(data);
   State.ledger = data.ledger || [];
   State.bowlGames = data.bowlGames || [];
   State.bowlPicks = data.bowlPicks || [];
@@ -925,6 +926,20 @@ async function _doRefreshState() {
     }
   }
   return changed;
+}
+
+// Rebuilds the plain picks list from the server's packed form (compactPicks_ in
+// Code.gs). Accepts either shape, so an older cached copy with plain `picks` still works.
+function unpackPicks(d) {
+  if (!d) return [];
+  if (Array.isArray(d.picks)) return d.picks;
+  const c = d.picksCompact;
+  if (!c || !Array.isArray(c.r)) return [];
+  return c.r.map(row => {
+    const pk = { week: row[0], playerId: c.p[row[1]], gameId: c.g[row[2]], pickedTeam: c.t[row[3]], isUpset: !!(row[4] & 1), isAutoDefault: !!(row[4] & 2) };
+    if (row.length > 5) pk.submittedAt = row[5];
+    return pk;
+  });
 }
 
 function seasonArrToObj(arr) {
