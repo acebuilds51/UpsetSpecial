@@ -9,7 +9,7 @@ compatibility_date = "2026-09-01"
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyzaF-6ImTDg7dV39bd09A9AwKLaCNiNoEZaAwI-jt83URUu2yWQcWk2NowlQ6XAApe/exec"
 # Phase 2 kill switch: "1" = answer busy reads from copies, "0" = pass everything through
 # (copies are still collected, so switching on is instant).
-SERVE_COPIES = "0"
+SERVE_COPIES = "1"
 
 # Phase 2 copies. Created with: npx wrangler d1 create upset-special
 # then the tables with:        npx wrangler d1 execute upset-special --remote --file=schema.sql
