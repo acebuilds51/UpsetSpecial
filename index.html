@@ -155,6 +155,26 @@ button:focus-visible, input:focus-visible, select:focus-visible, .team-pick:focu
 #submit-picks-btn.sticky-save{ position:sticky; bottom:var(--nav-h, 90px); z-index:40; box-shadow:0 6px 24px rgba(0,0,0,0.55); }
 body:has(#submit-picks-btn.sticky-save) #global-help-btn{ display:none !important; }
 
+/* "You still have picks to make" banner: pinned under the top bar on every tab until done */
+.picks-due{
+  position:sticky; z-index:45; display:flex; align-items:center; gap:12px;
+  padding:11px 16px; background:var(--upset-grad); color:#1A1206; cursor:pointer;
+  box-shadow:0 6px 18px rgba(255,77,94,0.35); border-bottom:1px solid rgba(0,0,0,0.25);
+}
+/* hazard stripe so it never reads as just another orange card */
+.picks-due::after{ content:''; position:absolute; left:0; right:0; bottom:-6px; height:6px;
+  background:repeating-linear-gradient(-45deg, #1A1206 0 10px, #F2B632 10px 20px); }
+.picks-due .pd-icon{ font-size:24px; line-height:1; flex-shrink:0; }
+.picks-due .pd-text{ flex:1; min-width:0; }
+.picks-due .pd-title{ font-family:var(--font-display); font-size:16px; font-weight:800; letter-spacing:0.02em; text-transform:uppercase; line-height:1.2; }
+.picks-due .pd-sub{ font-size:12px; font-weight:700; opacity:0.85; margin-top:2px; }
+.picks-due .pd-go{ flex-shrink:0; background:#1A1206; color:#FFD27A; font-weight:800; font-size:12px; letter-spacing:0.04em; text-transform:uppercase; border-radius:20px; padding:8px 12px; white-space:nowrap; }
+.picks-due.urgent{ animation: pdPulse 1.8s ease-in-out infinite; }
+.picks-due.critical{ background:#FF4D5E; color:#fff; animation: pdPulse 1s ease-in-out infinite; }
+.picks-due.critical .pd-go{ color:#FF4D5E; background:#fff; }
+@keyframes pdPulse{ 0%,100%{ box-shadow:0 6px 18px rgba(255,77,94,0.35); } 50%{ box-shadow:0 6px 30px rgba(255,77,94,0.95); filter:brightness(1.08); } }
+@media (prefers-reduced-motion: reduce){ .picks-due.urgent, .picks-due.critical{ animation:none; } }
+
 /* ---------- Cards ---------- */
 .card{
   background: var(--surface);
@@ -1358,6 +1378,7 @@ function render() {
     <div style="background:rgba(242,182,50,0.14); border-bottom:1px solid rgba(242,182,50,0.35); color:var(--gold); font-size:13px; font-weight:600; text-align:center; padding:8px 16px; line-height:1.4;">
       Your entry is pending confirmation from Jeff — look around and make your picks, but you won't appear in standings until you're approved.
     </div>` : ''}
+    <div id="picks-due-banner"></div>
     <div class="content" id="content"></div>
     <div class="bottomnav" id="bottomnav"></div>
     <!-- Floating help button -->
@@ -1402,6 +1423,7 @@ function renderBottomNav() {
 
 async function renderContent() {
   const content = document.getElementById('content');
+  if (typeof renderPicksDueBanner === 'function') renderPicksDueBanner();
   // render instantly from cached state -- no spinner, no waiting on every tab switch
   switch (State.view) {
     case 'home': renderHome(content); break;
@@ -1434,6 +1456,7 @@ async function silentRefresh(force) {
       const content = document.getElementById('content');
       if (!content) return;
       if (document.getElementById('bottomnav')) renderBottomNav(); // This Week dot (unsaved / still to pick)
+      renderPicksDueBanner();
       // Don't blow away an in-progress Upset Special search/selection just because
       // something else changed in the background -- re-rendering the slate wipes
       // the search input and results, which reads as the app randomly glitching
@@ -1745,9 +1768,6 @@ function renderHome(content) {
         </div>
         ${upsetPick ? `<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--hairline);">
           <div class="helptext">Upset Special: <strong style="color:var(--gold);">${escapeHtml(upsetPick.pickedTeam)}</strong></div>
-        </div>` : ''}
-        ${posted && myPicks.length > 0 && picksLeft ? `<div style="margin-top:10px; padding:8px 10px; border-radius:8px; background:rgba(242,182,50,0.12); border:1px solid rgba(242,182,50,0.45); font-size:12px; font-weight:700; color:var(--gold);">
-          ⚠️ You still have picks to make: ${escapeHtml(picksLeft)}
         </div>` : ''}
         <button class="btn ${posted && picksLeft ? 'btn-gold' : 'btn-primary'} btn-block" style="margin-top:12px;" id="go-to-slate-btn">
           ${!posted ? 'View This Week' : myPicks.length === 0 ? 'Make My Picks' : picksLeft ? 'Finish My Picks' : 'View My Picks'}
@@ -2728,7 +2748,68 @@ function updateBoardHeader() {
   if (unsaved) storeDraft_(week); else clearStoredDraft_(week);
   const navBtn = document.querySelector('#bottomnav button[data-view="slate"]');
   if (navBtn && navBtn.dataset.badge !== slateNavBadge_()) renderBottomNav();
+  renderPicksDueBanner();
 }
+
+// Banner under the top bar, on every tab, while this week's picks are unsaved or incomplete.
+// Not dismissible on purpose. Gets louder as the next lock gets close: orange, then
+// pulsing under 3h, then solid red under 30 min (and red while changes are unsaved).
+function renderPicksDueBanner() {
+  const el = document.getElementById('picks-due-banner');
+  if (!el) return;
+  let html = '', cls = '';
+  try {
+    const week = currentWeek();
+    if (State.player && State.games && isWeekPosted(week)) {
+      const games = getGamesForWeek(week);
+      const unsaved = hasUnsavedDraft_();
+      const left = savedPicksLeftToMake_(week);
+      const what = describePicksLeft_(left);
+      if (unsaved || what) {
+        // the next deadline that matters: the first open game still missing a pick,
+        // or the Upset Special's lock (5 min before the week's first game)
+        const saved = getMyPicksForWeek(week);
+        const locks = games
+          .filter(g => g.kickoff && !isGamePickLocked(g) && !saved.some(p => p.gameId === g.gameId && !(p.isUpset === true || p.isUpset === 'TRUE')))
+          .map(g => new Date(g.kickoff).getTime() - 5 * 60 * 1000);
+        if (left.upset) {
+          const first = Math.min(...games.filter(g => g.kickoff).map(g => new Date(g.kickoff).getTime()));
+          if (isFinite(first)) locks.push(first - 5 * 60 * 1000);
+        }
+        const next = locks.length ? Math.min(...locks) : null;
+        const ms = next ? next - Date.now() : null;
+        const inText = ms == null ? '' : ms < 3600000 ? Math.max(1, Math.floor(ms / 60000)) + ' min' : Math.floor(ms / 3600000) + 'h ' + Math.floor((ms % 3600000) / 60000) + 'm';
+        const title = unsaved ? 'Your picks aren\'t saved!'
+          : saved.length === 0 ? `You haven't made your Week ${week} picks`
+          : `Still to pick: ${what}`;
+        const sub = unsaved ? 'Tap Save My Picks or you\'ll lose them'
+          : ms != null ? `${ms < 3600000 ? '⏰ ' : ''}Next pick locks in ${inText}` + (left.games && !left.upset ? ' — unpicked games get the favorite' : '')
+          : 'Tap to finish';
+        cls = unsaved || (ms != null && ms < 30 * 60000) ? 'critical' : (ms != null && ms < 3 * 3600000) ? 'urgent' : '';
+        html = `<div class="pd-icon">${unsaved ? '💾' : '🚨'}</div>
+          <div class="pd-text"><div class="pd-title">${escapeHtml(title)}</div><div class="pd-sub">${escapeHtml(sub)}</div></div>
+          <div class="pd-go">${unsaved ? 'Save' : 'Finish'} →</div>`;
+      }
+    }
+  } catch (e) { html = ''; }
+  el.className = html ? 'picks-due ' + cls : '';
+  el.innerHTML = html;
+  if (!html) return;
+  const bar = document.querySelector('.topbar');
+  el.style.top = (bar ? bar.offsetHeight : 0) + 'px';
+  el.onclick = () => {
+    if (State.view !== 'slate') { State.view = 'slate'; renderBottomNav(); renderContent(); }
+    // jump to what needs doing: the save button, the first unpicked game, or the Upset Special
+    setTimeout(() => {
+      const target = document.querySelector('#submit-picks-btn.sticky-save')
+        || [...document.querySelectorAll('.needs-pick-tag')].find(t => t.style.display !== 'none')
+        || document.getElementById('upset-search-area');
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 80);
+  };
+}
+// keep the countdown current without any server calls
+setInterval(() => { if (!document.hidden) renderPicksDueBanner(); }, 30000);
 
 // This Week tab dot: 'unsaved' (red) when there are unsaved changes, 'todo' (gold) when
 // saved picks still leave open games or the Upset Special to pick, else ''.
