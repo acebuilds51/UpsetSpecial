@@ -680,6 +680,22 @@ test('recap checker: catches the real Week 4 mistakes (wrong group, margin, "mos
   ok(!errs.some(e => /Michigan Wolverines covered/.test(e)), 'no false Michigan alarm');
 });
 
+test('REGRESSION (wk5): ESPN odds using a shorter team code still find the favorite ("AF -3.5" vs abbr AFA)', () => {
+  const env = loadBackend();
+  const ev = { id: '401862791', date: '2026-10-03T16:00Z', competitions: [{ odds: [{ details: 'AF -3.5' }], competitors: [
+    { homeAway: 'home', team: { displayName: 'Air Force Falcons', abbreviation: 'AFA' } },
+    { homeAway: 'away', team: { displayName: 'Navy Midshipmen', abbreviation: 'NAVY' } }] }] };
+  const c = ev.competitions[0];
+  const line = env.ctx.extractEspnLine(ev, c, c.competitors[0], c.competitors[1]);
+  eq(line.favorite, 'Air Force Falcons'); eq(line.spread, 3.5);
+  // unchanged behavior for the normal case
+  const ev2 = { id: '2', competitions: [{ odds: [{ details: 'ALA -12.5' }], competitors: [
+    { homeAway: 'home', team: { displayName: 'Alabama Crimson Tide', abbreviation: 'ALA' } },
+    { homeAway: 'away', team: { displayName: 'South Carolina Gamecocks', abbreviation: 'SC' } }] }] };
+  const c2 = ev2.competitions[0];
+  eq(env.ctx.extractEspnLine(ev2, c2, c2.competitors[0], c2.competitors[1]).favorite, 'Alabama Crimson Tide');
+});
+
 test('requests no longer write a DebugLog row each', () => {
   const env = loadBackend(); seedLeague(env);
   for (let i = 0; i < 5; i++) env.call('getStandings');

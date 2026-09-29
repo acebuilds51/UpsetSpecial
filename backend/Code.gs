@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v7-pins-recap-checker-sep27';
+var CODE_VERSION = 'v8-espn-fav-fix-overload-sep28';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -2085,6 +2085,19 @@ function extractEspnLine(ev, comp, home, away) {
       const favNorm = teamAbbrev.toLowerCase().replace(/[^a-z]/g, '');
       if (homeAbbr && favNorm.includes(homeAbbr)) favorite = home.team.displayName;
       else if (awayAbbr && favNorm.includes(awayAbbr)) favorite = away.team.displayName;
+      // ESPN's odds text doesn't always use the team's official abbreviation --
+      // Air Force is "AFA" on the team but "AF -3.5" in the odds -- so when the rule
+      // above finds nothing, try the other way round (abbreviation starts with the
+      // odds code), but only if exactly one team matches; then ESPN's per-team
+      // favorite flags; if still unclear, leave it blank for the admin to set.
+      if (!favorite && favNorm) {
+        const homeHit = !!homeAbbr && homeAbbr.startsWith(favNorm);
+        const awayHit = !!awayAbbr && awayAbbr.startsWith(favNorm);
+        if (homeHit && !awayHit) favorite = home.team.displayName;
+        else if (awayHit && !homeHit) favorite = away.team.displayName;
+      }
+      if (!favorite && odds.homeTeamOdds && odds.homeTeamOdds.favorite === true) favorite = home.team.displayName;
+      if (!favorite && odds.awayTeamOdds && odds.awayTeamOdds.favorite === true) favorite = away.team.displayName;
     }
   }
   return {
@@ -6915,6 +6928,14 @@ function logPerf_(action, ms, result) {
     var failed = !result || result.ok === false;
     var slow = ms >= PERF_SLOW_MS;
     if (!failed && !slow && Math.random() >= PERF_SAMPLE_RATE) return;
+    // When the backend is overloaded nearly every request is "slow", and a sheet
+    // write per request makes the spreadsheet slower still. Record at most one
+    // slow/sample row per 20s; failures are always recorded.
+    if (!failed) {
+      var c = CacheService.getScriptCache();
+      if (c.get('perfLogRecent')) return;
+      c.put('perfLogRecent', '1', 20);
+    }
     var ss = getSS();
     var sheet = ss.getSheetByName('PerfLog');
     if (!sheet) {

@@ -487,13 +487,23 @@ async function api(action, payload, silent) {
         e.transient = true;
         throw e;
       }
-      if (!data.ok) throw new Error(data.error || 'Request failed');
+      if (!data.ok) {
+        const e = new Error(data.error || 'Request failed');
+        // "No action." means Google lost the reply while the server was overloaded:
+        // the request DID run, but its answer never came back, and the redirect
+        // arrived at the server empty. Safe to retry for reads; for writes the user
+        // must refresh to see whether it saved.
+        if (data.error === 'No action.') { e.lostReply = true; e.transient = true; }
+        throw e;
+      }
       return data;
     } catch (err) {
       lastErr = err;
-      // only network/timeout/non-JSON failures are worth retrying, never a real server "ok:false"
-      const transient = err.transient || err.name === 'AbortError' || err.name === 'TypeError';
-      if (!transient || attempt === maxAttempts - 1) break;
+      // Retry only quick transient failures (network error, Google error page, lost
+      // reply). NOT timeouts: a 25s timeout means the server is already backed up,
+      // and retrying just adds another request to the line.
+      const retryable = err.transient || err.name === 'TypeError';
+      if (!retryable || attempt === maxAttempts - 1) break;
     } finally {
       clearTimeout(timer);
     }
@@ -505,8 +515,12 @@ async function api(action, payload, silent) {
   if (err.transient || err.name === 'AbortError' || err.name === 'TypeError') {
     reportClientIssue(action, err.name === 'AbortError' ? 'timed out after ' + (ms / 1000) + 's' : err.message);
   }
+  if (err.lostReply && !RETRYABLE_ACTIONS[action]) {
+    err.message = 'The server was too busy to confirm this. Refresh to check whether it went through before trying again.';
+  }
   if (!silent) {
     if (err.message === 'Server returned non-JSON response') showToast('Server error — try again in a moment', 'error');
+    else if (err.lostReply && RETRYABLE_ACTIONS[action]) showToast('Server is busy — try again in a moment', 'error');
     else showToast(err.name === 'AbortError' ? 'Request timed out — try again' : (err.message || 'Network error'), 'error');
   }
   throw err;
@@ -1393,6 +1407,7 @@ async function silentRefresh(force) {
   try {
     // force = caller needs data from AFTER now (post-write), so don't join an older in-flight request
     const changed = await refreshState(force ? undefined : { shared: true });
+    State._pollFailures = 0;
     if (changed) {
       const content = document.getElementById('content');
       if (!content) return;
@@ -1413,7 +1428,10 @@ async function silentRefresh(force) {
         case 'rules': renderRules(content); break;
       }
     }
-  } catch(e) { /* silent -- cached state stays on screen */ }
+  } catch(e) {
+    // silent -- cached state stays on screen; the poll backs off (see startBackgroundPolling)
+    State._pollFailures = (State._pollFailures || 0) + 1;
+  }
 }
 
 // auto-refresh every 90 seconds to keep scores/countdowns current -- kept
@@ -1426,6 +1444,11 @@ function startBackgroundPolling() {
   window._pollTimer = setInterval(() => {
     // skip ticks while the app is backgrounded -- they burn Apps Script quota and pile up on wake
     if (document.hidden) return;
+    // Back off while the server is struggling: after failed refreshes poll every
+    // 3 min, then 6 min, instead of adding to the pile-up every 90s. Resets on success.
+    window._pollTick = (window._pollTick || 0) + 1;
+    const every = Math.min(4, Math.pow(2, State._pollFailures || 0));
+    if (window._pollTick % every !== 0) return;
     if (State.player && document.getElementById('content')) silentRefresh(true); // bypass the 20s reuse window
   }, 90000);
   if (!window._visibilityHooked) {
