@@ -522,7 +522,9 @@ function removeHighlight(el) {
 }
 
 // ── AI Chat ────────────────────────────────────────────────────────────────────
-var GAS_URL = 'https://script.google.com/macros/s/AKfycbwMmyZ4khaUUe0sZhDyQXNYx3ypQxHdQx1hKdc4f1Fv8PxyH-5tIjTYd5VxUcWpql4_/exec';
+// Same backend as the app (index.html CONFIG.API_URL). This used to point at an old
+// deployment still running pre-August code; one address keeps everything current.
+var GAS_URL = 'https://script.google.com/macros/s/AKfycbyzaF-6ImTDg7dV39bd09A9AwKLaCNiNoEZaAwI-jt83URUu2yWQcWk2NowlQ6XAApe/exec';
 var aiHistory = [];
 
 function openAI() {

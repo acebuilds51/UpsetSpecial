@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v10-picks-cache-postweek-check-sep29';
+var CODE_VERSION = 'v11-get-request-log-sep29';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -124,6 +124,11 @@ function handle(e) {
       action = payload.action || action;
     }
   } catch (err) { /* fall back to query params */ }
+
+  // The app only ever POSTs. Record what GET requests ask for (action + parameter
+  // NAMES only, no values) so getDiagnosticsSummary can show who else is calling --
+  // e.g. an unknown caller hitting doGet every 60s around the clock (Sep 2026).
+  if (!(e.postData && e.postData.contents)) noteGetRequest_(e);
 
   // Requests with no action at all come from bots / link previews / someone opening
   // the URL -- never the app. Answer immediately: no sheet work, no PerfLog row
@@ -7438,10 +7443,25 @@ function saveDiagnosticsSummary_(r) {
 }
 
 function apiGetDiagnosticsSummary() {
+  var getRequests = [];
+  try { getRequests = JSON.parse(CacheService.getScriptCache().get('getReqLog') || '[]'); } catch (e) {}
   var raw = PropertiesService.getScriptProperties().getProperty('lastDiagnosticsSummary');
-  if (!raw) return { ok: true, summary: null };
-  try { return { ok: true, summary: JSON.parse(raw) }; }
-  catch (e) { return { ok: true, summary: null, note: 'summary was truncated; see DiagnosticsReport tab' }; }
+  if (!raw) return { ok: true, summary: null, getRequests: getRequests };
+  try { return { ok: true, summary: JSON.parse(raw), getRequests: getRequests }; }
+  catch (e) { return { ok: true, summary: null, getRequests: getRequests, note: 'summary was truncated; see DiagnosticsReport tab' }; }
+}
+
+// Rolling record (last 40, kept 6h) of GET requests: time, the action asked for, and
+// the NAMES of any other parameters -- never their values.
+function noteGetRequest_(e) {
+  try {
+    var c = CacheService.getScriptCache();
+    var list = JSON.parse(c.get('getReqLog') || '[]');
+    var params = (e && e.parameter) || {};
+    list.push({ at: new Date().toISOString(), action: String(params.action || '').slice(0, 40),
+      params: Object.keys(params).filter(function(k) { return k !== 'action'; }).join(',').slice(0, 80) });
+    c.put('getReqLog', JSON.stringify(list.slice(-40)), 21600);
+  } catch (err) {}
 }
 
 function emailDiagnostics_(r) {

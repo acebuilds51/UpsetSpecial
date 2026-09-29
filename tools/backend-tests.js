@@ -770,6 +770,16 @@ test('picks cache: repeat app loads skip the sheet; submissions and ledger entri
   eq(unpack(env.call('getState', { compact: 1 })).filter(p => p.playerId === 'p3').length, 1);
 });
 
+test('GET requests are recorded (action + parameter names only) in the diagnostics summary', () => {
+  const env = loadBackend(); seedLeague(env);
+  env.ctx.handle({ parameter: {} });
+  env.ctx.handle({ parameter: { action: 'getState', playerId: 'p_secret123' } });
+  const r = env.call('getDiagnosticsSummary');
+  eq(r.getRequests.length, 2);
+  eq(r.getRequests[1].action, 'getState'); eq(r.getRequests[1].params, 'playerId');
+  ok(!JSON.stringify(r.getRequests).includes('p_secret123'), 'parameter values never recorded');
+});
+
 test('requests no longer write a DebugLog row each', () => {
   const env = loadBackend(); seedLeague(env);
   for (let i = 0; i < 5; i++) env.call('getStandings');
