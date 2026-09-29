@@ -40,6 +40,7 @@ Verify a backend deploy took effect: every API response carries `_version` (= `C
 - Games without a frozen line are never listed or accepted as an Upset Special.
 - `autoBackfillMissingLines` re-checks ESPN every 6 hours for games that gained a line.
 - Login-token security is deferred by the owner — don't add it unasked.
+- Only the weekly high score is paid each week (split on ties). There is NO perfect-week (10/10) cash bonus any more; perfect weeks are trophies only. Old `perfect_bonus` ledger rows stay as history.
 
 ## Diagnostics
 `runDiagnostics()` (nightly trigger via `installDiagnosticsTrigger()`) writes the `DiagnosticsReport` and `DiagnosticsHistory` tabs and emails the owner on warnings. `PerfLog` tab = slow/failed requests + 5% sample.
