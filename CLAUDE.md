@@ -15,6 +15,15 @@ public repo (they contain player names / Drive IDs). Never put credentials in `.
 Script Properties (e.g. `FCM_SERVICE_ACCOUNT_JSON`).
 Verify a backend deploy took effect: every API response carries `_version` (= `CODE_VERSION` in Code.gs); bump it on each backend change.
 
+## Cloudflare front door (`worker/`, docs/cloudflare-front-door-plan.md)
+- The app's `CONFIG.API_URL` is the Worker `upset-special-api`. It passes everything to Apps Script (`CONFIG.APPS_SCRIPT_URL`) and retries/hedges PURE reads only. Writes are always sent exactly once.
+- The busy reads (`COPY_RULES`: getState compact, standings, bowl standings, leaderboard, career history, chat, Trophy Room) are answered from D1 copies.
+  - **Stale when:** any write passes through the Worker, or Apps Script sends `frontDoorStale` (`sendFrontDoorStale_`, hooked into `invalidatePicksBundle_`, the chat/Trophy/UpsetHistory cache busts; Script Properties `FRONT_DOOR_URL` / `FRONT_DOOR_SECRET` = Worker secret `SYNC_SECRET`).
+  - **Consequence:** any NEW cache or state in Code.gs that the app reads through a copied action must also call `markFrontDoorStale_()` when it changes.
+- A new read-only action → add it to `PURE_READS` in `worker/src/index.js`. Never add a write; a test checks the list against Code.gs.
+- Deploy the Worker: `npx wrangler deploy --config worker/wrangler.toml`. Kill switch: `SERVE_COPIES = "0"`. Full rollback: set `API_URL` back to `APPS_SCRIPT_URL`.
+- Worker tests: `node --test worker/test/worker.test.js`. `tools/diag.js` reads `_version` from Apps Script directly, not through the Worker.
+
 ## Helper scripts (pre-approved as `node tools/*` for automated sessions)
 - `node tools/git.js <args>` — GitHub Desktop's git (git isn't on PATH); refuses `push`.
 - `node tools/wt.js <YYYY-MM-DD> <script.js>` — run a tools/ script inside the weekly worktree `../UpsetSpecial-weekly-<date>`.
