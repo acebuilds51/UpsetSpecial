@@ -165,6 +165,20 @@ body:has(#submit-picks-btn.sticky-save) #global-help-btn{ display:none !importan
 .picks-due::after{ content:''; position:absolute; left:0; right:0; bottom:-6px; height:6px;
   background:repeating-linear-gradient(-45deg, #1A1206 0 10px, #F2B632 10px 20px); }
 .picks-due .pd-icon{ font-size:24px; line-height:1; flex-shrink:0; }
+/* siren with police lights: red double-flash on the left, then blue on the right */
+/* (sits on a dark "light bar" so the red flash still shows on the red banner) */
+.pd-siren{ position:relative; width:48px; height:38px; display:flex; align-items:center; justify-content:center; background:#140D05; border-radius:12px; box-shadow:inset 0 0 0 1px rgba(255,255,255,0.12); }
+.pd-siren > span{ position:relative; z-index:1; animation: sirenWobble 0.8s ease-in-out infinite; }
+.pd-siren::before, .pd-siren::after{ content:''; position:absolute; top:50%; width:22px; height:22px; margin-top:-11px; border-radius:50%; filter:blur(4px); opacity:0; }
+.pd-siren::before{ left:-4px; background:#FF1F3D; box-shadow:0 0 16px 5px #FF1F3D; animation: copRed 0.9s linear infinite; }
+.pd-siren::after{ right:-4px; background:#2F6BFF; box-shadow:0 0 16px 5px #2F6BFF; animation: copBlue 0.9s linear infinite; }
+@keyframes copRed{ 0%,10%{opacity:1} 11%,20%{opacity:0} 21%,31%{opacity:1} 32%,100%{opacity:0} }
+@keyframes copBlue{ 0%,49%{opacity:0} 50%,60%{opacity:1} 61%,70%{opacity:0} 71%,81%{opacity:1} 82%,100%{opacity:0} }
+@keyframes sirenWobble{ 0%,100%{ transform:rotate(-8deg); } 50%{ transform:rotate(8deg); } }
+@media (prefers-reduced-motion: reduce){
+  .pd-siren > span, .pd-siren::before, .pd-siren::after{ animation:none; }
+  .pd-siren::before, .pd-siren::after{ opacity:0.6; }
+}
 .picks-due .pd-text{ flex:1; min-width:0; }
 .picks-due .pd-title{ font-family:var(--font-display); font-size:16px; font-weight:800; letter-spacing:0.02em; text-transform:uppercase; line-height:1.2; }
 .picks-due .pd-sub{ font-size:12px; font-weight:700; opacity:0.85; margin-top:2px; }
@@ -2786,7 +2800,7 @@ function renderPicksDueBanner() {
           : ms != null ? `${ms < 3600000 ? '⏰ ' : ''}Next pick locks in ${inText}` + (left.games && !left.upset ? ' — unpicked games get the favorite' : '')
           : 'Tap to finish';
         cls = unsaved || (ms != null && ms < 30 * 60000) ? 'critical' : (ms != null && ms < 3 * 3600000) ? 'urgent' : '';
-        html = `<div class="pd-icon">${unsaved ? '💾' : '🚨'}</div>
+        html = `<div class="pd-icon">${unsaved ? '💾' : '<div class="pd-siren"><span>🚨</span></div>'}</div>
           <div class="pd-text"><div class="pd-title">${escapeHtml(title)}</div><div class="pd-sub">${escapeHtml(sub)}</div></div>
           <div class="pd-go">${unsaved ? 'Save' : 'Finish'} →</div>`;
       }
