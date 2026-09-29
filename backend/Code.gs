@@ -317,7 +317,6 @@ function ensureSheetsUncached_() {
       ['currentWeek', 1],
       ['entryFee', 100],
       ['weeklyPrize', 100],
-      ['perfectWeekBonus', 100],
       ['seasonPayout1stPct', 36.5],
       ['seasonPayout2ndPct', 17],
       ['seasonPayout3rdPct', 10],
@@ -5580,7 +5579,8 @@ function apiAdminLedgerEntry(payload) {
   return { ok: true };
 }
 
-var LEDGER_TYPES_ = { paid: 1, payout: 1, weekly_prize: 1, perfect_bonus: 1, bowl_paid: 1, bowl_payout: 1 };
+// (perfect_bonus is no longer paid; old rows of that type stay in the Ledger as history)
+var LEDGER_TYPES_ = { paid: 1, payout: 1, weekly_prize: 1, bowl_paid: 1, bowl_payout: 1 };
 
 // Several ledger rows in one write (the admin's "Week N prizes" card). Under the script
 // lock, rows that already exist (same player + type + note + season) are skipped, so a

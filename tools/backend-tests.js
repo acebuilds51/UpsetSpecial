@@ -772,7 +772,7 @@ test('ledger batch: records all rows in one write; a repeat (double tap / lost r
   const entries = [
     { playerId: 'p2', type: 'weekly_prize', amount: 50, note: 'Week 1' },
     { playerId: 'p3', type: 'weekly_prize', amount: 50, note: 'Week 1' },
-    { playerId: 'p2', type: 'perfect_bonus', amount: 100, note: 'Week 1' }
+    { playerId: 'p1', type: 'weekly_prize', amount: 33.33, note: 'Week 1' }
   ];
   let r = env.call('adminLedgerBatch', { adminId: 'p1', entries });
   ok(r.ok, JSON.stringify(r)); eq(r.recorded, 3); eq(r.skipped, 0);
@@ -785,6 +785,7 @@ test('ledger batch: records all rows in one write; a repeat (double tap / lost r
   eq(env.call('getState', { compact: 1 }).ledger.length, 4, 'visible on the next app load');
   ok(!env.call('adminLedgerBatch', { adminId: 'p1', entries: [{ playerId: 'p2', type: 'weekly_prize', amount: 0, note: 'Week 3' }] }).ok, 'zero amount rejected');
   ok(!env.call('adminLedgerBatch', { adminId: 'p1', entries: [{ playerId: 'p2', type: 'bogus', amount: 5, note: 'Week 3' }] }).ok, 'unknown type rejected');
+  ok(!env.call('adminLedgerBatch', { adminId: 'p1', entries: [{ playerId: 'p2', type: 'perfect_bonus', amount: 100, note: 'Week 3' }] }).ok, 'the retired perfect-week bonus is not paid');
   ok(!env.call('adminLedgerBatch', { adminId: 'p2', entries }).ok, 'non-admin rejected');
 });
 

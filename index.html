@@ -4412,7 +4412,6 @@ function renderAllScores(container, games) {
 function renderMoney(content) {
   const entryFee = Number(State.season.entryFee || 0);
   const weeklyPrize = Number(State.season.weeklyPrize || 0);
-  const perfectBonus = Number(State.season.perfectWeekBonus || 0);
   const pct1 = Number(State.season.seasonPayout1stPct || 0);
   const pct2 = Number(State.season.seasonPayout2ndPct || 0);
   const pct3 = Number(State.season.seasonPayout3rdPct || 0);
@@ -4451,7 +4450,6 @@ function renderMoney(content) {
     <div class="section-label">Prize Structure</div>
     <div class="card">
       <p class="helptext"><strong style="color:var(--text)">Weekly:</strong> $${weeklyPrize} to the week's high scorer (split evenly on ties).</p>
-      <p class="helptext" style="margin-top:6px;"><strong style="color:var(--text)">Perfect Week Bonus:</strong> $${perfectBonus} to anyone who gets all 10 straight picks correct.</p>
       <p class="helptext" style="margin-top:6px;"><strong style="color:var(--text)">Season-End:</strong> 1st ${pct1}% &middot; 2nd ${pct2}% &middot; 3rd ${pct3}% of the full pot.</p>
       <p class="helptext" style="margin-top:8px;">Total paid out so far: <span class="mono">$${totalPaidOut}</span></p>
     </div>
@@ -5493,7 +5491,6 @@ async function sendChatMessage(content) {
 function renderRules(content) {
   const fee = State.season.entryFee || 100;
   const weekly = State.season.weeklyPrize || 100;
-  const perfect = State.season.perfectWeekBonus || 100;
   const p1 = State.season.seasonPayout1stPct || 36.5;
   const p2 = State.season.seasonPayout2ndPct || 17;
   const p3 = State.season.seasonPayout3rdPct || 10;
@@ -5538,13 +5535,9 @@ function renderRules(content) {
           <div class="helptext">Upset Special — underdog wins outright</div>
           <div class="mono" style="color:var(--win); font-weight:700;">+spread pts</div>
         </div>
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--hairline);">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0;">
           <div class="helptext">Upset Special — favorite wins</div>
           <div class="mono" style="color:var(--loss); font-weight:700;">0 pts</div>
-        </div>
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0;">
-          <div class="helptext">Perfect week (10/10 correct)</div>
-          <div class="mono" style="color:var(--gold); font-weight:700;">+$${perfect} bonus</div>
         </div>
       </div>
     </div>
@@ -5576,10 +5569,6 @@ function renderRules(content) {
         <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--hairline);">
           <div class="helptext">Weekly high score</div>
           <div class="mono" style="color:var(--win); font-weight:700;">$${weekly}</div>
-        </div>
-        <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--hairline);">
-          <div class="helptext">Perfect week bonus</div>
-          <div class="mono" style="color:var(--win); font-weight:700;">$${perfect}</div>
         </div>
         <div style="display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid var(--hairline);">
           <div class="helptext">Season 1st place</div>
@@ -7048,7 +7037,6 @@ function renderAdminLedger(el) {
             <option value='paid'>Entry Fee Paid</option>
             <option value='payout'>Season Payout</option>
             <option value='weekly_prize'>Weekly Prize</option>
-            <option value='perfect_bonus'>Perfect Week Bonus</option>
             <option value='bowl_paid'>Bowl Entry Paid</option>
             <option value='bowl_payout'>Bowl Payout</option>
           </select>
@@ -7109,7 +7097,7 @@ function renderAdminLedger(el) {
 
 function fmtLedgerAmount(a) { const n = Number(a) || 0; return n % 1 === 0 ? n.toFixed(0) : n.toFixed(2); }
 
-/* ---- Admin: "Week N prizes" -- weekly high score (split on ties) + perfect weeks ---- */
+/* ---- Admin: "Week N prizes" -- weekly high score (split on ties) ---- */
 // A week is ready once every game that counts for it is final: the board games plus
 // any non-board game someone used for their Upset Special.
 function weekIsComplete(week) {
@@ -7126,11 +7114,10 @@ function isPrizeRecorded(playerId, type, week) {
     String(l.note || '').trim() === note && (!year || String(l.season) === year));
 }
 
-// Same scoring as the standings (computeStandingsLocally) and the same perfect-week
-// test as the backend's archivePerfectWeeks_: a straight pick on every board game, all covering.
+// Same scoring as the standings (computeStandingsLocally). Only the weekly high score is
+// paid -- the league no longer pays a perfect-week (10/10) bonus.
 function computeWeekPrizes(week, standings) {
   const prize = Number(State.season.weeklyPrize || 0);
-  const bonus = Number(State.season.perfectWeekBonus || 0);
   standings = standings || computeStandingsLocally();
   const scores = standings.map(s => ({ playerId: s.playerId, pts: s.weeklyBreakdown[week] || 0 }));
   const top = Math.max(0, ...scores.map(s => s.pts));
@@ -7140,16 +7127,8 @@ function computeWeekPrizes(week, standings) {
     playerId: w.playerId, type: 'weekly_prize', amount: Math.round(prize / winners.length * 100) / 100,
     why: `High score · ${top} pts${winners.length > 1 ? ` · ${winners.length}-way tie` : ''}`
   }));
-  const board = getGamesForWeek(week);
-  standings.forEach(s => {
-    const straight = (State.picks || []).filter(p => p.playerId === s.playerId && Number(p.week) === Number(week) &&
-      !(p.isUpset === true || p.isUpset === 'TRUE'));
-    const perfect = board.length > 0 && straight.length === board.length &&
-      board.every(g => { const pk = straight.find(p => p.gameId === g.gameId); return pk && pk.pickedTeam === computeCoveringTeam(g); });
-    if (perfect) rows.push({ playerId: s.playerId, type: 'perfect_bonus', amount: bonus, why: `Perfect week · ${board.length}/${board.length}` });
-  });
   rows.forEach(r => { r.recorded = isPrizeRecorded(r.playerId, r.type, week); });
-  return { prize, bonus, top, rows };
+  return { prize, top, rows };
 }
 
 let _prizeWeek = null;
@@ -7184,7 +7163,7 @@ function renderWeekPrizes(box, ledgerEl) {
             : `<input type="checkbox" data-prize-row="${i}" checked style="width:18px; height:18px;">`}
           <div style="flex:1; min-width:0;">
             <div style="font-weight:700; font-size:13px;">${escapeHtml(name(r.playerId))}</div>
-            <div class="helptext">${escapeHtml(r.type === 'weekly_prize' ? 'Weekly prize' : 'Perfect week bonus')} · ${escapeHtml(r.why)}${r.recorded ? ' · recorded' : ''}</div>
+            <div class="helptext">Weekly prize · ${escapeHtml(r.why)}${r.recorded ? ' · recorded' : ''}</div>
           </div>
           ${r.recorded ? `<span class="mono" style="font-weight:700;">$${fmtLedgerAmount(r.amount)}</span>`
             : `<span style="display:flex; align-items:center; gap:2px;">$<input type="number" data-prize-amount="${i}" value="${r.amount}" min="0" step="0.01" style="width:70px; padding:6px; border-radius:7px; color:#1a1a1a;"></span>`}
@@ -7230,10 +7209,7 @@ function renderAdminSeason(el) {
         <div class="field"><label>Entry Fee ($)</label><input type="number" id="season-entryfee" value="${State.season.entryFee || ''}"></div>
         <div class="field"><label>Weekly Prize ($)</label><input type="number" id="season-weeklyprize" value="${State.season.weeklyPrize || ''}"></div>
       </div>
-      <div class="row2">
-        <div class="field"><label>Perfect Week Bonus ($)</label><input type="number" id="season-perfectbonus" value="${State.season.perfectWeekBonus || ''}"></div>
-        <div class="field"><label>Bowl Entry Fee ($)</label><input type="number" id="season-bowlfee" value="${State.season.bowlEntryFee || ''}"></div>
-      </div>
+      <div class="field"><label>Bowl Entry Fee ($)</label><input type="number" id="season-bowlfee" value="${State.season.bowlEntryFee || ''}"></div>
       <div class="card-title" style="margin-top:14px;">Season-End Payout %</div>
       <div class="row2">
         <div class="field"><label>1st Place</label><input type="number" step="0.5" id="season-pct1" value="${State.season.seasonPayout1stPct || ''}"></div>
@@ -7251,7 +7227,6 @@ function renderAdminSeason(el) {
       currentWeek: Number(document.getElementById('season-week').value),
       entryFee: Number(document.getElementById('season-entryfee').value),
       weeklyPrize: Number(document.getElementById('season-weeklyprize').value),
-      perfectWeekBonus: Number(document.getElementById('season-perfectbonus').value),
       bowlEntryFee: Number(document.getElementById('season-bowlfee').value),
       seasonPayout1stPct: Number(document.getElementById('season-pct1').value),
       seasonPayout2ndPct: Number(document.getElementById('season-pct2').value),

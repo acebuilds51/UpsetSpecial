@@ -5,7 +5,7 @@
 // Usage: node tools/make-frontend-harness.js   then open tools/.harness/index.html
 // Query params: ?session=1 (log in as a fake player), ?fail=1 (backend always errors),
 //               ?delay=ms (simulate a slow backend),
-//               ?final=1 (week 1 is over: final scores + picks, TESTERS perfect, 2-way tie for top score),
+//               ?final=1 (week 1 is over: final scores + picks, 2-way tie for top score),
 //               ?unposted=1 (week 1 board not posted yet; two games are missing a kickoff / spread)
 // Admin writes that matter for the Pot tab (adminTogglePaid, adminLedgerEntry, adminLedgerBatch)
 // update the fake state, so the next getState shows them.
@@ -39,7 +39,7 @@ const mock = `<script>
   }
   if (qs.get('unposted') === '1') { games.forEach(function(g) { g.locked = false; }); games[2].kickoff = ''; games[6].spread = ''; }
   var state = { ok: true, players: [{ id: 'p1', name: 'Test Admin', teamName: 'TESTERS', isAdmin: true, active: true }, { id: 'p2', name: 'Pat', teamName: 'PATS', isAdmin: false, active: true }, { id: 'p3', name: 'Sam', teamName: 'SAMS', isAdmin: false, active: true }],
-    season: [{ key: 'year', value: 2026 }, { key: 'currentWeek', value: 1 }, { key: 'leagueName', value: 'Upset Special League' }, { key: 'entryFee', value: 100 }, { key: 'weeklyPrize', value: 100 }, { key: 'perfectWeekBonus', value: 100 }],
+    season: [{ key: 'year', value: 2026 }, { key: 'currentWeek', value: 1 }, { key: 'leagueName', value: 'Upset Special League' }, { key: 'entryFee', value: 100 }, { key: 'weeklyPrize', value: 100 }],
     rotation: [{ week: 1, playerId: 'p2', status: qs.get('unposted') === '1' ? 'submitted' : 'posted', assignedAt: '' }], games: games, picks: picks, ledger: [], bowlGames: [], bowlPicks: [], bowlChampion: [], bowlLedger: [], snapshotCount: 0 };
   var draft = null;
   var realFetch = window.fetch.bind(window);
