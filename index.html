@@ -1386,11 +1386,10 @@ function renderBottomNav() {
     const badge = pendingCount > 0 ? `<span style="position:absolute; top:6px; right:4px; background:var(--loss); color:#fff; font-size:10px; font-weight:700; border-radius:10px; padding:1px 5px; line-height:1.4;">${pendingCount}</span>` : '';
     items.push({ id: 'admin', label: 'Admin', icon: `<span style="position:relative; display:inline-block;">${iconAdmin()}${badge}</span>` });
   }
-  let unsaved = false;
-  try { unsaved = typeof hasUnsavedDraft_ === 'function' && hasUnsavedDraft_(); } catch (e) {}
+  const slateBadge = typeof slateNavBadge_ === 'function' ? slateNavBadge_() : '';
   nav.innerHTML = items.map(it => `
-    <button data-view="${it.id}" class="${State.view === it.id ? 'active' : ''}">
-      ${it.id === 'slate' && unsaved ? '<span class="unsaved-badge" title="Picks not saved yet"></span>' : ''}
+    <button data-view="${it.id}" data-badge="${it.id === 'slate' ? slateBadge : ''}" class="${State.view === it.id ? 'active' : ''}">
+      ${it.id === 'slate' && slateBadge ? `<span class="unsaved-badge" style="${slateBadge === 'todo' ? 'background:var(--gold);' : ''}" title="${slateBadge === 'todo' ? 'You still have picks to make' : 'Picks not saved yet'}"></span>` : ''}
       ${it.icon}
       <span class="dot"></span>
       ${it.label}
@@ -1434,6 +1433,7 @@ async function silentRefresh(force) {
     if (changed) {
       const content = document.getElementById('content');
       if (!content) return;
+      if (document.getElementById('bottomnav')) renderBottomNav(); // This Week dot (unsaved / still to pick)
       // Don't blow away an in-progress Upset Special search/selection just because
       // something else changed in the background -- re-rendering the slate wipes
       // the search input and results, which reads as the app randomly glitching
@@ -1699,6 +1699,7 @@ function renderHome(content) {
     const straightPicks = myPicks.filter(pk => !(pk.isUpset === true || pk.isUpset === 'TRUE'));
     const upsetPick = myPicks.find(pk => pk.isUpset === true || pk.isUpset === 'TRUE');
     const entryFee = Number(season.entryFee || 100);
+    const picksLeft = posted ? describePicksLeft_(savedPicksLeftToMake_(week)) : '';
 
     content.innerHTML = `
       <div class="card" style="background:var(--upset-grad); color:#1A1206; margin-bottom:4px;">
@@ -1745,8 +1746,11 @@ function renderHome(content) {
         ${upsetPick ? `<div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--hairline);">
           <div class="helptext">Upset Special: <strong style="color:var(--gold);">${escapeHtml(upsetPick.pickedTeam)}</strong></div>
         </div>` : ''}
-        <button class="btn btn-primary btn-block" style="margin-top:12px;" id="go-to-slate-btn">
-          ${posted ? 'Make My Picks' : 'View This Week'}
+        ${posted && myPicks.length > 0 && picksLeft ? `<div style="margin-top:10px; padding:8px 10px; border-radius:8px; background:rgba(242,182,50,0.12); border:1px solid rgba(242,182,50,0.45); font-size:12px; font-weight:700; color:var(--gold);">
+          ⚠️ You still have picks to make: ${escapeHtml(picksLeft)}
+        </div>` : ''}
+        <button class="btn ${posted && picksLeft ? 'btn-gold' : 'btn-primary'} btn-block" style="margin-top:12px;" id="go-to-slate-btn">
+          ${!posted ? 'View This Week' : myPicks.length === 0 ? 'Make My Picks' : picksLeft ? 'Finish My Picks' : 'View My Picks'}
         </button>
       </div>
 
@@ -2315,6 +2319,7 @@ function renderPicksBoard(content, week, games, earlyWarning) {
           <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:rgba(255,255,255,0.6);">Week ${week} Board</div>
           <div id="picked-count-display" style="font-family:var(--font-display); font-size:18px; margin-top:2px;">${straightCount} / ${games.length} picked</div>
           <div id="draft-unsaved-note" style="display:none; font-size:12px; font-weight:700; color:var(--loss); margin-top:3px;">● Not saved yet</div>
+          <div id="draft-todo-note" style="display:none; font-size:12px; font-weight:700; color:var(--gold); margin-top:3px;"></div>
         </div>
         <div style="text-align:right;">
           <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:rgba(255,255,255,0.6);">Upset Special</div>
@@ -2356,7 +2361,7 @@ function renderPicksBoard(content, week, games, earlyWarning) {
         ${existingPicks.length > 0 ? 'Update My Picks' : 'Submit My Picks'}
       </button>
     `}
-    <p class="helptext" style="text-align:center; margin-top:10px;">Upset Special locks 5 mins before the first game. Straight picks lock per-game. Picks stay hidden until each game kicks off.</p>
+    <p class="helptext" style="text-align:center; margin-top:10px;">You can save some picks now and finish later — any game still unpicked when it locks gets the favorite. Upset Special locks 5 mins before the first game. Straight picks lock per-game. Picks stay hidden until each game kicks off.</p>
   `;
   // Wire the submit button FIRST, so a problem rendering any section below can never
   // leave it dead. (It's absent once every game has started.)
@@ -2445,6 +2450,7 @@ function renderGamesBoard(games, week) {
       <div class="game-row ${isUpsetOnThisGame ? 'is-upset-selected' : ''}" data-gameid="${g.gameId}">
         <div class="flex-between" style="margin-bottom:6px;">
           ${renderCountdownBadge(g)}
+          <span class="needs-pick-tag" style="display:${!locked && !draft.pickedTeam ? '' : 'none'}; font-size:10px; font-weight:700; color:var(--gold); border:1px solid rgba(242,182,50,0.5); border-radius:10px; padding:1px 7px; white-space:nowrap;">Needs a pick</span>
         </div>
         <div class="game-matchup">
           <div class="team-pick ${awaySelected ? 'selected' : ''} ${awayIsUpsetPick ? 'upset-pick' : ''} ${locked ? 'is-locked' : ''}"
@@ -2713,29 +2719,51 @@ function updateBoardHeader() {
   const unsaved = draftDiffersFromSaved_(week, games, _draftPicks, _upsetSelection);
   const noteEl = document.getElementById('draft-unsaved-note');
   if (noteEl) noteEl.style.display = unsaved ? 'block' : 'none';
+  // Partial saves are allowed, so keep telling them what's still to pick
+  const left = describePicksLeft_(picksLeftToMake_(games, _draftPicks, _upsetSelection));
+  const todoEl = document.getElementById('draft-todo-note');
+  if (todoEl) { todoEl.textContent = left ? '⚠️ Still to pick: ' + left : ''; todoEl.style.display = left ? 'block' : 'none'; }
   const btn = document.getElementById('submit-picks-btn');
   if (btn) btn.classList.toggle('sticky-save', unsaved);
   if (unsaved) storeDraft_(week); else clearStoredDraft_(week);
   const navBtn = document.querySelector('#bottomnav button[data-view="slate"]');
-  if (navBtn && !!navBtn.querySelector('.unsaved-badge') !== unsaved) renderBottomNav();
+  if (navBtn && navBtn.dataset.badge !== slateNavBadge_()) renderBottomNav();
+}
+
+// This Week tab dot: 'unsaved' (red) when there are unsaved changes, 'todo' (gold) when
+// saved picks still leave open games or the Upset Special to pick, else ''.
+function slateNavBadge_() {
+  try {
+    if (hasUnsavedDraft_()) return 'unsaved';
+    const week = currentWeek();
+    if (State.player && isWeekPosted(week) && describePicksLeft_(savedPicksLeftToMake_(week))) return 'todo';
+  } catch (e) {}
+  return '';
 }
 
 async function submitMyPicks(week, games) {
+  // Partial saves are fine: players can save some games now and finish later (the app
+  // keeps nudging them about what's left). Locked games send what's already saved --
+  // a pick can't change once its game locks -- so the server sees them as unchanged.
+  const saved = getMyPicksForWeek(week);
+  const isUp = p => p.isUpset === true || p.isUpset === 'TRUE';
   const picks = games.map(g => {
+    if (isGamePickLocked(g)) {
+      const s = saved.find(p => p.gameId === g.gameId && !isUp(p));
+      return s ? { gameId: g.gameId, pickedTeam: s.pickedTeam, isUpset: false } : null;
+    }
     const d = _draftPicks[g.gameId];
-    if (!d || !d.pickedTeam) return null;
-    return { gameId: g.gameId, pickedTeam: d.pickedTeam, isUpset: false };
+    return d && d.pickedTeam ? { gameId: g.gameId, pickedTeam: d.pickedTeam, isUpset: false } : null;
   }).filter(Boolean);
 
-  if (picks.length !== games.length) { showToast(`Pick all ${games.length} games before submitting`, 'error'); reportClientIssue('submitPicks', 'blocked: incomplete picks', picks.length + '/' + games.length); return; }
-
   let upsetPick = null;
-  if (_upsetMode === 'board') {
+  if (isUpsetSpecialLocked(games)) {
+    const s = saved.find(isUp);
+    if (s) upsetPick = { gameId: s.gameId, pickedTeam: s.pickedTeam, isUpset: true };
+  } else if (_upsetMode === 'board') {
     const upsetGameId = Object.keys(_draftPicks).find(gid => _draftPicks[gid].isUpset);
-    if (!upsetGameId) { showToast('Select your Upset Special pick', 'error'); reportClientIssue('submitPicks', 'blocked: no upset special (board mode)'); return; }
-    upsetPick = { gameId: upsetGameId, pickedTeam: _draftPicks[upsetGameId].pickedTeam, isUpset: true };
-  } else {
-    if (!_upsetSelection) { showToast('Search and select your Upset Special pick', 'error'); reportClientIssue('submitPicks', 'blocked: no upset special (search mode)'); return; }
+    if (upsetGameId) upsetPick = { gameId: upsetGameId, pickedTeam: _draftPicks[upsetGameId].pickedTeam, isUpset: true };
+  } else if (_upsetSelection) {
     upsetPick = {
       gameId: _upsetSelection.gameId || '', espnEventId: _upsetSelection.espnEventId,
       awayTeam: _upsetSelection.awayTeam, homeTeam: _upsetSelection.homeTeam,
@@ -2744,7 +2772,8 @@ async function submitMyPicks(week, games) {
       homeLogo: _upsetSelection.homeLogo, awayLogo: _upsetSelection.awayLogo
     };
   }
-  picks.push(upsetPick);
+  if (upsetPick) picks.push(upsetPick);
+  if (picks.length === 0) { showToast('Pick at least one game first', 'error'); return; }
 
   const btn = document.getElementById('submit-picks-btn');
   if (btn.disabled) return; // already submitting -- ignore a rapid second tap
@@ -2762,24 +2791,58 @@ async function submitMyPicks(week, games) {
   // The refresh used to be awaited inside the try above, so when getState failed after a
   // successful save the player saw "Picks locked in" then a red "Failed to fetch" and the
   // button reset to "Submit My Picks" -- reading as if the picks hadn't saved.
-  applySubmittedPicksLocally_(week, picks);
+  applySubmittedPicksLocally_(week, picks, !!upsetPick);
   clearStoredDraft_(week);
-  showToast('Picks saved ✓', 'success');
+  const left = describePicksLeft_(picksLeftToMake_(games, _draftPicks, _upsetSelection));
+  showToast(left ? `Saved ✓ — still to pick: ${left}` : 'All picks saved ✓', 'success');
   renderContent();
   silentRefresh(true);
 }
 
-// Mirrors apiSubmitPicks_ (Code.gs): the player's picks for the week are replaced by
-// what was sent. The draft is marked as synced from these rows so it isn't rebuilt;
-// the next real refresh (new server submittedAt) re-syncs it from the server.
-function applySubmittedPicksLocally_(week, picks) {
+// Mirrors apiSubmitPicks_ (Code.gs): the sent picks replace those games' saved picks, and
+// saved picks for games not sent (and the saved Upset Special, if none was sent) stay.
+// The draft is marked as synced from these rows so it isn't rebuilt; the next real
+// refresh (new server submittedAt) re-syncs it from the server.
+function applySubmittedPicksLocally_(week, picks, sentUpset) {
   const submittedAt = new Date().toISOString();
   const playerId = State.player.id;
+  const sentStraight = new Set(picks.filter(p => !p.isUpset).map(p => p.gameId));
+  const isUp = p => p.isUpset === true || p.isUpset === 'TRUE';
   const rows = picks
     .filter(p => p.gameId) // a brand-new searched upset game has no id until the server makes one
     .map(p => ({ week, playerId, gameId: p.gameId, pickedTeam: p.pickedTeam, isUpset: !!p.isUpset, isAutoDefault: false, submittedAt }));
-  State.picks = (State.picks || []).filter(p => !(p.playerId === playerId && Number(p.week) === Number(week))).concat(rows);
+  State.picks = (State.picks || []).filter(p => {
+    if (!(p.playerId === playerId && Number(p.week) === Number(week))) return true;
+    return isUp(p) ? !sentUpset : !sentStraight.has(p.gameId);
+  }).concat(rows);
   _draftPicksSyncedFrom = week + ':' + submittedAt;
+}
+
+// What can still be picked for the week: open games with no pick, and the Upset
+// Special if it's unset and not yet locked. (Locked games are defaulted by the server.)
+function picksLeftToMake_(games, draft, upsetSel) {
+  const gamesLeft = games.filter(g => !isGamePickLocked(g) && !(draft[g.gameId] && draft[g.gameId].pickedTeam)).length;
+  const hasUpset = Object.keys(draft).some(gid => draft[gid] && draft[gid].isUpset) || !!upsetSel;
+  return { games: gamesLeft, upset: !hasUpset && !isUpsetSpecialLocked(games) };
+}
+
+// Same, from the player's SAVED picks (Home card, nav dot).
+function savedPicksLeftToMake_(week) {
+  const draft = {};
+  let hasUpset = false;
+  getMyPicksForWeek(week).forEach(p => {
+    if (p.isUpset === true || p.isUpset === 'TRUE') hasUpset = true;
+    else draft[p.gameId] = { pickedTeam: p.pickedTeam };
+  });
+  return picksLeftToMake_(getGamesForWeek(week), draft, hasUpset);
+}
+
+// "3 games and your Upset Special" / "1 game" / "your Upset Special" / ''
+function describePicksLeft_(left) {
+  const parts = [];
+  if (left.games > 0) parts.push(left.games + (left.games === 1 ? ' game' : ' games'));
+  if (left.upset) parts.push('your Upset Special');
+  return parts.join(' and ');
 }
 </script>
 <script>

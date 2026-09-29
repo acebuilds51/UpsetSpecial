@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v11-get-request-log-sep29';
+var CODE_VERSION = 'v12-partial-picks-sep29';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -4836,12 +4836,22 @@ function sendPickReminders_(isFinal) {
   var players = sheetToObjects(SHEET_NAMES.PLAYERS).filter(function(p) { return p.active; });
   var weekPicks = sheetToObjects(SHEET_NAMES.PICKS).filter(function(p) { return Number(p.week) === week; });
 
+  // Players can save a partial board, so each reminder says what THAT player still needs.
+  var todo = {};
   var nonPickers = players.filter(function(player) {
     var myPicks = weekPicks.filter(function(p) { return p.playerId === player.id; });
     var straightCount = myPicks.filter(function(p) { return !(p.isUpset === true || p.isUpset === 'TRUE'); }).length;
     var hasUpset = myPicks.some(function(p) { return p.isUpset === true || p.isUpset === 'TRUE'; });
+    todo[player.id] = { missing: Math.max(expectedStraightCount - straightCount, 0), hasUpset: hasUpset, none: myPicks.length === 0 };
     return straightCount < expectedStraightCount || !hasUpset;
   });
+  // e.g. "3 games and your Upset Special" / "your Upset Special" / "1 game"
+  var stillToPick = function(t) {
+    var parts = [];
+    if (t.missing > 0) parts.push(t.missing + (t.missing === 1 ? ' game' : ' games'));
+    if (!t.hasUpset) parts.push('your Upset Special');
+    return parts.join(' and ');
+  };
 
   if (nonPickers.length === 0) {
     Logger.log('Everyone has submitted picks for week ' + week + ' — no ' + (isFinal ? 'final ' : '') + 'reminder needed.');
@@ -4852,11 +4862,18 @@ function sendPickReminders_(isFinal) {
 
   // Push notification
   var pushTitle = isFinal ? '🚨 Final warning — picks close soon!' : '⏰ Picks close soon!';
-  var pushBody = isFinal
-    ? "Still no picks for Week " + week + '. Miss the deadline and you get the favorite in every game with zero shot at the Upset Special bonus.'
-    : "You haven't finished your Week " + week + ' picks yet — get them in before kickoff.';
+  var pushBodyFor = function(t) {
+    if (t.none) {
+      return isFinal
+        ? "Still no picks for Week " + week + '. Miss the deadline and you get the favorite in every game with zero shot at the Upset Special bonus.'
+        : "You haven't made your Week " + week + ' picks yet — get them in before kickoff.';
+    }
+    return 'Week ' + week + ': you still need to pick ' + stillToPick(t) + '.' +
+      (isFinal ? (t.hasUpset ? ' Unpicked games default to the favorite.' : ' No Upset Special = no upset bonus this week.') : ' Finish before kickoff.');
+  };
   var reminderMsgs = [];
   nonPickers.forEach(function(p) {
+    var pushBody = pushBodyFor(todo[p.id]);
     if (p.fcmToken && String(p.fcmToken).trim() !== '') {
       String(p.fcmToken).split(',').map(function(t) { return t.trim(); }).filter(Boolean).forEach(function(token) {
         reminderMsgs.push({ token: token, title: pushTitle, body: pushBody, data: { type: 'pick_reminder' } });
@@ -4881,17 +4898,17 @@ function sendPickReminders_(isFinal) {
     // this mismatch — email2c remains available for you to send manually
     // whenever a true day-before heads-up makes sense.
     var title = 'Kickoff is today';
-    var subtitle = "You haven't submitted your Week " + week + ' picks yet.';
     var body =
       '<p style="margin-bottom:16px;">The first game of Week ' + week + ' kicks off in a few hours, and you haven\'t finished your picks.</p>' +
       '<div style="border-left:4px solid #F2B632;background:#fffbf2;border-radius:0 8px 8px 0;padding:14px 16px;margin:18px 0;font-size:14px;color:#3a2a00;line-height:1.6;">' +
       '<strong style="color:#8c6a2a;text-transform:uppercase;font-size:12px;letter-spacing:0.08em;display:block;margin-bottom:6px;">⏱ Deadlines don\'t move</strong>' +
-      "Each straight pick locks 10 minutes before that specific game's kickoff. Your <strong>Upset Special</strong> pick locks 10 minutes before the <em>first</em> game — so don\'t wait too long." +
+      "Each straight pick locks 5 minutes before that specific game's kickoff. Your <strong>Upset Special</strong> pick locks 5 minutes before the <em>first</em> game — so don\'t wait too long." +
       '</div>' +
       '<p style="margin-bottom:16px;">It only takes a couple minutes. Get them in now.</p>';
-    var html = buildEmailHtml(title, subtitle, body);
     var sent = 0;
     recipients.forEach(function(p) {
+      var t = todo[p.id];
+      var html = buildEmailHtml(title, t.none ? "You haven't made your Week " + week + ' picks yet.' : 'You still need to pick ' + stillToPick(t) + '.', body);
       try {
         MailApp.sendEmail({ to: p.email, subject: '⏰ Kickoff today — Week ' + week + ' picks still open', htmlBody: html, name: 'Upset Special League' });
         sent++;
@@ -4904,17 +4921,17 @@ function sendPickReminders_(isFinal) {
     // favorite, no Upset Special" warning is specific to this last-chance email
     // and doesn't need to live as a separate reusable file.
     var title = 'Last chance for Week ' + week;
-    var subtitle = "You haven't submitted your picks yet.";
     var body =
-      '<p style="margin-bottom:16px;">This is the final reminder for Week ' + week + ' — the board locks soon and you still don\'t have picks in.</p>' +
+      '<p style="margin-bottom:16px;">This is the final reminder for Week ' + week + ' — the board locks soon and your picks aren\'t complete.</p>' +
       '<div style="border-left:4px solid #FF4D5E;background:#fff5f5;border-radius:0 8px 8px 0;padding:14px 16px;margin:18px 0;font-size:14px;color:#5a0010;line-height:1.6;">' +
       '<strong style="color:#3a0008;display:block;margin-bottom:4px;">⚠️ What happens if you miss the deadline</strong>' +
       "Any game you haven't picked gets defaulted to the favorite once it locks — you'll still get credit for correct favorites, but you get <strong>zero shot at the Upset Special bonus</strong> that week, since there's no default for that pick." +
       '</div>' +
       '<p style="margin-bottom:16px;">It takes about two minutes. Don\'t leave points on the table.</p>';
-    var html = buildEmailHtml(title, subtitle, body);
     var sent = 0;
     recipients.forEach(function(p) {
+      var t = todo[p.id];
+      var html = buildEmailHtml(title, t.none ? "You haven't made your picks yet." : 'You still need to pick ' + stillToPick(t) + '.', body);
       try {
         MailApp.sendEmail({ to: p.email, subject: '🚨 Final call — Week ' + week + ' picks close soon', htmlBody: html, name: 'Upset Special League' });
         sent++;
@@ -5080,8 +5097,19 @@ function apiSubmitPicks_(payload, week, playerId, picks) {
     Number(g.week) === week && g.source !== 'external' &&
     (g.locked === true || g.locked === 'TRUE')
   );
-  const expectedCount = boardGames.length;
-  if (straightPicks.length !== expectedCount) return { ok: false, error: `You must submit a pick for all ${expectedCount} games.` };
+  // Partial saves are allowed: a player can save some games now and finish later. Games
+  // left out keep whatever is already saved for them (see the merge at the end); anything
+  // still missing at kickoff is defaulted to the favorite as before.
+  const boardIds = new Set(boardGames.map(g => g.gameId));
+  const seenIds = new Set();
+  for (const p of straightPicks) {
+    if (!boardIds.has(p.gameId)) return { ok: false, error: 'One of those games isn\'t on this week\'s board -- refresh the app and try again.' };
+    if (seenIds.has(p.gameId)) return { ok: false, error: 'The same game was picked twice -- refresh the app and try again.' };
+    seenIds.add(p.gameId);
+  }
+  const upsetPicks = picks.filter(p => p.isUpset);
+  if (upsetPicks.length > 1) return { ok: false, error: 'Only one Upset Special pick is allowed.' };
+  if (straightPicks.length === 0 && upsetPicks.length === 0) return { ok: false, error: 'Pick at least one game before saving.' };
   for (const p of straightPicks) {
     const g = weekGames.find(wg => wg.gameId === p.gameId);
     if (!g) continue;
@@ -5092,10 +5120,38 @@ function apiSubmitPicks_(payload, week, playerId, picks) {
     }
   }
 
-  const upsetPicks = picks.filter(p => p.isUpset);
-  if (upsetPicks.length !== 1) return { ok: false, error: 'Exactly one Upset Special pick is required.' };
-  const upsetPick = upsetPicks[0];
+  let upsetGameId = null;
+  let createdGame = null;
+  if (upsetPicks.length === 1) {
+    const res = resolveUpsetPick_(upsetPicks[0], week, now, existingPicksForPlayer);
+    if (res.ok === false) return res;
+    upsetGameId = res.upsetGameId;
+    createdGame = res.createdGame;
+  }
 
+  // Replace the player's picks for the week: grouped row deletes + ONE batched append
+  // (was 11 single-row deletes + 11 appendObject calls = ~35 spreadsheet calls, all
+  // while holding the league-wide script lock that every other submitter waits on).
+  // Saved picks for games not in this submission (and the saved Upset Special, if none
+  // was sent) are carried over unchanged, so a partial save never erases earlier picks.
+  const isUpsetRow = p => p.isUpset === true || p.isUpset === 'TRUE';
+  const carried = existingPicksForPlayer
+    .filter(ep => isUpsetRow(ep) ? !upsetGameId : (boardIds.has(ep.gameId) && !seenIds.has(ep.gameId)))
+    .map(ep => ({ week, playerId, gameId: ep.gameId, pickedTeam: ep.pickedTeam, isUpset: isUpsetRow(ep), isAutoDefault: ep.isAutoDefault === true || ep.isAutoDefault === 'TRUE', submittedAt: ep.submittedAt }));
+  deleteRowsByMatch(SHEET_NAMES.PICKS, p => Number(p.week) === week && p.playerId === playerId);
+  const submittedAt = new Date().toISOString();
+  const newRows = carried.concat(straightPicks.map(p => ({ week, playerId, gameId: p.gameId, pickedTeam: p.pickedTeam, isUpset: false, isAutoDefault: false, submittedAt: submittedAt })));
+  if (upsetGameId) newRows.push({ week, playerId, gameId: upsetGameId, pickedTeam: upsetPicks[0].pickedTeam, isUpset: true, isAutoDefault: false, submittedAt: submittedAt });
+  appendObjects_(SHEET_NAMES.PICKS, newRows);
+  // Picks are never part of the cached state, so only a newly-created external game needs a cache bust
+  if (createdGame) invalidateStateCache();
+  const missing = boardGames.filter(g => !newRows.some(r => r.gameId === g.gameId && !r.isUpset)).length;
+  return { ok: true, missing: missing, hasUpset: newRows.some(r => r.isUpset) };
+}
+
+// Validates an Upset Special pick and finds/creates its game row. Returns
+// { upsetGameId, createdGame } or { ok: false, error }.
+function resolveUpsetPick_(upsetPick, week, now, existingPicksForPlayer) {
   // upset pick may reference a game NOT in this week's 10 -- if it carries its own espn fields, create/find a Games row for it
   let upsetGameId = upsetPick.gameId;
   let createdGame = null;
@@ -5182,18 +5238,7 @@ function apiSubmitPicks_(payload, week, playerId, picks) {
       return { ok: false, error: 'Your current Upset Special pick (' + previousGame.awayTeam + ' @ ' + previousGame.homeTeam + ') has already started or finished -- it can no longer be changed to a different game.' };
     }
   }
-
-  // Replace the player's picks for the week: grouped row deletes + ONE batched append
-  // (was 11 single-row deletes + 11 appendObject calls = ~35 spreadsheet calls, all
-  // while holding the league-wide script lock that every other submitter waits on).
-  deleteRowsByMatch(SHEET_NAMES.PICKS, p => Number(p.week) === week && p.playerId === playerId);
-  const submittedAt = new Date().toISOString();
-  const newRows = straightPicks.map(p => ({ week, playerId, gameId: p.gameId, pickedTeam: p.pickedTeam, isUpset: false, isAutoDefault: false, submittedAt: submittedAt }));
-  newRows.push({ week, playerId, gameId: upsetGameId, pickedTeam: upsetPick.pickedTeam, isUpset: true, isAutoDefault: false, submittedAt: submittedAt });
-  appendObjects_(SHEET_NAMES.PICKS, newRows);
-  // Picks are never part of the cached state, so only a newly-created external game needs a cache bust
-  if (createdGame) invalidateStateCache();
-  return { ok: true };
+  return { upsetGameId: upsetGameId, createdGame: createdGame };
 }
 
 // ---------- REGULAR SEASON: RESULTS ----------

@@ -912,6 +912,69 @@ test('diagnostics summary stays valid JSON even when the report is huge', () => 
   eq(rep.perf[rep.perf.length - 1].topError.length, 300, 'report itself (emailed later) not modified');
 });
 
+// ---- partial pick saves
+const straightOnly = (playerId, nums, team = 'Home') => ({ week: 1, playerId, picks: nums.map(i => ({ gameId: 'g' + i, pickedTeam: team + i, isUpset: false })) });
+
+test('submitPicks accepts a partial board and reports what is still missing', () => {
+  const env = loadBackend(); seedLeague(env);
+  const r = env.call('submitPicks', straightOnly('p2', [1, 2, 3, 4, 5, 6]));
+  ok(r.ok, r.error); eq(r.missing, 4); eq(r.hasUpset, false);
+  eq(rowsOf(env, 'Picks').filter(p => p.playerId === 'p2').length, 6);
+});
+
+test('a later partial save adds to earlier picks instead of erasing them', () => {
+  const env = loadBackend(); seedLeague(env);
+  env.call('submitPicks', straightOnly('p2', [1, 2, 3]));
+  const second = straightOnly('p2', [4, 5, 6, 7, 8, 9, 10]);
+  second.picks.push({ gameId: 'g2', pickedTeam: 'Away2', isUpset: true });
+  second.picks.push({ gameId: 'g2', pickedTeam: 'Away2', isUpset: false }); // board upset: straight = same underdog
+  const r = env.call('submitPicks', second);
+  ok(r.ok, r.error); eq(r.missing, 0); eq(r.hasUpset, true);
+  const mine = rowsOf(env, 'Picks').filter(p => p.playerId === 'p2');
+  eq(mine.length, 11);
+  eq(mine.find(p => p.gameId === 'g1').pickedTeam, 'Home1', 'first save kept');
+  eq(mine.find(p => p.gameId === 'g2' && p.isUpset !== true).pickedTeam, 'Away2', 'resent game updated');
+  // saving straight picks only keeps the saved Upset Special
+  ok(env.call('submitPicks', straightOnly('p2', [5], 'Away')).ok);
+  const after = rowsOf(env, 'Picks').filter(p => p.playerId === 'p2');
+  eq(after.length, 11); eq(after.filter(p => p.isUpset === true).map(p => p.gameId), ['g2']);
+  eq(after.find(p => p.gameId === 'g5').pickedTeam, 'Away5');
+});
+
+test('partial save leaves a locked game\'s saved pick alone and still saves the open ones', () => {
+  const env = loadBackend(); seedLeague(env);
+  ok(env.call('submitPicks', straightOnly('p2', [1, 2])).ok);
+  const gs = env.ss.getSheetByName('Games'); const h = gs._data[0];
+  gs._data.forEach((row, i) => { if (i && row[h.indexOf('gameId')] === 'g1') row[h.indexOf('kickoff')] = new Date(Date.now() - 3600000).toISOString(); });
+  env.ctx.invalidateStateCache(); env.ctx._sheetDataCache = {};
+  const r = env.call('submitPicks', straightOnly('p2', [3, 4]));
+  ok(r.ok, r.error);
+  const mine = rowsOf(env, 'Picks').filter(p => p.playerId === 'p2');
+  eq(mine.map(p => p.gameId).sort(), ['g1', 'g2', 'g3', 'g4']);
+  eq(env.call('submitPicks', straightOnly('p2', [1], 'Away')).ok, false, 'changing the locked game is still refused');
+});
+
+test('submitPicks rejects empty, off-board and duplicate picks', () => {
+  const env = loadBackend(); seedLeague(env);
+  eq(env.call('submitPicks', { week: 1, playerId: 'p2', picks: [] }).ok, false);
+  eq(env.call('submitPicks', { week: 1, playerId: 'p2', picks: [{ gameId: 'nope', pickedTeam: 'X', isUpset: false }] }).ok, false);
+  eq(env.call('submitPicks', { week: 1, playerId: 'p2', picks: [{ gameId: 'g1', pickedTeam: 'Home1', isUpset: false }, { gameId: 'g1', pickedTeam: 'Away1', isUpset: false }] }).ok, false);
+  eq(rowsOf(env, 'Picks').length, 0);
+});
+
+test('pick reminders tell a partial saver exactly what is left', () => {
+  const env = loadBackend(); seedLeague(env); setupPins(env);
+  env.call('submitPicks', straightOnly('p2', [1, 2, 3, 4, 5, 6, 7]));   // 3 games + upset left
+  env.call('submitPicks', picksPayload('p3', { gameId: 'g1', pickedTeam: 'Away1' })); // complete
+  env.ctx._sheetDataCache = {};
+  sentMails.length = 0; mailQuota = 100;
+  env.ctx.sendPickReminders();
+  const toPat = sentMails.filter(m => m.to === 'pat@example.com');
+  eq(toPat.length, 1); ok(/3 games and your Upset Special/.test(toPat[0].htmlBody), 'says what is left');
+  eq(sentMails.filter(m => m.to === 'sam@example.com').length, 0, 'complete player not reminded');
+  ok(/5 minutes before/.test(toPat[0].htmlBody) && !/10 minutes/.test(toPat[0].htmlBody), 'lock time is 5 minutes');
+});
+
 // ---------------------------------------------------------------- report
 let failed = 0;
 results.forEach(([pass, name, err]) => {
