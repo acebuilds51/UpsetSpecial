@@ -149,6 +149,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, .team-pick:focu
 .bottomnav button.active .dot{ background: var(--gold); box-shadow: 0 0 8px rgba(242,182,50,0.8); }
 .bottomnav button svg{ width:20px; height:20px; transition: transform 0.18s var(--ease); }
 .bottomnav button.active svg{ transform: translateY(-1px); }
+.bottomnav button{ position:relative; }
+.bottomnav button .unsaved-badge{ position:absolute; top:6px; right:calc(50% - 16px); width:8px; height:8px; border-radius:50%; background:var(--loss); }
+/* Picks board: while the draft has unsaved changes, the save button floats above the nav */
+#submit-picks-btn.sticky-save{ position:sticky; bottom:var(--nav-h, 90px); z-index:40; box-shadow:0 6px 24px rgba(0,0,0,0.55); }
+body:has(#submit-picks-btn.sticky-save) #global-help-btn{ display:none !important; }
 
 /* ---------- Cards ---------- */
 .card{
@@ -1381,8 +1386,11 @@ function renderBottomNav() {
     const badge = pendingCount > 0 ? `<span style="position:absolute; top:6px; right:4px; background:var(--loss); color:#fff; font-size:10px; font-weight:700; border-radius:10px; padding:1px 5px; line-height:1.4;">${pendingCount}</span>` : '';
     items.push({ id: 'admin', label: 'Admin', icon: `<span style="position:relative; display:inline-block;">${iconAdmin()}${badge}</span>` });
   }
+  let unsaved = false;
+  try { unsaved = typeof hasUnsavedDraft_ === 'function' && hasUnsavedDraft_(); } catch (e) {}
   nav.innerHTML = items.map(it => `
     <button data-view="${it.id}" class="${State.view === it.id ? 'active' : ''}">
+      ${it.id === 'slate' && unsaved ? '<span class="unsaved-badge" title="Picks not saved yet"></span>' : ''}
       ${it.icon}
       <span class="dot"></span>
       ${it.label}
@@ -1631,6 +1639,49 @@ let _upsetMode = 'board';   // 'board' (pick from the 10) | 'search' (any game)
 let _upsetSearchResults = [];
 let _upsetSelection = null; // {espnEventId, awayTeam, homeTeam, favorite, spread, kickoff, pickedTeam} when from search
 
+// ---- Unsaved-draft safety net ----
+// Tapped picks live only in memory until Submit, and a phone that kills the backgrounded
+// app used to lose them silently. While the draft differs from what's saved it's also kept
+// in localStorage, stamped with the same sync fingerprint renderPicksBoard uses -- so a
+// stored draft is only restored if the server's picks haven't changed since it was made.
+function draftStoreKey_(week) { return 'usl_draft_' + (State.player ? State.player.id : '') + '_' + week; }
+function loadStoredDraft_(week) { try { return JSON.parse(localStorage.getItem(draftStoreKey_(week)) || 'null'); } catch (e) { return null; } }
+function clearStoredDraft_(week) { try { localStorage.removeItem(draftStoreKey_(week)); } catch (e) {} }
+function storeDraft_(week) {
+  try { localStorage.setItem(draftStoreKey_(week), JSON.stringify({ fp: _draftPicksSyncedFrom, picks: _draftPicks, upsetSelection: _upsetSelection, upsetMode: _upsetMode })); } catch (e) {}
+}
+
+// True when the draft (straight picks or Upset Special) differs from the player's saved picks.
+function draftDiffersFromSaved_(week, games, draft, upsetSel) {
+  const savedStraight = {};
+  let savedUpset = null;
+  getMyPicksForWeek(week).forEach(p => {
+    if (p.isUpset === true || p.isUpset === 'TRUE') savedUpset = p; else savedStraight[p.gameId] = p.pickedTeam;
+  });
+  if (games.some(g => draft[g.gameId] && draft[g.gameId].pickedTeam && draft[g.gameId].pickedTeam !== savedStraight[g.gameId])) return true;
+  const upsetGid = Object.keys(draft).find(gid => draft[gid] && draft[gid].isUpset);
+  const d = upsetGid ? { gameId: upsetGid, team: draft[upsetGid].pickedTeam }
+    : upsetSel ? { gameId: upsetSel.gameId || '', espnEventId: upsetSel.espnEventId, team: upsetSel.pickedTeam } : null;
+  if (!d) return !!savedUpset;
+  if (!savedUpset || d.team !== savedUpset.pickedTeam) return true;
+  if (d.gameId) return d.gameId !== savedUpset.gameId;
+  const savedGame = (State.games || []).find(g => g.gameId === savedUpset.gameId);
+  return !savedGame || String(savedGame.espnEventId) !== String(d.espnEventId);
+}
+
+// Does the player have unsaved picks for the current week? (in memory, or stored from a killed session)
+function hasUnsavedDraft_() {
+  if (!State.player || !State.picks) return false;
+  const week = currentWeek();
+  if (!isWeekPosted(week)) return false;
+  const games = getGamesForWeek(week);
+  const existing = getMyPicksForWeek(week);
+  const fp = week + ':' + existing.reduce((max, p) => (p.submittedAt > max ? p.submittedAt : max), '');
+  if (_draftPicksSyncedFrom === fp) return draftDiffersFromSaved_(week, games, _draftPicks, _upsetSelection);
+  const stored = loadStoredDraft_(week);
+  return !!(stored && stored.fp === fp && draftDiffersFromSaved_(week, games, stored.picks || {}, stored.upsetSelection));
+}
+
 /* ============================================================
    HOME SCREEN
    ============================================================ */
@@ -1811,6 +1862,120 @@ function isGameStarted(game) {
   return new Date() >= new Date(game.kickoff);
 }
 
+/* ---- Live "how am I doing" helpers (display only -- official scoring stays on final scores) ---- */
+// Latest known score. While a game is in progress, prefer the Scores tab's ESPN feed
+// (under a minute old, has the clock) over the score the backend writes every ~5 min.
+function liveScoreFor(g) {
+  let espn = null;
+  try {
+    if (!isGameFinal(g) && _liveScoresCache && g.espnEventId) {
+      espn = (_liveScoresCache.games || []).find(e => String(e.espnEventId) === String(g.espnEventId) && (e.status === 'live' || e.status === 'final'));
+    }
+  } catch (e) {}
+  const away = espn && espn.awayScore !== '' ? espn.awayScore : g.finalAwayScore;
+  const home = espn && espn.homeScore !== '' ? espn.homeScore : g.finalHomeScore;
+  const hasScore = (isGameStarted(g) || isGameFinal(g)) && away !== '' && away != null && home !== '' && home != null;
+  let clock = '';
+  if (espn && espn.status === 'live' && espn.period) clock = (Number(espn.period) > 4 ? 'OT' : 'Q' + espn.period) + (espn.clock ? ' ' + espn.clock : '');
+  return { away: Number(away), home: Number(home), hasScore, clock };
+}
+
+// How one of my picks stands right now: 'covering' / 'not' for straight picks (against the
+// frozen spread, same rule as computeCoveringTeam), 'winning' / 'losing' / 'tied' for the Upset Special.
+function pickStandingNow(g, team, isUpset) {
+  const s = liveScoreFor(g);
+  if (!s.hasScore || !team) return null;
+  if (isUpset) {
+    const mine = team === g.homeTeam ? s.home : s.away, theirs = team === g.homeTeam ? s.away : s.home;
+    return mine > theirs ? 'winning' : mine < theirs ? 'losing' : 'tied';
+  }
+  return computeCoveringTeam(Object.assign({}, g, { finalAwayScore: s.away, finalHomeScore: s.home })) === team ? 'covering' : 'not';
+}
+
+function myPicksForGame(g) {
+  const mine = (State.picks || []).filter(p => p.playerId === State.player.id && p.gameId === g.gameId);
+  const isUp = p => p.isUpset === true || p.isUpset === 'TRUE';
+  return { straight: mine.find(p => !isUp(p)) || null, upset: mine.find(isUp) || null };
+}
+
+function renderMyPickLine(g) {
+  const { straight, upset } = myPicksForGame(g);
+  if (!straight && !upset) return '';
+  const final = isGameFinal(g);
+  const words = { covering: final ? 'covered ✓' : 'covering now', not: final ? 'didn\'t cover' : 'not covering', winning: final ? 'hit ✓' : 'winning', losing: final ? 'missed' : 'losing', tied: 'tied' };
+  const colors = { covering: 'var(--win)', winning: 'var(--win)', not: 'var(--loss)', losing: 'var(--loss)', tied: 'var(--text-soft)' };
+  const part = (p, isUp) => {
+    const st = pickStandingNow(g, p.pickedTeam, isUp);
+    return `${isUp ? '⭐ Upset' : 'Your pick'}: <strong>${escapeHtml(p.pickedTeam)}</strong>${st ? ` <span style="color:${colors[st]}; font-weight:700;">${words[st]}</span>` : ''}`;
+  };
+  const parts = [];
+  if (straight && !(upset && upset.pickedTeam === straight.pickedTeam)) parts.push(part(straight, false));
+  if (upset) parts.push(part(upset, true) + (straight && upset.pickedTeam === straight.pickedTeam ? (() => { const st = pickStandingNow(g, straight.pickedTeam, false); return st ? ` · spread <span style="color:${colors[st]}; font-weight:700;">${words[st]}</span>` : ''; })() : ''));
+  return `<div style="font-size:11px; color:var(--text-soft); margin-top:6px;">${parts.join(' · ')}</div>`;
+}
+
+// "If it ended now" for the week: everyone's points from games that have started, using
+// latest scores. Only started games count, so no hidden picks are used.
+function liveWeekTally(week) {
+  const games = (State.games || []).filter(g => Number(g.week) === Number(week) && (isGameStarted(g) || isGameFinal(g)));
+  const byId = {};
+  games.forEach(g => { byId[g.gameId] = g; });
+  const totals = {};
+  (State.players || []).filter(p => p.active).forEach(p => { totals[p.id] = { playerId: p.id, points: 0, correct: 0, counted: 0, upset: null }; });
+  (State.picks || []).forEach(p => {
+    const g = byId[p.gameId], t = totals[p.playerId];
+    if (!g || !t || Number(p.week) !== Number(week)) return;
+    const isUp = p.isUpset === true || p.isUpset === 'TRUE';
+    const st = pickStandingNow(g, p.pickedTeam, isUp);
+    if (isUp) {
+      t.upset = { game: g, team: p.pickedTeam, standing: st };
+      if (st === 'winning') t.points += Number(g.spread) || 0;
+    } else if (g.source !== 'external' && st) {
+      t.counted += 1;
+      if (st === 'covering') { t.points += 1; t.correct += 1; }
+    }
+  });
+  return Object.values(totals);
+}
+
+function renderMyLiveWeekCard(week) {
+  const boardGames = getGamesForWeek(week);
+  if (!boardGames.some(g => isGameStarted(g) || isGameFinal(g))) return '';
+  const all = liveWeekTally(week);
+  const me = all.find(t => t.playerId === State.player.id);
+  if (!me) return '';
+  const ahead = all.filter(t => t.points > me.points).length;
+  const tiedWith = all.filter(t => t.points === me.points).length - 1;
+  const ord = n => n + (['th','st','nd','rd'][(n % 100 - 20) % 10] || ['th','st','nd','rd'][n % 100] || 'th');
+  const allFinal = boardGames.every(g => isGameFinal(g));
+  let upsetLine = '<span class="helptext">⭐ Upset Special: not started yet</span>';
+  if (me.upset && me.upset.standing) {
+    const s = liveScoreFor(me.upset.game);
+    const word = { winning: 'winning', losing: 'losing', tied: 'tied' }[me.upset.standing];
+    upsetLine = `⭐ Upset: <strong>${escapeHtml(me.upset.team)}</strong> ${word} ${s.away}–${s.home}${me.upset.standing === 'winning' ? ` <span style="color:var(--gold);">(+${fmtSpread(me.upset.game.spread)})</span>` : ''}`;
+  } else if (!me.upset) {
+    upsetLine = '<span class="helptext">⭐ No Upset Special this week</span>';
+  }
+  return `
+    <div class="card" id="my-live-week-card" style="border:1px solid rgba(242,182,50,0.35);">
+      <div class="flex-between">
+        <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-faint);">Your week ${allFinal ? '· all games final' : '· if it ended now'}</div>
+        <div class="helptext" style="font-size:10px;">${allFinal ? 'unofficial until results are posted' : 'live · unofficial'}</div>
+      </div>
+      <div class="flex-between" style="margin-top:6px; align-items:flex-end;">
+        <div style="font-size:13px; line-height:1.6;">
+          <div><strong>${me.correct}</strong> of ${me.counted} started games covering</div>
+          <div>${upsetLine}</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="mono" style="font-size:24px; font-weight:700; color:var(--gold);">${fmtSpread(me.points).replace(/\.0$/, '')}</div>
+          <div class="helptext">${tiedWith > 0 ? 'T-' : ''}${ord(ahead + 1)} of ${all.length}</div>
+        </div>
+      </div>
+      <div class="helptext" style="font-size:10px; margin-top:6px;">Scores update every few minutes; covering can change until each game is final.</div>
+    </div>`;
+}
+
 // Upset Special locks 5 minutes before the EARLIEST kickoff of the week.
 // Once the first game of the week kicks off, everyone can see all upset picks.
 function isUpsetSpecialLocked(games) {
@@ -1836,11 +2001,17 @@ function renderCountdownBadge(game) {
   const ko = new Date(game.kickoff);
   const diff = ko - now;
   if (diff <= 0) return '<span class="pill pill-live">Live</span>';
-  const h = Math.floor(diff / 3600000);
-  const m = Math.floor((diff % 3600000) / 60000);
-  if (h > 24) return `<span class="helptext">${ko.toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'})}</span>`;
-  if (h > 0) return `<span class="helptext">Kicks off in ${h}h ${m}m</span>`;
-  return `<span class="helptext" style="color:var(--loss);">Kicks off in ${m}m</span>`;
+  // Picks lock 5 minutes before kickoff (isGamePickLocked) -- show that time, not just kickoff
+  const time = d => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const lockAt = new Date(ko.getTime() - 5 * 60 * 1000);
+  const toLock = lockAt - now;
+  if (toLock <= 0) return `<span class="helptext">🔒 Picks locked · kicks off ${time(ko)}</span>`;
+  const h = Math.floor(toLock / 3600000);
+  const m = Math.floor((toLock % 3600000) / 60000);
+  if (h >= 24) return `<span class="helptext">${ko.toLocaleDateString([], {weekday:'short', month:'short', day:'numeric'})} · ${time(ko)} · locks ${time(lockAt)}</span>`;
+  const kicks = `<span style="opacity:0.75;"> · kicks off ${time(ko)}</span>`;
+  if (h > 0) return `<span class="helptext">Locks in ${h}h ${m}m${kicks}</span>`;
+  return `<span class="helptext" style="color:var(--loss);">Locks in ${m}m${kicks}</span>`;
 }
 
 function renderSlate(content) {
@@ -1856,7 +2027,8 @@ function renderSlate(content) {
   const isPicker = rotation && rotation.playerId === State.player.id;
 
   // Dublin / early kickoff warning — Week 0 games can kick off very early ET
-  const hasEarlyKickoff = games.some(g => {
+  // (only until games start -- after that the warning is stale)
+  const hasEarlyKickoff = !games.some(g => isGameStarted(g)) && games.some(g => {
     if (!g.kickoff) return false;
     const ko = new Date(g.kickoff);
     return ko.getUTCHours() < 16; // before noon ET (16:00 UTC)
@@ -2129,6 +2301,7 @@ function renderPicksBoard(content, week, games, earlyWarning) {
       }
     });
     _draftPicksSyncedFrom = syncFingerprint;
+    restoreStoredDraft_(week, games, syncFingerprint);
   }
 
   const straightCount = Object.keys(_draftPicks).filter(gid => _draftPicks[gid].pickedTeam && games.some(g => g.gameId === gid)).length;
@@ -2141,6 +2314,7 @@ function renderPicksBoard(content, week, games, earlyWarning) {
         <div>
           <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:rgba(255,255,255,0.6);">Week ${week} Board</div>
           <div id="picked-count-display" style="font-family:var(--font-display); font-size:18px; margin-top:2px;">${straightCount} / ${games.length} picked</div>
+          <div id="draft-unsaved-note" style="display:none; font-size:12px; font-weight:700; color:var(--loss); margin-top:3px;">● Not saved yet</div>
         </div>
         <div style="text-align:right;">
           <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:rgba(255,255,255,0.6);">Upset Special</div>
@@ -2193,6 +2367,36 @@ function renderPicksBoard(content, week, games, earlyWarning) {
   content.querySelectorAll('[data-upsetmode]').forEach(btn => {
     btn.onclick = () => { _upsetMode = btn.dataset.upsetmode; renderPicksBoard(content, week, games); };
   });
+  updateBoardHeader();
+}
+
+// Brings back unsaved picks from a stored draft (e.g. the phone killed the app before
+// Submit). Only when the saved picks haven't changed since the draft was stored, and
+// never for a game that has locked since -- those keep what's saved.
+function restoreStoredDraft_(week, games, syncFingerprint) {
+  const stored = loadStoredDraft_(week);
+  if (!stored) return;
+  if (stored.fp !== syncFingerprint) { clearStoredDraft_(week); return; }
+  const fromServer = _draftPicks;
+  const restored = JSON.parse(JSON.stringify(stored.picks || {}));
+  games.forEach(g => {
+    if (!isGamePickLocked(g)) return;
+    if (fromServer[g.gameId]) restored[g.gameId] = fromServer[g.gameId]; else delete restored[g.gameId];
+  });
+  let upsetSelection = stored.upsetSelection || null;
+  let upsetMode = stored.upsetMode || 'board';
+  // Once the Upset Special has locked, the saved one stands.
+  if (isUpsetSpecialLocked(games)) {
+    // (on the board, the Upset Special game's straight pick is the same underdog, so keep that game whole)
+    Object.keys(restored).forEach(gid => { if (restored[gid]) restored[gid] = Object.assign({}, restored[gid], { isUpset: false }); });
+    Object.keys(fromServer).forEach(gid => { if (fromServer[gid] && fromServer[gid].isUpset) restored[gid] = fromServer[gid]; });
+    upsetSelection = _upsetSelection;
+    upsetMode = _upsetMode;
+  }
+  _draftPicks = restored;
+  _upsetSelection = upsetSelection;
+  _upsetMode = upsetMode;
+  if (draftDiffersFromSaved_(week, games, _draftPicks, _upsetSelection)) showToast('Restored picks you hadn\'t saved yet');
 }
 
 function renderGamesBoard(games, week) {
@@ -2221,8 +2425,20 @@ function renderGamesBoard(games, week) {
           </span>` : ''}
         </div>`;
     } else if (started) {
-      // game has started but not final -- reveal everyone's picks for this game
-      resultStrip = renderRevealedPicksForGame(g);
+      // Game in progress: live score, how my pick stands, and everyone's picks as a
+      // tap-to-expand split bar. (This used to list every player's pick under every
+      // started game -- ~50 rows each, thousands of pixels to scroll past on a Saturday.)
+      const s = liveScoreFor(g);
+      resultStrip = `
+        <div class="result-strip" style="flex-direction:column; align-items:stretch;">
+          <div class="flex-between">
+            <span class="mono" style="color:var(--text-soft);">${s.hasScore ? `${escapeHtml(g.awayTeam)} ${s.away} – ${s.home} ${escapeHtml(g.homeTeam)}` : 'Waiting for the first score…'}</span>
+            ${s.clock ? `<span style="font-size:10px; font-weight:700; color:var(--win);">${escapeHtml(s.clock)}</span>` : ''}
+          </div>
+          ${renderMyPickLine(g)}
+          <div id="picks-summary-${g.gameId}" onclick="togglePickSummary('${g.gameId}')" style="cursor:pointer;">${renderPickSummaryBar(g)}</div>
+          <div id="picks-full-${g.gameId}" onclick="togglePickSummary('${g.gameId}')" style="display:none; cursor:pointer;">${renderPickBreakdown(g)}</div>
+        </div>`;
     }
 
     return `
@@ -2284,20 +2500,6 @@ function renderGamesBoard(games, week) {
       updateBoardHeader();
     };
   });
-}
-
-function renderRevealedPicksForGame(g) {
-  const picksForGame = State.picks.filter(p => p.gameId === g.gameId);
-  if (picksForGame.length === 0) return '<div class="result-strip"><span class="helptext">No picks revealed yet.</span></div>';
-  const rows = picksForGame.map(p => {
-    const player = getPlayerById(p.playerId);
-    const isUpset = p.isUpset === true || p.isUpset === 'TRUE';
-    return `<div style="display:flex; justify-content:space-between; font-size:12px; padding:3px 0;">
-      <span>${escapeHtml(player ? (player.teamName || player.name) : '—')}</span>
-      <span class="mono" style="color:${isUpset ? 'var(--gold)' : 'var(--text-soft)'};">${escapeHtml(p.pickedTeam)}${isUpset ? ' ⭐' : ''}</span>
-    </div>`;
-  }).join('');
-  return `<div class="result-strip" style="flex-direction:column; align-items:stretch;"><div class="helptext" style="margin-bottom:4px; font-weight:700;">Picks revealed:</div>${rows}</div>`;
 }
 
 function renderUpsetSearchArea(week, games) {
@@ -2497,13 +2699,25 @@ function updateBoardHeader() {
   // count all games with a pick -- including the one with the upset flag, but
   // excluding an Upset Special pick sourced from a searched game outside this
   // week's 10 (that has a different gameId and should not inflate this count)
-  const boardGameIds = new Set(getGamesForWeek(currentWeek()).map(g => g.gameId));
+  const week = currentWeek();
+  const games = getGamesForWeek(week);
+  const boardGameIds = new Set(games.map(g => g.gameId));
   const straightCount = Object.keys(_draftPicks).filter(gid => _draftPicks[gid].pickedTeam && boardGameIds.has(gid)).length;
   const hasUpset = Object.keys(_draftPicks).some(gid => _draftPicks[gid].isUpset) || _upsetSelection;
   const countEl = document.getElementById('picked-count-display');
   const upsetEl = document.getElementById('upset-status-display');
-  if (countEl) countEl.textContent = `${straightCount} / 10 picked`;
+  if (countEl) countEl.textContent = `${straightCount} / ${games.length} picked`;
   if (upsetEl) upsetEl.textContent = hasUpset ? 'Selected' : 'Not Set';
+
+  // Unsaved changes: say so, float the save button above the nav, keep a copy on the phone
+  const unsaved = draftDiffersFromSaved_(week, games, _draftPicks, _upsetSelection);
+  const noteEl = document.getElementById('draft-unsaved-note');
+  if (noteEl) noteEl.style.display = unsaved ? 'block' : 'none';
+  const btn = document.getElementById('submit-picks-btn');
+  if (btn) btn.classList.toggle('sticky-save', unsaved);
+  if (unsaved) storeDraft_(week); else clearStoredDraft_(week);
+  const navBtn = document.querySelector('#bottomnav button[data-view="slate"]');
+  if (navBtn && !!navBtn.querySelector('.unsaved-badge') !== unsaved) renderBottomNav();
 }
 
 async function submitMyPicks(week, games) {
@@ -2538,14 +2752,34 @@ async function submitMyPicks(week, games) {
   btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
   try {
     await api('submitPicks', { week, playerId: State.player.id, picks });
-    showToast('Picks locked in', 'success');
-    await refreshState();
-    renderContent();
   } catch (e) {
     btn.disabled = false;
-    btn.innerHTML = 'Submit My Picks';
+    btn.innerHTML = getMyPicksForWeek(week).length > 0 ? 'Update My Picks' : 'Submit My Picks';
     showToast(e.message || 'Something went wrong -- try again.', 'error');
+    return;
   }
+  // Saved. Show it straight away from what was just sent, and refresh in the background.
+  // The refresh used to be awaited inside the try above, so when getState failed after a
+  // successful save the player saw "Picks locked in" then a red "Failed to fetch" and the
+  // button reset to "Submit My Picks" -- reading as if the picks hadn't saved.
+  applySubmittedPicksLocally_(week, picks);
+  clearStoredDraft_(week);
+  showToast('Picks saved ✓', 'success');
+  renderContent();
+  silentRefresh(true);
+}
+
+// Mirrors apiSubmitPicks_ (Code.gs): the player's picks for the week are replaced by
+// what was sent. The draft is marked as synced from these rows so it isn't rebuilt;
+// the next real refresh (new server submittedAt) re-syncs it from the server.
+function applySubmittedPicksLocally_(week, picks) {
+  const submittedAt = new Date().toISOString();
+  const playerId = State.player.id;
+  const rows = picks
+    .filter(p => p.gameId) // a brand-new searched upset game has no id until the server makes one
+    .map(p => ({ week, playerId, gameId: p.gameId, pickedTeam: p.pickedTeam, isUpset: !!p.isUpset, isAutoDefault: false, submittedAt }));
+  State.picks = (State.picks || []).filter(p => !(p.playerId === playerId && Number(p.week) === Number(week))).concat(rows);
+  _draftPicksSyncedFrom = week + ':' + submittedAt;
 }
 </script>
 <script>
@@ -3686,6 +3920,8 @@ async function renderLiveScores(content) {
       <button class="btn btn-ghost btn-sm" id="scores-refresh-btn">↻ Refresh</button>
     </div>
 
+    <div id="my-live-week-wrap">${renderMyLiveWeekCard(week)}</div>
+
     ${boardGames.length === 0 ? `
       <div class="card"><p class="helptext">No games on the board yet this week.</p></div>
     ` : `
@@ -3869,15 +4105,24 @@ function renderScoreRow(g, isBoard) {
     if (liveVal !== undefined && liveVal !== null && liveVal !== '') return liveVal;
     return '';
   };
-  const awayScore = final || started ? pickScore(g.finalAwayScore, g.awayScore) : '';
-  const homeScore = final || started ? pickScore(g.finalHomeScore, g.homeScore) : '';
+  let awayScore = final || started ? pickScore(g.finalAwayScore, g.awayScore) : '';
+  let homeScore = final || started ? pickScore(g.finalHomeScore, g.homeScore) : '';
+  let clock = '';
+  if (isBoard && (final || started)) {
+    // board games: newest score + game clock from the ESPN feed when it's loaded
+    const s = liveScoreFor(g);
+    if (s.hasScore) { awayScore = s.away; homeScore = s.home; }
+    clock = s.clock;
+  } else if (!isBoard && (g.status === 'live' || g.status === 'in') && g.period) {
+    clock = (Number(g.period) > 4 ? 'OT' : 'Q' + g.period) + (g.clock ? ' ' + g.clock : '');
+  }
 
   const awayWon = final && Number(awayScore) > Number(homeScore);
   const homeWon = final && Number(homeScore) > Number(awayScore);
   const awayIsUpset = awayWon && g.favorite === g.homeTeam;
   const homeIsUpset = homeWon && g.favorite === g.awayTeam;
 
-  const status = final ? 'Final' : started ? 'Live' : g.kickoff ? new Date(g.kickoff).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : 'TBD';
+  const status = final ? 'Final' : started ? (clock || 'Live') : g.kickoff ? new Date(g.kickoff).toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : 'TBD';
   const statusColor = final ? 'var(--text-faint)' : started ? 'var(--win)' : 'var(--text-faint)';
 
   const spread = g.spread ? (g.favorite === g.awayTeam ? `-${fmtSpread(g.spread)}` : `+${fmtSpread(g.spread)}`) : '';
@@ -3898,9 +4143,10 @@ function renderScoreRow(g, isBoard) {
           </div>
         </div>
         <div style="text-align:right; flex-shrink:0; min-width:40px;">
-          <div style="font-size:10px; font-weight:700; color:${statusColor}; text-transform:uppercase;">${status}</div>
+          <div style="font-size:10px; font-weight:700; color:${statusColor}; text-transform:uppercase; white-space:nowrap;">${escapeHtml(status)}</div>
         </div>
       </div>
+      ${isBoard ? `<div style="padding-left:16px;">${renderMyPickLine(g)}</div>` : ''}
       ${isBoard && started ? (
         final
           ? `<div id="picks-summary-${g.gameId}" onclick="togglePickSummary('${g.gameId}')" style="cursor:pointer;">${renderPickSummaryBar(g)}</div>
@@ -3938,9 +4184,36 @@ async function loadAllEspnScores(week) {
     _liveScoresCache = { week: week, ts: Date.now(), games: data.games || [] };
     const c2 = document.getElementById('all-scores-container');
     if (c2) renderAllScores(c2, _liveScoresCache.games);
+    refreshBoardLiveScores_(week);
   } catch(e) {
     if (container) container.innerHTML = `<div class="empty-state"><p>Could not load ESPN scores. ${e.message}</p></div>`;
   }
+}
+
+// Fresh ESPN scores just arrived: redraw the board rows and "your week" card with the
+// latest scores and game clocks (only needed while board games are in progress).
+function refreshBoardLiveScores_(week) {
+  const boardGames = getGamesForWeek(week);
+  if (!boardGames.some(g => isGameStarted(g) && !isGameFinal(g))) return;
+  const list = document.getElementById('board-scores-list');
+  if (list) {
+    const open = boardGames.filter(g => { const f = document.getElementById('picks-full-' + g.gameId); return f && f.style.display !== 'none'; }).map(g => g.gameId);
+    // keep open game-detail panels as they are (moving the nodes) rather than re-fetching them
+    const kept = {};
+    boardGames.forEach(g => {
+      const d = document.getElementById('live-detail-' + g.gameId), t = document.getElementById('live-detail-toggle-' + g.gameId);
+      if (d && d.style.display !== 'none') kept[g.gameId] = { d, label: t ? t.textContent : '' };
+    });
+    list.innerHTML = boardGames.map(g => renderScoreRow(g, true)).join('');
+    open.forEach(togglePickSummary);
+    Object.keys(kept).forEach(id => {
+      const fresh = document.getElementById('live-detail-' + id), t = document.getElementById('live-detail-toggle-' + id);
+      if (fresh) fresh.replaceWith(kept[id].d);
+      if (t && kept[id].label) t.textContent = kept[id].label;
+    });
+  }
+  const wrap = document.getElementById('my-live-week-wrap');
+  if (wrap) wrap.innerHTML = renderMyLiveWeekCard(week);
 }
 
 function renderAllScores(container, games) {
