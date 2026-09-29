@@ -277,6 +277,24 @@ input[id^="bio-"], textarea[id^="bio-"]{ color:#000; background:#fff; }
 .team-pick.upset-pick .tline{ color: var(--gold); }
 .team-pick .fav-badge{ font-size:9px; text-transform:uppercase; letter-spacing:0.07em; color:var(--gold); font-weight:700; margin-top:2px; }
 .vs-divider{ font-family:var(--font-mono); font-size:11px; color:var(--text-faint); font-weight:600; padding-top:14px; }
+/* Long team names ("Louisiana Ragin' Cajuns") used to hold each team button at the width
+   of its content, so on a phone the pair came out wider than the screen and the game box
+   cut the right-hand team off. Let the buttons shrink and the name wrap (at spaces). */
+.team-pick, .team-logo-row, .team-logo-row > div{ min-width:0; }
+.team-pick .tname{ overflow-wrap:break-word; line-height:1.2; }
+.team-pick .tline{ flex-shrink:0; }
+@media (max-width: 480px){
+  /* phones: spread under the name instead of beside it, so the name gets the width */
+  .game-row{ padding:12px 10px; }
+  .game-matchup{ gap:6px; }
+  .team-pick{ flex-direction:column; align-items:flex-start; justify-content:center; gap:4px; padding:9px 9px; }
+  .team-logo-row{ gap:7px; width:100%; }
+  .team-pick .tname{ font-size:13px; }
+  .team-pick .tline{ font-size:12px; padding-left:27px; }
+  .team-logo, .team-logo-fallback{ width:20px; height:20px; }
+  .vs-divider{ padding-top:0; font-size:10px; }
+  .result-strip .mono{ min-width:0; overflow-wrap:break-word; }
+}
 
 .upset-toggle{
   display:flex; align-items:center; justify-content:space-between; gap:10px;
