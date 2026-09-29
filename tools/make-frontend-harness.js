@@ -7,6 +7,8 @@
 //               ?delay=ms (simulate a slow backend),
 //               ?final=1 (week 1 is over: final scores + picks, 2-way tie for top score),
 //               ?unposted=1 (week 1 board not posted yet; two games are missing a kickoff / spread)
+//               ?picker=1 (you are week 1's picker, no slate yet; every getState changes
+//                          another player's picks, like a busy week in the background)
 // Admin writes that matter for the Pot tab (adminTogglePaid, adminLedgerEntry, adminLedgerBatch)
 // update the fake state, so the next getState shows them.
 const fs = require('fs');
@@ -41,6 +43,14 @@ const mock = `<script>
   var state = { ok: true, players: [{ id: 'p1', name: 'Test Admin', teamName: 'TESTERS', isAdmin: true, active: true }, { id: 'p2', name: 'Pat', teamName: 'PATS', isAdmin: false, active: true }, { id: 'p3', name: 'Sam', teamName: 'SAMS', isAdmin: false, active: true }],
     season: [{ key: 'year', value: 2026 }, { key: 'currentWeek', value: 1 }, { key: 'leagueName', value: 'Upset Special League' }, { key: 'entryFee', value: 100 }, { key: 'weeklyPrize', value: 100 }],
     rotation: [{ week: 1, playerId: 'p2', status: qs.get('unposted') === '1' ? 'submitted' : 'posted', assignedAt: '' }], games: games, picks: picks, ledger: [], bowlGames: [], bowlPicks: [], bowlChampion: [], bowlLedger: [], snapshotCount: 0 };
+  var picker = qs.get('picker') === '1';
+  var slate = [];
+  if (picker) {
+    state.games = [];
+    state.rotation = [{ week: 1, playerId: 'p1', status: 'assigned', assignedAt: '' }];
+    var sat = new Date(); sat.setDate(sat.getDate() + ((6 - sat.getDay() + 7) % 7 || 7)); sat.setHours(15, 30, 0, 0);
+    for (var s = 1; s <= 14; s++) slate.push({ espnEventId: 'S' + s, awayTeam: 'Road ' + s, homeTeam: 'Host ' + s, favorite: 'Host ' + s, spread: 2.5 + s, kickoff: sat.toISOString(), homeLogo: '', awayLogo: '', source: 'snapshot', hasSnapshot: true, started: false, statusDetail: '' });
+  }
   var draft = null;
   var realFetch = window.fetch.bind(window);
   window.fetch = function(url, opts) {
@@ -51,7 +61,11 @@ const mock = `<script>
       setTimeout(function() {
         if (qs.get('fail') === '1') return resolve(new Response('<html>Service unavailable</html>', { status: 503 }));
         var data = { ok: true };
-        if (body.action === 'getState') data = state;
+        if (body.action === 'getState') {
+          if (picker) state.picks = state.picks.concat([{ week: 0, playerId: 'p3', gameId: 'x' + state.picks.length, pickedTeam: 'X', isUpset: false }]);
+          data = state;
+        }
+        else if (body.action === 'getPickerSlateFromSnapshot') data = { ok: true, games: slate };
         else if (body.action === 'getCareerHistory') data = { ok: true, history: [] };
         else if (body.action === 'getAvatars') data = { ok: true, avatars: {} };
         else if (body.action === 'getMessages') data = { ok: true, messages: [] };

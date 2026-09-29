@@ -485,7 +485,7 @@ let _chatUnread = { general: 0, commissioner: 0 };
 // HTML error page (non-JSON) on cold starts / "too many simultaneous invocations",
 // so one or two quick retries turn most of those transient failures into successes.
 // NEVER add a write action here — a retried write could double-apply.
-const RETRYABLE_ACTIONS = { getState: 1, getMessages: 1, getCareerHistory: 1, getAvatars: 1, getAllEspnScores: 1, getAllTimeLeaderboard: 1, getTrophyRoom: 1, getStandings: 1, getBowlStandings: 1 };
+const RETRYABLE_ACTIONS = { getState: 1, getMessages: 1, getCareerHistory: 1, getAvatars: 1, getAllEspnScores: 1, getAllTimeLeaderboard: 1, getTrophyRoom: 1, getStandings: 1, getBowlStandings: 1, getPickerSlateFromSnapshot: 1, getWeeklyEspnSlate: 1 };
 const RETRY_DELAYS_MS = [1500, 4000];
 
 // Fire-and-forget report of a problem the backend can't see on its own (see
@@ -2106,6 +2106,12 @@ let _pickerLoading = false;
 let _pickerDateRange = { startDate: '', endDate: '' };
 
 function renderPickerSubmissionForm(content, week) {
+  // Background refreshes re-render the This Week tab whenever anything in the league
+  // changes. Rebuilding this form wiped the picker's selected games and fired another
+  // getPickerSlateFromSnapshot every time -- the picker's own taps kept getting reset,
+  // and the repeat loads were timing out on phones. Keep the form that's on screen.
+  const existing = document.getElementById('picker-games-list');
+  if (existing && content.contains(existing) && existing.dataset.week === String(week)) return;
   _pickerSelectedGames = [];
   content.innerHTML = `
     <div class="card" style="background:var(--upset-grad); color:#1A1206;">
@@ -2124,7 +2130,7 @@ function renderPickerSubmissionForm(content, week) {
       </div>
       <p class="helptext">Board games are weekend-only (Sat/Sun), per league rule. Defaults to this Saturday and Sunday.</p>
     </div>
-    <div id="picker-games-list"><div class="empty-state"><p>Loading this weekend's games from ESPN...</p></div></div>
+    <div id="picker-games-list" data-week="${week}"><div class="empty-state"><p>Loading this weekend's games from ESPN...</p></div></div>
     <button class="btn btn-gold btn-block" id="submit-slate-btn" style="margin-top:6px;" disabled>Select 10 Games to Submit</button>
   `;
 
