@@ -16,4 +16,4 @@ SERVE_COPIES = "0"
 [[d1_databases]]
 binding = "DB"
 database_name = "upset-special"
-database_id = "PASTE-DATABASE-ID-HERE"
+database_id = "1a20e3de-8349-455b-97e6-305580b758af"
