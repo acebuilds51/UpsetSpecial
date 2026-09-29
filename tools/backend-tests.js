@@ -1269,6 +1269,125 @@ test('submitPicks without a requestId (old app copies) works exactly as before; 
   eq(rowsOf(env, 'Picks').filter(p => p.playerId === 'p2').length, 3, 'an invalid id is treated as no id');
 });
 
+// ---------------------------------------------------------------- v17: lean triggers + chat
+test('chat: with the state cached, posting/reading/reporting reads neither Players (avatars) nor Season; pushes unchanged', () => {
+  const env = loadBackend(); seedLeague(env); enablePush(env);
+  const pl = env.ss.getSheetByName('Players'); const h = pl._data[0];
+  pl._data.forEach((row, i) => { if (i && row[h.indexOf('id')] === 'p3') row[h.indexOf('chatNotif')] = 'off'; });
+  env.ctx.invalidateStateCache();
+  env.call('getState'); // the app (or keepWarm) has the state cached
+  if (!env.ss.getSheetByName('PerfLog')) env.ss.insertSheet('PerfLog').appendRow(['timestamp', 'action', 'ms', 'ok', 'error', 'reason', 'notes']);
+  const reads = countSheetReads(env);
+  env.ctx._sheetDataCache = {};
+  const before = pushes().length;
+  const r = env.call('postMessage', { playerId: 'p2', type: 'general', message: 'hello' });
+  ok(r.ok, r.error);
+  eq(pushes().slice(before).map(m => m.token).sort(), ['tok0a', 'tok0b'], 'p1 only: not the poster, not p3 (chat off)');
+  const m = env.call('getMessages', { type: 'general' });
+  eq(m.messages.map(x => [x.message, x.teamName, String(x.season)]), [['hello', 'TEAM2', '2026']], 'new message visible at once');
+  ok(env.call('logClientError', { failedAction: 'getState', message: 'x', playerId: 'p2' }).ok);
+  ok(/TEAM2/.test(env.ss.getSheetByName('PerfLog')._data.find(x => x[1] === 'client:getState')[6]), 'team still recorded');
+  eq([reads.Players, reads.Season], [undefined, undefined], JSON.stringify(reads));
+  // a non-member still can't post, and only admins use the commissioner channel
+  eq(env.call('postMessage', { playerId: 'nobody', message: 'x' }).ok, false);
+  eq(env.call('postMessage', { playerId: 'p2', type: 'commissioner', message: 'x' }).ok, false);
+  const b2 = pushes().length;
+  ok(env.call('postMessage', { playerId: 'p1', type: 'commissioner', message: 'league news' }).ok);
+  eq(pushes().length - b2, 6, 'commissioner post still reaches every device');
+});
+
+test('final-score check: "nothing new" is answered from the cached state -- no sheet reads, no script lock', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env); enablePush(env);
+  finishWeek(env, kickoff, 10);
+  env.call('getState'); // cache now holds the finals
+  let locks = 0;
+  const gl = env.ctx.LockService.getScriptLock;
+  env.ctx.LockService.getScriptLock = () => { locks++; return gl(); };
+  env.ctx._sheetDataCache = {};
+  env.ctx.checkGameFinalNotifications();
+  const n = pushes().length;
+  ok(n > 0 && locks === 1, 'new finals: full run (lock + pushes)');
+  ok(rowsOf(env, 'UpsetHistory').length > 0, 'week wrapped up');
+  env.call('getState');
+  const reads = countSheetReads(env);
+  env.ctx._sheetDataCache = {};
+  env.ctx.checkGameFinalNotifications();
+  eq([reads.Games, reads.Season, locks, pushes().length], [undefined, undefined, 1, n], 'quiet run: nothing read, locked or sent');
+  // without a cached state it falls back to the sheets (and still sends nothing twice)
+  env.ctx.invalidateStateCache();
+  env.ctx._sheetDataCache = {};
+  env.ctx.checkGameFinalNotifications();
+  eq([reads.Games > 0, pushes().length], [true, n]);
+});
+
+test('front door: a live-score keepWarm sends exactly ONE stale signal, after its cache rebuild', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env, { kickoffOffset: -3600000 }); enableFrontDoor(env);
+  env.call('submitPicks', straightOnly('p2', [1, 2])); // p3 has no picks -> auto defaults get written too
+  espnEvents = [];
+  for (let i = 1; i <= 10; i++) espnEvents.push(mkEvent('E' + i, 'Away' + i, 'Home' + i, { date: kickoff, homeScore: 7, awayScore: 3 }));
+  env.props.lastAutoScoreFetch = '0';
+  const n = staleSignals().length;
+  let warmAtSignal = null;
+  const f = env.ctx.UrlFetchApp.fetch;
+  env.ctx.UrlFetchApp.fetch = (url, opts) => { if (String(url).indexOf('frontdoor') >= 0) warmAtSignal = !!env.cache.get('appState_v3_n'); return f(url, opts); };
+  env.ctx.keepWarm();
+  ok(Number(env.props.lastAutoScoreFetch) > Date.now() - 60000, 'scores were fetched');
+  eq(staleSignals().length - n, 1, 'one signal for the whole run');
+  eq(warmAtSignal, true, 'sent after the state was rebuilt');
+  env.ctx.keepWarm(); // nothing changed since -> no signal
+  eq(staleSignals().length - n, 1);
+  // a web request inside is unaffected: still one signal per write
+  ok(env.call('adminOverrideLine', { adminId: 'p1', gameId: 'g1', favorite: 'Away1', spread: 7 }).ok);
+  eq(staleSignals().length - n, 2);
+});
+
+test('game summary: ESPN fetched once per game while cached (60s live, 6h final); failures are not cached', () => {
+  const env = loadBackend(); seedLeague(env);
+  const ttls = {};
+  const put = env.cache.put;
+  env.cache.put = (k, v, ttl) => { ttls[k] = ttl; return put(k, v, ttl); };
+  const summaryFetches = () => fetchLog.filter(c => c.url.indexOf('summary?event=') >= 0).length;
+  const a = env.call('getGameSummary', { espnEventId: '401', awayTeam: 'A', homeTeam: 'B' });
+  const b = env.call('getGameSummary', { espnEventId: '401', awayTeam: 'A', homeTeam: 'B' });
+  ok(a.ok && b.ok, a.error || b.error);
+  eq(summaryFetches(), 1, 'second viewer served from cache');
+  eq(Object.keys(a).sort(), ['_version', 'boxscore', 'leaders', 'ok', 'recap', 'scoringPlays', 'situation', 'winProbability'], 'same reply shape');
+  eq(JSON.stringify(b), JSON.stringify(a));
+  eq(ttls.gamesummary_v1_401, 60, 'live game');
+  const f = env.ctx.UrlFetchApp.fetch;
+  env.ctx.UrlFetchApp.fetch = (url, opts) => String(url).indexOf('event=402') >= 0
+    ? { getResponseCode: () => 200, getContentText: () => JSON.stringify({ header: { competitions: [{ status: { type: { completed: true, detail: 'Final' } } }] } }) }
+    : f(url, opts);
+  ok(env.call('getGameSummary', { espnEventId: '402' }).ok);
+  eq(ttls.gamesummary_v1_402, 21600, 'final game');
+  env.ctx.UrlFetchApp.fetch = () => ({ getResponseCode: () => 503, getContentText: () => '' });
+  eq(env.call('getGameSummary', { espnEventId: '403' }).ok, false);
+  eq(env.cache.get('gamesummary_v1_403'), null, 'an ESPN error is not cached');
+});
+
+test('diagnostics: PerfLog rows carry the code version; the report splits THIS version\'s keepWarm/getState numbers', () => {
+  const env = loadBackend(); seedLeague(env);
+  env.cache.remove('perfLogRecent');
+  env.ctx._perfNotes = { keepWarm: 'fresh' };
+  env.ctx.logPerf_('keepWarm', 4500, { ok: true });
+  const pl = env.ss.getSheetByName('PerfLog');
+  const v = env.ctx.CODE_VERSION;
+  eq(JSON.parse(pl._data[pl._data.length - 1][6]), { v, keepWarm: 'fresh' });
+  const now = new Date().toISOString();
+  pl.appendRow([now, 'keepWarm', 9000, true, '', 'slow', JSON.stringify({ v, keepWarm: 'rebuilt' })]);
+  pl.appendRow([now, 'keepWarm', 7000, true, '', 'slow', JSON.stringify({ v: 'v1-old', keepWarm: 'rebuilt' })]);
+  pl.appendRow([now, 'getState', 5000, true, '', 'slow', JSON.stringify({ v, stateCache: 'hit', picksCache: 'miss' })]);
+  pl.appendRow([now, 'getState', 6000, true, '', 'slow', '']); // logged before versions were recorded
+  const rep = env.ctx.runDiagnostics();
+  const cur = {}; rep.perfCurrent.forEach(p => { cur[p.action] = [p.logged, p.p50]; });
+  eq(cur['keepWarm [fresh]'], [1, 4500]);
+  eq(cur['keepWarm [rebuilt]'], [1, 9000], 'the old version\'s row is left out');
+  eq(cur['getState [state hit, picks miss]'], [1, 5000]);
+  ok(rep.perf.find(p => p.action === 'keepWarm').logged >= 3, '7-day totals still include every row');
+  const s = env.call('getDiagnosticsSummary').summary;
+  ok(s.perfCurrent.length >= 3 && s.perfCurrentSince, 'in the summary');
+});
+
 // ---------------------------------------------------------------- report
 let failed = 0;
 results.forEach(([pass, name, err]) => {

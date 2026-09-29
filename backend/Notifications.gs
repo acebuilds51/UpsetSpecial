@@ -1,4 +1,4 @@
-// v16-safe-pick-retry-sep29  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
+// v17-lean-triggers-sep29  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
 // ============================================================
 //  UPSET SPECIAL — Notifications & week/season finalization (v2, Sep 2026)
 //
@@ -56,7 +56,7 @@ function checkPickReminders() {
 // Active players' push tokens (one entry per device), with their score preference.
 function getNotifyTargets_() {
   var targets = [];
-  sheetToObjects(SHEET_NAMES.PLAYERS).forEach(function(p) {
+  playersLite_().forEach(function(p) { // cached list: no avatars read
     if (!(p.active === true || p.active === 'TRUE')) return;
     String(p.fcmToken || '').split(',').map(function(t) { return t.trim(); }).filter(Boolean).forEach(function(token) {
       targets.push({ playerId: p.id, token: token, scorePref: String(p.scoreNotif || 'each') }); // 'each' | 'summary' | 'off'
@@ -74,30 +74,24 @@ function underdogOf_(g) { return g.favorite === g.homeTeam ? g.awayTeam : g.home
 function isTrue_(v) { return v === true || v === 'TRUE'; }
 
 // ---- Final-score pushes + week wrap-up (trigger: every 5 minutes) ----
-function checkGameFinalNotifications() {
+function checkGameFinalNotifications() { runWithOneStaleSignal_(checkGameFinalNotifications_); }
+
+function checkGameFinalNotifications_() {
+  // The common case (nothing new) is answered from the cached state -- no sheet reads and
+  // no script lock, which pick saves wait on. This runs 288 times a day next to keepWarm;
+  // it used to take the lock and read Season + Games every time. Every score fetch and
+  // every write busts that cache, so a cached "nothing new" is current. Anything that
+  // might be new (or no cache) goes on to the full check below, which reads the sheets.
+  if (!finalNotificationsMayHaveWork_(cachedSharedStateOrNull_())) return;
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(0)) return; // another run (or a pick submission) is busy — next tick will catch up
   try {
-    var cfg = getSeasonConfig();
-    var week = Number(cfg.currentWeek || 0);
-    var year = Number(cfg.year || new Date().getFullYear());
     var props = PropertiesService.getScriptProperties();
-    var boardGames = sheetToObjects(SHEET_NAMES.GAMES).filter(function(g) {
-      return Number(g.week) === week && g.source !== 'external';
-    });
-    if (boardGames.length === 0) return;
-
-    // Keys include the year (v1's 'summary_sent_week1' would have silently blocked
-    // next season's week-1 wrap-up). Falls back to the old key so this week isn't re-sent.
-    var notifiedKey = 'score_notified_' + year + '_week' + week;
-    var notified = JSON.parse(props.getProperty(notifiedKey) || props.getProperty('score_notified_week' + week) || '{}');
-    var newFinals = boardGames.filter(function(g) { return isTrue_(g.isFinal) && !notified[g.gameId]; });
-    var summaryKey = 'summary_sent_' + year + '_week' + week;
-    var summaryAlreadySent = props.getProperty(summaryKey) ||
-      (year === 2026 && props.getProperty('summary_sent_week' + week)); // pre-v2 key, this season only
-    var allFinal = boardGames.every(function(g) { return isTrue_(g.isFinal); });
-    var needsWrapUp = allFinal && !summaryAlreadySent;
-    if (newFinals.length === 0 && !needsWrapUp) return; // the common case: nothing new — done after 2 sheet reads
+    var work = finalNotificationWork_(getSeasonConfig(), sheetToObjects(SHEET_NAMES.GAMES), props);
+    if (!work) return; // nothing new -- done after 2 sheet reads
+    var week = work.week, boardGames = work.boardGames, notified = work.notified;
+    var newFinals = work.newFinals, needsWrapUp = work.needsWrapUp;
+    var notifiedKey = work.notifiedKey, summaryKey = work.summaryKey;
 
     var targets = getNotifyTargets_();
 
@@ -143,6 +137,40 @@ function checkGameFinalNotifications() {
   } finally {
     releaseLock_(lock);
   }
+}
+
+// What checkGameFinalNotifications has to do for the current week, or null if nothing:
+// { week, boardGames, notified, notifiedKey, newFinals, summaryKey, needsWrapUp }.
+// cfg = season config object; games = every Games row (from the sheet or the cached state).
+function finalNotificationWork_(cfg, games, props) {
+  var week = Number(cfg.currentWeek || 0);
+  var year = Number(cfg.year || new Date().getFullYear());
+  var boardGames = (games || []).filter(function(g) {
+    return Number(g.week) === week && g.source !== 'external';
+  });
+  if (boardGames.length === 0) return null;
+
+  // Keys include the year (v1's 'summary_sent_week1' would have silently blocked
+  // next season's week-1 wrap-up). Falls back to the old key so this week isn't re-sent.
+  var notifiedKey = 'score_notified_' + year + '_week' + week;
+  var notified = JSON.parse(props.getProperty(notifiedKey) || props.getProperty('score_notified_week' + week) || '{}');
+  var newFinals = boardGames.filter(function(g) { return isTrue_(g.isFinal) && !notified[g.gameId]; });
+  var summaryKey = 'summary_sent_' + year + '_week' + week;
+  var summaryAlreadySent = props.getProperty(summaryKey) ||
+    (year === 2026 && props.getProperty('summary_sent_week' + week)); // pre-v2 key, this season only
+  var allFinal = boardGames.every(function(g) { return isTrue_(g.isFinal); });
+  var needsWrapUp = allFinal && !summaryAlreadySent;
+  if (newFinals.length === 0 && !needsWrapUp) return null;
+  return { week: week, boardGames: boardGames, notified: notified, notifiedKey: notifiedKey,
+    newFinals: newFinals, summaryKey: summaryKey, needsWrapUp: needsWrapUp };
+}
+
+// Quick pre-check from the cached state (null = no cache: assume there may be work).
+function finalNotificationsMayHaveWork_(shared) {
+  if (!shared) return true;
+  var cfg = {};
+  (shared.season || []).forEach(function(r) { cfg[r.key] = r.value; });
+  return !!finalNotificationWork_(cfg, shared.games, PropertiesService.getScriptProperties());
 }
 
 // ---- Rebuild one week's UpsetHistory rows (called when all board games are final) ----

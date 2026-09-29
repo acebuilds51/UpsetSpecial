@@ -1,4 +1,4 @@
-// v16-safe-pick-retry-sep29  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v17-lean-triggers-sep29  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -86,7 +86,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v16-safe-pick-retry-sep29';
+var CODE_VERSION = 'v17-lean-triggers-sep29';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -642,7 +642,48 @@ function apiGetGameSummary(payload) {
   var espnEventId = payload.espnEventId;
   if (!espnEventId) return { ok: false, error: 'Missing espnEventId.' };
 
-  var url = 'https://site.web.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=' + espnEventId;
+  var parts = getGameSummaryParts_(espnEventId);
+  if (!parts.ok) return { ok: false, error: parts.error };
+  var result = parts.result;
+
+  // Auto-generate a narrative recap, cached server-side so the AI call happens
+  // once per game total, not once per viewer. First person to open this game's
+  // detail triggers generation; everyone after gets the cached copy instantly.
+  try {
+    result.recap = getCachedGameRecap_(
+      espnEventId, String(payload.awayTeam || ''), String(payload.homeTeam || ''),
+      payload.awayScore, payload.homeScore, result.scoringPlays, result.leaders,
+      payload.gameId, String(payload.favorite || ''), payload.spread, parts.isFinal, parts.statusDetail
+    );
+  } catch (e) { Logger.log('getGameSummary recap: ' + e.message); }
+
+  return result;
+}
+
+// ESPN's per-event summary, parsed down to what the app shows. Cached per game --
+// 60s while it's live (about how often the app re-opens it), 6h once final -- so
+// several players opening the same game don't each wait on ESPN's large summary
+// document (p50 was ~5s, every call). Returns { ok, result, isFinal, statusDetail }
+// or { ok: false, error }; errors are never cached.
+var GAME_SUMMARY_TTL_LIVE = 60;
+var GAME_SUMMARY_TTL_FINAL = 21600;
+function getGameSummaryParts_(espnEventId) {
+  var cache = CacheService.getScriptCache();
+  var cacheKey = 'gamesummary_v1_' + espnEventId;
+  try {
+    var hit = cache.get(cacheKey);
+    if (hit) { perfNote_('summaryCache', 'hit'); return JSON.parse(hit); }
+  } catch (e) {}
+  var parts = fetchGameSummaryParts_(espnEventId);
+  if (parts.ok) {
+    try { cache.put(cacheKey, JSON.stringify(parts), parts.isFinal ? GAME_SUMMARY_TTL_FINAL : GAME_SUMMARY_TTL_LIVE); }
+    catch (e) { /* too big to cache -- just not cached */ }
+  }
+  return parts;
+}
+
+function fetchGameSummaryParts_(espnEventId) {
+  var url ='https://site.web.api.espn.com/apis/site/v2/sports/football/college-football/summary?event=' + espnEventId;
   var resp;
   try {
     resp = UrlFetchApp.fetch(url, {
@@ -736,18 +777,7 @@ function apiGetGameSummary(payload) {
     statusDetail = (statusType && statusType.detail) || (statusType && statusType.description) || '';
   } catch (e) { Logger.log('getGameSummary status parse: ' + e.message); }
 
-  // Auto-generate a narrative recap, cached server-side so the AI call happens
-  // once per game total, not once per viewer. First person to open this game's
-  // detail triggers generation; everyone after gets the cached copy instantly.
-  try {
-    result.recap = getCachedGameRecap_(
-      espnEventId, String(payload.awayTeam || ''), String(payload.homeTeam || ''),
-      payload.awayScore, payload.homeScore, result.scoringPlays, result.leaders,
-      payload.gameId, String(payload.favorite || ''), payload.spread, isFinal, statusDetail
-    );
-  } catch (e) { Logger.log('getGameSummary recap: ' + e.message); }
-
-  return result;
+  return { ok: true, result: result, isFinal: isFinal, statusDetail: statusDetail };
 }
 
 // Generates (and caches) the narrative recap for one game. Cache key is the
@@ -1685,6 +1715,34 @@ function getSharedState_() {
   return rebuildStateCache_();
 }
 
+// The cached shared state if there is one, else null -- never rebuilds. For callers
+// that only need a player or the season and would rather read one tab than rebuild all
+// of them on a miss (chat posts, client error reports, the 5-min final-score check).
+// Always current: every write and manual edit busts it (see invalidateStateCache).
+function cachedSharedStateOrNull_() {
+  try {
+    var raw = cacheGetChunked_(CacheService.getScriptCache(), STATE_CACHE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return null;
+}
+
+// Players (active, isAdmin, teamName, fcmToken, chatNotif, scoreNotif...) without reading
+// the Players tab -- which carries every player's base64 avatar -- when the state is cached.
+// No PINs or avatars in this list; use sheetToObjects(PLAYERS) for those.
+function playersLite_() {
+  var shared = cachedSharedStateOrNull_();
+  return shared && shared.players ? shared.players : sheetToObjects(SHEET_NAMES.PLAYERS);
+}
+
+function seasonYearLite_() {
+  var shared = cachedSharedStateOrNull_();
+  var yr = '';
+  if (shared) (shared.season || []).forEach(function(r) { if (r.key === 'year') yr = r.value; });
+  else yr = getSeasonConfig().year;
+  return yr || new Date().getFullYear();
+}
+
 function apiGetState(payload) {
   var shared = getSharedState_();
 
@@ -1763,6 +1821,21 @@ function sendFrontDoorStale_() {
     UrlFetchApp.fetch(url, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true,
       payload: JSON.stringify({ action: 'frontDoorStale', secret: secret }) });
   } catch (e) { Logger.log('front door stale signal failed: ' + e.message); }
+}
+
+// For time triggers: every cache bust inside fn marks the Worker stale, and outside a web
+// request each one used to send its own signal (a live-score keepWarm run sent 3+: each
+// Picks write, the lock release, the state bust -- a flush + an HTTP call each). Now fn's
+// busts are collected and ONE signal goes out when it finishes, after its writes and its
+// cache rebuild, so the Worker's next read also finds a warm cache.
+function runWithOneStaleSignal_(fn) {
+  if (_inWebRequest) return fn(); // handle() already sends one at the end
+  _inWebRequest = true; _frontDoorDirty = false;
+  try { return fn(); }
+  finally {
+    _inWebRequest = false;
+    if (_frontDoorDirty) sendFrontDoorStale_();
+  }
 }
 
 // Run once from the editor after setting FRONT_DOOR_URL / FRONT_DOOR_SECRET: the Worker's
@@ -3241,7 +3314,9 @@ function apiAdminFixCareerMapping(payload) {
 }
 
 function apiGetMessages(payload) {
-  var season = getSeasonConfig().year || new Date().getFullYear();
+  // season from the cached state: this used to read the Season tab on EVERY call,
+  // even when the messages themselves came from the 30s cache
+  var season = seasonYearLite_();
   var type = payload.type || 'general';
   // Cache chat messages for 30s — players see near-real-time updates without hammering Sheets
   var cache = CacheService.getScriptCache();
@@ -3258,7 +3333,10 @@ function apiGetMessages(payload) {
 }
 
 function apiPostMessage(payload) {
-  var player = sheetToObjects(SHEET_NAMES.PLAYERS).find(function(p) { return p.id === payload.playerId; });
+  // Players + season from the cached state (p50 was ~8.8s): the Players tab carries every
+  // avatar, and it was read here for the poster and again for the push list.
+  var players = playersLite_();
+  var player = players.find(function(p) { return p.id === payload.playerId; });
   if (!player || !player.active) return { ok: false, error: 'Player not found.' };
 
   var type = payload.type || 'general';
@@ -3270,7 +3348,7 @@ function apiPostMessage(payload) {
   var message = String(payload.message || '').trim();
   if (!message || message.length > 1000) return { ok: false, error: 'Message must be 1-1000 characters.' };
 
-  var season = getSeasonConfig().year || new Date().getFullYear();
+  var season = seasonYearLite_();
   var messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
   var postedAt = new Date().toISOString();
 
@@ -3300,7 +3378,7 @@ function apiPostMessage(payload) {
     if (type === 'commissioner') {
       sendPushToAllPlayers('📢 ' + player.teamName + ' (Commissioner)', message.slice(0, 120));
     } else {
-      var optedIn = sheetToObjects(SHEET_NAMES.PLAYERS).filter(function(p) {
+      var optedIn = players.filter(function(p) {
         return p.active && p.id !== player.id && p.fcmToken && String(p.fcmToken).trim() !== '' && p.chatNotif !== 'off';
       });
       var chatMsgs = [];
@@ -3831,7 +3909,7 @@ function sendFcmBatch_(messages) {
 
 function sendPushToAllPlayers(title, body) {
   try {
-    var players = sheetToObjects(SHEET_NAMES.PLAYERS).filter(function(p) {
+    var players = playersLite_().filter(function(p) {
       return p.active && p.fcmToken && String(p.fcmToken).trim() !== '';
     });
     if (players.length === 0) return;
@@ -4650,7 +4728,9 @@ function runSeasonTrophyArchive() {
 
 // ── Keep-warm trigger — prevents GAS cold starts AND pre-warms state cache ────
 // Run installKeepWarmTrigger() ONCE from the Apps Script editor to set it up.
-function keepWarm() {
+function keepWarm() { runWithOneStaleSignal_(keepWarm_); }
+
+function keepWarm_() {
   var t0 = Date.now();
   try {
     // Reset request-scope caches for this fresh execution
@@ -7429,7 +7509,9 @@ function logPerf_(action, ms, result) {
       new Date().toISOString(), action || '(none)', ms, !failed,
       failed ? String((result && result.error) || '').slice(0, 200) : '',
       failed ? 'error' : (slow ? 'slow' : 'sample'),
-      Object.keys(_perfNotes).length ? JSON.stringify(_perfNotes).slice(0, 300) : ''
+      // v = the code that served it, so diagnostics can report the CURRENT version's
+      // timings apart from the 7-day mix of older deploys (see diagPerfLog_)
+      JSON.stringify(Object.assign({ v: CODE_VERSION }, _perfNotes)).slice(0, 300)
     ]);
   } catch (e) { /* perf logging must never break a request */ }
 }
@@ -7442,7 +7524,8 @@ function apiLogClientError(payload) {
   try {
     var sheet = getSS().getSheetByName('PerfLog');
     if (!sheet) return { ok: true };
-    var player = sheetToObjects(SHEET_NAMES.PLAYERS).find(function(p) { return p.id === payload.playerId; });
+    // reported while the backend is struggling -- don't add a read of every avatar to it
+    var player = playersLite_().find(function(p) { return p.id === payload.playerId; });
     sheet.appendRow([
       new Date().toISOString(),
       'client:' + String(payload.failedAction || 'unknown').slice(0, 40),
@@ -7466,7 +7549,7 @@ function installDiagnosticsTrigger() {
 
 function runDiagnostics() {
   var started = Date.now();
-  var report = { generatedAt: new Date().toISOString(), codeVersion: CODE_VERSION, warnings: [], publicWarnings: [], info: [], timings: [], perf: [], sheets: [], integrity: [] };
+  var report = { generatedAt: new Date().toISOString(), codeVersion: CODE_VERSION, warnings: [], publicWarnings: [], info: [], timings: [], perf: [], perfCurrent: [], perfCurrentSince: '', sheets: [], integrity: [] };
   // publicMsg: version of the warning without player names, for getDiagnosticsSummary
   var warn = function(msg, publicMsg) { report.warnings.push(msg); report.publicWarnings.push(publicMsg || msg); };
   var info = function(msg) { report.info.push(msg); };
@@ -7689,11 +7772,41 @@ function diagPerfLog_(report, warn, info) {
     report.perf.push({ action: a, logged: s.samples.length, p50: pct(s.samples, 0.5), p95: pct(s.samples, 0.95), max: Math.max.apply(null, s.samples), slow: s.slow, errors: s.errors, topError: topErr });
   });
   report.perf.sort(function(x, y) { return (y.slow + y.errors) - (x.slow + x.errors) || y.p95 - x.p95; });
+  diagPerfCurrentVersion_(report, rows, since, pct);
   report.perf.forEach(function(p) {
     // user-facing requests must finish well inside the frontend's 25s timeout
     if (p.max >= 25000 && p.action !== 'keepWarm') warn(p.action + ': at least one request took ' + Math.round(p.max / 1000) + 's in the last 7 days (the app gives up at 25s).');
     if (p.errors >= 5 && p.topError !== 'Admin access required.' ) warn(p.action + ': ' + p.errors + ' errors in the last 7 days (most common: "' + p.topError + '").');
   });
+}
+
+// The 7-day numbers mix every deploy of the week, so a fix can't be judged from them.
+// report.perfCurrent = the same stats for rows logged by THIS code version only, with
+// keepWarm split by what it did (fresh = cache reused, rebuilt) and getState by cache
+// hits -- the evidence for whether keepWarm/getState still need work.
+function diagPerfCurrentVersion_(report, rows, since, pct) {
+  var groups = {}, first = null;
+  rows.forEach(function(r) {
+    var t = new Date(r[0]).getTime();
+    if (t < since || r[5] === 'client') return;
+    var notes = String(r[6] || '');
+    var v = (notes.match(/"v":"([^"]*)"/) || [])[1];
+    if (v !== CODE_VERSION) return;
+    if (first === null || t < first) first = t;
+    var note = function(k) { return (notes.match(new RegExp('"' + k + '":"([^"]*)"')) || [])[1] || '-'; };
+    var key = r[1];
+    if (key === 'keepWarm') key += ' [' + note('keepWarm') + ']';
+    else if (key === 'getState') key += ' [state ' + note('stateCache') + ', picks ' + note('picksCache') + ']';
+    var g = groups[key] = groups[key] || { action: key, samples: [], slow: 0, errors: 0 };
+    g.samples.push(Number(r[2]) || 0);
+    if (r[5] === 'slow') g.slow++;
+    if (r[5] === 'error') g.errors++;
+  });
+  report.perfCurrent = Object.keys(groups).map(function(k) {
+    var g = groups[k];
+    return { action: g.action, logged: g.samples.length, p50: pct(g.samples, 0.5), p95: pct(g.samples, 0.95), max: Math.max.apply(null, g.samples), slow: g.slow, errors: g.errors };
+  }).sort(function(x, y) { return y.logged - x.logged; });
+  report.perfCurrentSince = first ? new Date(first).toISOString() : '';
 }
 
 // --- output -------------------------------------------------------------------
@@ -7712,6 +7825,12 @@ function renderDiagnosticsText_(r) {
     out.push('REAL REQUESTS, LAST 7 DAYS (slow + failed + ' + Math.round(PERF_SAMPLE_RATE * 100) + '% sample):');
     out.push('  ' + pad_('action', 30) + pad_('p50', 8) + pad_('p95', 8) + pad_('max', 8) + pad_('slow', 6) + 'errors');
     r.perf.forEach(function(p) { out.push('  ' + pad_(p.action, 30) + pad_(p.p50, 8) + pad_(p.p95, 8) + pad_(p.max, 8) + pad_(p.slow, 6) + p.errors + (p.topError ? '  (' + p.topError + ')' : '')); });
+  }
+  if (r.perfCurrent && r.perfCurrent.length) {
+    out.push('');
+    out.push('THIS CODE VERSION ONLY (' + r.codeVersion + ', since ' + r.perfCurrentSince + '):');
+    out.push('  ' + pad_('action', 44) + pad_('logged', 8) + pad_('p50', 8) + pad_('p95', 8) + pad_('max', 8) + pad_('slow', 6) + 'errors');
+    r.perfCurrent.forEach(function(p) { out.push('  ' + pad_(p.action, 44) + pad_(p.logged, 8) + pad_(p.p50, 8) + pad_(p.p95, 8) + pad_(p.max, 8) + pad_(p.slow, 6) + p.errors); });
   }
   out.push('');
   out.push('DATA INTEGRITY:');
@@ -7752,6 +7871,7 @@ function saveDiagnosticsSummary_(r) {
     var summary = {
       generatedAt: r.generatedAt, codeVersion: r.codeVersion, durationMs: r.durationMs,
       warnings: r.publicWarnings, timings: r.timings, perf: r.perf.slice(0, 25),
+      perfCurrent: (r.perfCurrent || []).slice(0, 15), perfCurrentSince: r.perfCurrentSince || '',
       integrity: r.integrity,
       sheets: r.sheets.slice(0, 10).map(function(s) { return { name: /^Week \d+$|^[A-Z][A-Za-z]+$/.test(s.name) ? s.name : '(other)', rows: s.rows, allocatedCells: s.allocatedCells }; })
     };
@@ -7765,6 +7885,7 @@ function saveDiagnosticsSummary_(r) {
     if (!fit()) summary.warnings = summary.warnings.map(function(w) { return clip(w, 200); });
     if (!fit()) summary.timings.forEach(function(t) { t.error = clip(t.error, 60); });
     if (!fit()) summary.sheets = summary.sheets.slice(0, 5);
+    while (!fit() && summary.perfCurrent.length > 6) summary.perfCurrent.pop();
     while (!fit() && summary.perf.length > 5) summary.perf.pop();
     while (!fit() && summary.warnings.length > 3) summary.warnings.pop();
     summary.truncated = !fit() || undefined;
