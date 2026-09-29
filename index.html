@@ -3525,9 +3525,9 @@ async function renderProfile(content) {
       </div>
       <p class="helptext" style="margin-top:10px; text-align:center; font-style:italic;">Whichever you use, select it below so Jeff knows how to pay you back.</p>
       <div style="display:flex; gap:8px; margin-top:10px;">
-        <button class="btn ${p.paymentPref === 'venmo' ? 'btn-primary' : 'btn-ghost'}" style="flex:1;" data-pref="venmo" id="pref-venmo-btn">Venmo</button>
-        <button class="btn ${p.paymentPref === 'paypal' ? 'btn-primary' : 'btn-ghost'}" style="flex:1;" data-pref="paypal" id="pref-paypal-btn">PayPal</button>
-        <button class="btn ${p.paymentPref === 'check' ? 'btn-primary' : 'btn-ghost'}" style="flex:1;" data-pref="check" id="pref-check-btn">Check</button>
+        <button class="btn ${p.paymentPref === 'venmo' ? 'btn-primary' : 'btn-ghost'}" style="flex:1;" id="pref-venmo-btn">Venmo</button>
+        <button class="btn ${p.paymentPref === 'paypal' ? 'btn-primary' : 'btn-ghost'}" style="flex:1;" id="pref-paypal-btn">PayPal</button>
+        <button class="btn ${p.paymentPref === 'check' ? 'btn-primary' : 'btn-ghost'}" style="flex:1;" id="pref-check-btn">Check</button>
       </div>
     </div>
 
@@ -6149,6 +6149,63 @@ async function renderAdminNameClaims(el) {
   }
 }
 
+/* ---- Admin: this week's to-dos strip ---- */
+// Season key recapSentWeeks = "y<year>:<week>,<week>" (written by adminSendCustomEmail).
+function recapSentWeeks() {
+  const [yr, list] = String(State.season.recapSentWeeks || '').split(':');
+  return yr === 'y' + State.season.year && list ? list.split(',').map(Number) : [];
+}
+function markRecapSentLocally(week) {
+  const weeks = recapSentWeeks();
+  if (!weeks.includes(Number(week))) weeks.push(Number(week));
+  State.season.recapSentWeeks = 'y' + State.season.year + ':' + weeks.sort((a, b) => a - b).join(',');
+}
+
+function renderAdminTodoStrip(week, games, posted, picker) {
+  const finals = games.filter(isGameFinal).length;
+  const complete = posted && weekIsComplete(week);
+  const prizeRows = complete ? computeWeekPrizes(week).rows : [];
+  const steps = [
+    { done: !!picker, label: picker ? 'Picker' : 'Pick a picker', go: 'admin-picker-card' },
+    { done: games.length > 0, label: games.length ? `Slate · ${games.length}` : 'Slate', go: games.length ? 'admin-games' : 'admin-picker-card' },
+    { done: posted, label: posted ? `Posted · ${State.snapshotCount || 0} lines` : 'Post board', go: games.length ? 'admin-games' : null, warn: posted && !State.snapshotCount },
+    { done: posted && games.length > 0 && finals === games.length, label: `Results · ${finals}/${games.length || 0}`, go: posted ? 'admin-results' : null },
+    { done: recapSentWeeks().includes(week), label: 'Recap sent', go: 'mail:results' },
+    { done: complete && prizeRows.every(r => r.recorded), label: 'Prizes', go: 'tab:ledger' }
+  ];
+  const firstOpen = steps.findIndex(s => !s.done);
+  return `
+    <div class="card" style="padding:10px 12px; margin-bottom:12px;">
+      <div class="helptext" style="font-weight:700; margin-bottom:8px;">Week ${week} to-dos</div>
+      <div style="display:flex; flex-wrap:wrap; gap:6px;">
+        ${steps.map((s, i) => `<button class="pill" data-todo-go="${s.go || ''}" ${s.go ? '' : 'disabled'}
+          style="border:1px solid ${s.warn ? 'var(--loss)' : s.done ? 'var(--win)' : i === firstOpen ? 'var(--gold)' : 'var(--hairline)'};
+                 background:transparent; color:${s.done ? 'var(--win)' : i === firstOpen ? 'var(--gold)' : 'var(--text-soft)'};
+                 padding:5px 10px; border-radius:999px; font-size:12px; font-weight:700; cursor:${s.go ? 'pointer' : 'default'};">
+          ${s.warn ? '⚠️' : s.done ? '✓' : i === firstOpen ? '→' : '○'} ${escapeHtml(s.label)}</button>`).join('')}
+      </div>
+    </div>`;
+}
+
+function bindAdminTodoStrip(el) {
+  el.querySelectorAll('[data-todo-go]').forEach(btn => {
+    const go = btn.dataset.todoGo;
+    if (!go) return;
+    btn.onclick = () => {
+      if (go.startsWith('tab:')) { _adminTab = go.slice(4); renderAdmin(document.getElementById('content')); window.scrollTo(0, 0); return; }
+      if (go.startsWith('mail:')) {
+        const tabBtn = el.querySelector(`[data-mailtab="${go.slice(5)}"]`);
+        if (tabBtn) tabBtn.click();
+        const ec = document.getElementById('admin-email-center');
+        if (ec) ec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+      }
+      const target = document.getElementById(go);
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+  });
+}
+
 /* ---- Admin: This Week ---- */
 function renderAdminWeek(el) {
   const week = currentWeek();
@@ -6159,7 +6216,8 @@ function renderAdminWeek(el) {
   const eligible = State.players.filter(p => p.active);
 
   el.innerHTML = `
-    <div class="card">
+    ${renderAdminTodoStrip(week, games, posted, picker)}
+    <div class="card" id="admin-picker-card">
       <div class="flex-between" style="margin-bottom:10px;">
         <div class="card-title" style="margin-bottom:0;">Week ${week} &middot; Picker</div>
         <button class="btn btn-ghost btn-sm" id="week-jump">‹ Wk</button>
@@ -6177,9 +6235,14 @@ function renderAdminWeek(el) {
 
     ${games.length > 0 ? renderAdminGamesCard(games, posted) : '<div class="card"><p class="helptext">No games submitted for this week yet.</p></div>'}
 
-    ${games.length > 0 && !posted ? `<button class="btn btn-gold btn-block" id="post-week-btn">Post This Week's Board</button>` : ''}
+    ${games.length > 0 && !posted ? (() => {
+      const bad = games.filter(g => missingLineFields(g).length).length;
+      return bad
+        ? `<button class="btn btn-ghost btn-block" id="post-week-btn" style="color:var(--loss); border-color:var(--loss);">Fix ${bad} game${bad === 1 ? '' : 's'} before posting ↑</button>`
+        : `<button class="btn btn-gold btn-block" id="post-week-btn">Post This Week's Board</button>`;
+    })() : ''}
 
-    <div class="section-label">📧 Email Center</div>
+    <div class="section-label" id="admin-email-center">📧 Email Center</div>
     <div class="card">
       <div style="display:flex; gap:0; border-bottom:1px solid var(--hairline); margin:-4px -4px 12px;">
         <button class="tab-btn active" data-mailtab="templates" style="flex:1;">Templates</button>
@@ -6189,34 +6252,42 @@ function renderAdminWeek(el) {
       <div id="mail-panel"><div class="empty-state"><span class="spinner"></span></div></div>
     </div>
 
-    ${(posted || games.length > 0) ? `
-      <div class="section-label">Results</div>
+    ${posted ? `
+      <div class="section-label" id="admin-results">Results</div>
       <div class="card">
         <button class="btn btn-primary btn-block" id="fetch-results-btn">Fetch Final Scores (ESPN)</button>
-        <p class="helptext" style="margin-top:10px;">Pulls final scores once games are complete. Override manually below if needed.</p>
+        <p class="helptext" style="margin-top:10px;">Pulls final scores once games are complete. Override manually on each game above if needed.</p>
       </div>
       <div class="card">
         <button class="btn btn-ghost btn-block" id="apply-defaults-btn">Apply "Favorite" Default for Missing Picks</button>
-        <button class="btn btn-ghost btn-block" id="archive-perfect-weeks-btn" style="margin-top:6px;">🎯 Archive Perfect Weeks for Week ${week}</button>
-        <button class="btn btn-ghost btn-block" id="archive-season-trophies-btn" style="margin-top:6px;">🏆 Archive Season Trophies (All Years)</button>
-        <button class="btn btn-ghost btn-block" id="clear-season-trophies-btn" style="margin-top:6px;color:var(--loss);">🗑️ Clear & Re-Archive Season Trophies</button>
+        <p class="helptext" style="margin-top:8px;">Use once the week has started — fills in the favorite for anyone who didn't submit picks, per league rule.</p>
+        <button class="btn btn-ghost btn-block" id="archive-perfect-weeks-btn" style="margin-top:10px;">🎯 Archive Perfect Weeks for Week ${week}</button>
       </div>
       <div class="card">
         <button class="btn btn-ghost btn-block" id="refresh-snapshot-btn">Add Missing Lines to Snapshot</button>
         <p class="helptext" style="margin-top:8px;">Run this Tuesday or Wednesday if ESPN didn't have all lines posted on Monday. Only adds <em>new</em> games — never overwrites existing Monday lines.</p>
         <p class="helptext" style="margin-top:6px; color:var(--gold);">This week's snapshot: <strong>${State.snapshotCount || 0} games</strong> with Monday opening lines on file.</p>
-        <p class="helptext" style="margin-top:8px;">Use once the week has started — fills in the favorite for anyone who didn't submit picks, per league rule.</p>
-      </div>
-      <div class="card" style="border:1px solid rgba(255,77,94,0.3);">
-        <div class="card-title" style="color:var(--loss);">⚠️ Clear Week Data</div>
-        <p class="helptext" style="line-height:1.6;">Wipes all games, picks, and snapshot rows for the week number you choose below — not necessarily the season's current week. Use after a test week to start fresh. <strong style="color:var(--text);">Cannot be undone.</strong></p>
-        <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
-          <input type="number" id="clear-week-input" value="${week}" min="0" style="width:70px; padding:8px; border-radius:8px; border:1px solid var(--hairline); background:var(--surface-1); color:var(--text); text-align:center;">
-          <button class="btn btn-danger" id="clear-week-btn" style="flex:1;">Clear Week Data</button>
-        </div>
       </div>
     ` : ''}
+
+    <details class="card" style="margin-top:14px;">
+      <summary style="cursor:pointer; font-weight:700; font-size:13px;">🧰 Season tools <span class="helptext" style="font-weight:400;">— rarely needed, some can't be undone</span></summary>
+      <div style="margin-top:12px;">
+        <button class="btn btn-ghost btn-block" id="archive-season-trophies-btn">🏆 Archive Season Trophies (All Years)</button>
+        <button class="btn btn-ghost btn-block" id="clear-season-trophies-btn" style="margin-top:6px;color:var(--loss);">🗑️ Clear & Re-Archive Season Trophies</button>
+        <div style="border:1px solid rgba(255,77,94,0.3); border-radius:10px; padding:12px; margin-top:12px;">
+          <div class="card-title" style="color:var(--loss);">⚠️ Clear Week Data</div>
+          <p class="helptext" style="line-height:1.6;">Wipes all games, picks, and snapshot rows for the week number you choose below — not necessarily the season's current week. Use after a test week to start fresh. <strong style="color:var(--text);">Cannot be undone.</strong></p>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
+            <input type="number" id="clear-week-input" value="${week}" min="0" style="width:70px; padding:8px; border-radius:8px; border:1px solid var(--hairline); background:var(--surface-1); color:var(--text); text-align:center;">
+            <button class="btn btn-danger" id="clear-week-btn" style="flex:1;">Clear Week Data</button>
+          </div>
+        </div>
+      </div>
+    </details>
   `;
+
+  bindAdminTodoStrip(el);
 
   document.querySelectorAll('[data-mailtab]').forEach(btn => {
     btn.onclick = () => {
@@ -6246,6 +6317,15 @@ function renderAdminWeek(el) {
   };
   if (games.length > 0 && !posted) {
     document.getElementById('post-week-btn').onclick = async () => {
+      // Catch incomplete games here, by name, instead of a generic server refusal.
+      const incomplete = games.filter(g => missingLineFields(g).length);
+      if (incomplete.length) {
+        showToast(`Fix ${incomplete.length} game${incomplete.length === 1 ? '' : 's'} first: ` +
+          incomplete.map(g => `${g.awayTeam} @ ${g.homeTeam} (no ${missingLineFields(g).join(', no ')})`).join('; '), 'error');
+        const first = el.querySelector(`[data-game-card="${incomplete[0].gameId}"]`);
+        if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
       try {
         let res = await api('adminPostWeek', { adminId: State.player.id, week, checkLines: true });
         if (res.needsConfirm) {
@@ -6282,6 +6362,41 @@ function renderAdminWeek(el) {
       };
     });
   }
+  // Season tools (always shown, folded away)
+  document.getElementById('clear-week-btn').onclick = async () => {
+    const targetWeek = Number(document.getElementById('clear-week-input').value);
+    if (isNaN(targetWeek) || targetWeek < 0) { showToast('Enter a valid week number', 'error'); return; }
+    if (!confirm(`⚠️ This will permanently delete all games, picks, and snapshot data for Week ${targetWeek}. Are you sure?`)) return;
+    const btn = document.getElementById('clear-week-btn');
+    btn.innerHTML = '<span class="spinner"></span>';
+    try {
+      await api('adminClearWeek', { adminId: State.player.id, week: targetWeek });
+      showToast(`Week ${targetWeek} data cleared`, 'success');
+      await refreshState();
+      renderAdmin(document.getElementById('content'));
+    } catch(e) { btn.innerHTML = 'Clear Week Data'; showToast(e.message || 'Clear failed — try again.', 'error'); }
+  };
+  document.getElementById('clear-season-trophies-btn').onclick = async (e) => {
+    if (!confirm('Clear all archived trophy data and re-archive from scratch?')) return;
+    const btn = e.currentTarget;
+    btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+    try {
+      await api('adminClearSeasonTrophies', { adminId: State.player.id });
+      const data = await api('adminArchiveSeasonTrophies', { adminId: State.player.id });
+      showToast(`Re-archived ${data.archived} trophy position(s)`, 'success');
+    } catch(e) { showToast('Failed: ' + e.message, 'error'); }
+    btn.innerHTML = '🗑️ Clear & Re-Archive Season Trophies';
+  };
+  document.getElementById('archive-season-trophies-btn').onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+    try {
+      const data = await api('adminArchiveSeasonTrophies', { adminId: State.player.id });
+      showToast(`Archived ${data.archived} trophy position(s) across ${data.yearsScanned} year(s)`, 'success');
+    } catch(e) { showToast('Archive failed: ' + e.message, 'error'); }
+    btn.innerHTML = '🏆 Archive Season Trophies (All Years)';
+  };
+
   if (posted) {
     document.getElementById('fetch-results-btn').onclick = async () => {
       const btn = document.getElementById('fetch-results-btn');
@@ -6302,19 +6417,6 @@ function renderAdminWeek(el) {
         btn.innerHTML = 'Add Missing Lines to Snapshot';
       } catch(e) { btn.innerHTML = 'Add Missing Lines to Snapshot'; }
     };
-    document.getElementById('clear-week-btn').onclick = async () => {
-      const targetWeek = Number(document.getElementById('clear-week-input').value);
-      if (isNaN(targetWeek) || targetWeek < 0) { showToast('Enter a valid week number', 'error'); return; }
-      if (!confirm(`⚠️ This will permanently delete all games, picks, and snapshot data for Week ${targetWeek}. Are you sure?`)) return;
-      const btn = document.getElementById('clear-week-btn');
-      btn.innerHTML = '<span class="spinner"></span>';
-      try {
-        await api('adminClearWeek', { adminId: State.player.id, week: targetWeek });
-        showToast(`Week ${targetWeek} data cleared`, 'success');
-        await refreshState();
-        renderAdmin(document.getElementById('content'));
-      } catch(e) { btn.innerHTML = 'Clear Week Data'; showToast(e.message || 'Clear failed — try again.', 'error'); }
-    };
     document.getElementById('apply-defaults-btn').onclick = async () => {
       try {
         const data = await api('adminApplyNoPickDefaults', { adminId: State.player.id, week });
@@ -6323,30 +6425,6 @@ function renderAdminWeek(el) {
       } catch (e) {}
     };
 
-    if (document.getElementById('clear-season-trophies-btn')) {
-      document.getElementById('clear-season-trophies-btn').onclick = async (e) => {
-        if (!confirm('Clear all archived trophy data and re-archive from scratch?')) return;
-        const btn = e.currentTarget;
-        btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
-        try {
-          await api('adminClearSeasonTrophies', { adminId: State.player.id });
-          const data = await api('adminArchiveSeasonTrophies', { adminId: State.player.id });
-          showToast(`Re-archived ${data.archived} trophy position(s)`, 'success');
-        } catch(e) { showToast('Failed: ' + e.message, 'error'); }
-        btn.innerHTML = '🗑️ Clear & Re-Archive Season Trophies';
-      };
-    }
-    if (document.getElementById('archive-season-trophies-btn')) {
-      document.getElementById('archive-season-trophies-btn').onclick = async (e) => {
-        const btn = e.currentTarget;
-        btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
-        try {
-          const data = await api('adminArchiveSeasonTrophies', { adminId: State.player.id });
-          showToast(`Archived ${data.archived} trophy position(s) across ${data.yearsScanned} year(s)`, 'success');
-        } catch(e) { showToast('Archive failed: ' + e.message, 'error'); }
-        btn.innerHTML = '🏆 Archive Season Trophies (All Years)';
-      };
-    }
     if (document.getElementById('archive-perfect-weeks-btn')) {
       document.getElementById('archive-perfect-weeks-btn').onclick = async (e) => {
         const btn = e.currentTarget;
@@ -6587,76 +6665,100 @@ async function renderMailPanel() {
       </p>
       <div class="field"><label>Week</label><input type="number" id="mail-ai-week" value="${wk}" min="0" max="20"></div>
       <button class="btn btn-primary btn-block" id="mail-ai-gen">🤖 Generate Week Recap</button>
+      <button class="btn btn-ghost btn-block" id="mail-ai-load" style="margin-top:6px;">↩︎ Load Last Draft</button>
       <div id="mail-status"></div>
       <div id="mail-ai-draft"></div>
       <div id="mail-preview"></div>
     `;
 
+    document.getElementById('mail-ai-load').onclick = async (ev) => {
+      const week = Number(document.getElementById('mail-ai-week').value);
+      const btn = ev.currentTarget, label = btn.innerHTML;
+      btn.innerHTML = '<span class="spinner"></span>';
+      try {
+        const r = await api('adminGetResultsDraft', { adminId: State.player.id, week });
+        if (!r.draft) mailStatus(`No saved draft for Week ${week} (drafts are kept for 6 hours after generating).`, 'error');
+        else showAiDraft(r.draft, true);
+      } catch (e) { mailStatus(e.message, 'error'); }
+      btn.innerHTML = label;
+    };
+
     document.getElementById('mail-ai-gen').onclick = async (ev) => {
       const week = Number(document.getElementById('mail-ai-week').value);
       const btn = ev.currentTarget, label = btn.innerHTML;
       btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
-      mailStatus('Reading the week and writing the recap, with an automated accuracy check — usually 20-30 seconds, longer if it needs a retry…');
+      mailStatus('Reading the week and writing the recap, with an automated accuracy check. This can take up to 2 minutes. If the connection drops, the draft is still saved — tap Load Last Draft in a minute.');
       try {
         const d = await api('adminGenerateResultsEmail', { adminId: State.player.id, week });
-        if (!document.getElementById('mail-ai-draft')) return;
-        _aiResultsDraft = d;
-        mailStatus(`Generated from ${d.stats.games} games, ${d.stats.players} players, ${d.stats.upsetHits} upset hit(s), ${d.stats.perfectWeeks} perfect week(s).`, 'success');
-        const verifyBanner = d.verified
-          ? `<div style="border-left:4px solid #16a34a;background:#f2fbf5;border-radius:0 8px 8px 0;padding:12px 14px;margin:14px 0;font-size:13px;color:#0a3a1a;">
-               ✅ <strong>Automated accuracy check passed</strong> — every named player's point total and every upset hit was verified against the actual results data.
-             </div>`
-          : `<div style="border-left:4px solid #FF4D5E;background:#fff5f5;border-radius:0 8px 8px 0;padding:12px 14px;margin:14px 0;font-size:13px;color:#5a0010;">
-               ⚠️ <strong>Automated accuracy check found issues after 3 attempts — review carefully before sending.</strong>
-               <ul style="margin:8px 0 0;padding-left:18px;line-height:1.6;">${(d.validationIssues || []).map(iss => `<li>${escapeHtml(iss)}</li>`).join('')}</ul>
-             </div>`;
-        document.getElementById('mail-ai-draft').innerHTML = `
-          ${verifyBanner}
-          <div class="field" style="margin-top:14px;"><label>Subject Line</label>
-            <input type="text" id="mail-ai-subject" value="Upset Special — Week ${d.week} Results">
-          </div>
-          <div class="field"><label>Headline</label><input type="text" id="mail-ai-title" value="${escapeHtml(d.title)}"></div>
-          <div class="field"><label>Subtitle</label><input type="text" id="mail-ai-subtitle" value="${escapeHtml(d.subtitle)}"></div>
-          <div class="field"><label>Body <span style="font-weight:400;text-transform:none;letter-spacing:0;">(edit freely — includes the Official Box Score at the bottom, generated directly from the data, not the AI)</span></label>
-            <textarea id="mail-ai-body" rows="14">${escapeHtml(d.bodyHtml)}</textarea>
-          </div>
-          <button class="btn btn-ghost btn-block" id="mail-ai-preview" style="margin-bottom:6px;">👁 Preview</button>
-          <button class="btn btn-ghost btn-block" id="mail-ai-test" style="margin-bottom:6px;">✉️ Send Test to Me</button>
-          <button class="btn btn-primary btn-block" id="mail-ai-send">📤 Send to All Players</button>
-        `;
-
-        const readAi = () => ({
-          subject: document.getElementById('mail-ai-subject').value.trim(),
-          title: document.getElementById('mail-ai-title').value.trim(),
-          subtitle: document.getElementById('mail-ai-subtitle').value.trim(),
-          bodyHtml: document.getElementById('mail-ai-body').value.trim()
-        });
-
-        document.getElementById('mail-ai-preview').onclick = async () => {
-          const c = readAi();
-          try {
-            const p = await api('adminPreviewCustomEmail', { adminId: State.player.id, ...c });
-            showEmailPreview(p.html);
-          } catch (e) { mailStatus(e.message, 'error'); }
-        };
-        document.getElementById('mail-ai-test').onclick = (e2) => sendAi(e2, true);
-        document.getElementById('mail-ai-send').onclick = (e2) => sendAi(e2, false);
-
-        async function sendAi(e2, testOnly) {
-          const c = readAi();
-          if (!c.subject) { mailStatus('Enter a subject line.', 'error'); return; }
-          if (!testOnly && !confirm(`Send "${c.subject}" to ALL active players. Continue?`)) return;
-          const b = e2.currentTarget, lbl = b.innerHTML;
-          b.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
-          try {
-            const r = await api('adminSendCustomEmail', { adminId: State.player.id, ...c, testOnly });
-            mailStatus(`Sent to ${r.sent} recipient${r.sent === 1 ? '' : 's'}. Quota left: ${r.quotaLeft}.`, 'success');
-          } catch (e3) { mailStatus(e3.message, 'error'); }
-          b.innerHTML = lbl;
-        }
-      } catch (e) { mailStatus(e.message, 'error'); }
+        showAiDraft(d, false);
+      } catch (e) {
+        mailStatus(e.message + ' — if the server finished anyway, Load Last Draft will have it in a minute or two.', 'error');
+      }
       btn.innerHTML = label;
     };
+  }
+}
+
+// Shows a generated (or saved) AI recap draft with its edit + send controls.
+function showAiDraft(d, fromSaved) {
+  if (!document.getElementById('mail-ai-draft')) return;
+  _aiResultsDraft = d;
+  const when = d.generatedAt ? new Date(d.generatedAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '';
+  mailStatus(`${fromSaved ? `Saved draft from ${when}` : 'Generated'} — ${d.stats.games} games, ${d.stats.players} players, ${d.stats.upsetHits} upset hit(s), ${d.stats.perfectWeeks} perfect week(s).`, 'success');
+  const attempts = d.attempts || 3;
+  const verifyBanner = d.verified
+    ? `<div style="border-left:4px solid #16a34a;background:#f2fbf5;border-radius:0 8px 8px 0;padding:12px 14px;margin:14px 0;font-size:13px;color:#0a3a1a;">
+         ✅ <strong>Automated accuracy check passed</strong> — every named player's point total and every upset hit was verified against the actual results data.
+       </div>`
+    : `<div style="border-left:4px solid #FF4D5E;background:#fff5f5;border-radius:0 8px 8px 0;padding:12px 14px;margin:14px 0;font-size:13px;color:#5a0010;">
+         ⚠️ <strong>Automated accuracy check found issues after ${attempts} attempt${attempts === 1 ? '' : 's'} — review carefully before sending.</strong>
+         <ul style="margin:8px 0 0;padding-left:18px;line-height:1.6;">${(d.validationIssues || []).map(iss => `<li>${escapeHtml(iss)}</li>`).join('')}</ul>
+       </div>`;
+  document.getElementById('mail-ai-draft').innerHTML = `
+    ${verifyBanner}
+    <div class="field" style="margin-top:14px;"><label>Subject Line</label>
+      <input type="text" id="mail-ai-subject" value="Upset Special — Week ${d.week} Results">
+    </div>
+    <div class="field"><label>Headline</label><input type="text" id="mail-ai-title" value="${escapeHtml(d.title)}"></div>
+    <div class="field"><label>Subtitle</label><input type="text" id="mail-ai-subtitle" value="${escapeHtml(d.subtitle)}"></div>
+    <div class="field"><label>Body <span style="font-weight:400;text-transform:none;letter-spacing:0;">(edit freely — includes the Official Box Score at the bottom, generated directly from the data, not the AI)</span></label>
+      <textarea id="mail-ai-body" rows="14">${escapeHtml(d.bodyHtml)}</textarea>
+    </div>
+    <button class="btn btn-ghost btn-block" id="mail-ai-preview" style="margin-bottom:6px;">👁 Preview</button>
+    <button class="btn btn-ghost btn-block" id="mail-ai-test" style="margin-bottom:6px;">✉️ Send Test to Me</button>
+    <button class="btn btn-primary btn-block" id="mail-ai-send">📤 Send to All Players</button>
+  `;
+
+  const readAi = () => ({
+    subject: document.getElementById('mail-ai-subject').value.trim(),
+    title: document.getElementById('mail-ai-title').value.trim(),
+    subtitle: document.getElementById('mail-ai-subtitle').value.trim(),
+    bodyHtml: document.getElementById('mail-ai-body').value.trim()
+  });
+
+  document.getElementById('mail-ai-preview').onclick = async () => {
+    const c = readAi();
+    try {
+      const p = await api('adminPreviewCustomEmail', { adminId: State.player.id, ...c });
+      showEmailPreview(p.html);
+    } catch (e) { mailStatus(e.message, 'error'); }
+  };
+  document.getElementById('mail-ai-test').onclick = (e2) => sendAi(e2, true);
+  document.getElementById('mail-ai-send').onclick = (e2) => sendAi(e2, false);
+
+  async function sendAi(e2, testOnly) {
+    const c = readAi();
+    if (!c.subject) { mailStatus('Enter a subject line.', 'error'); return; }
+    if (!testOnly && !confirm(`Send "${c.subject}" to ALL active players. Continue?`)) return;
+    const b = e2.currentTarget, lbl = b.innerHTML;
+    b.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+    try {
+      // recapWeek marks the week's recap as sent (admin to-do strip)
+      const r = await api('adminSendCustomEmail', { adminId: State.player.id, ...c, testOnly, recapWeek: d.week });
+      mailStatus(`Sent to ${r.sent} recipient${r.sent === 1 ? '' : 's'}. Quota left: ${r.quotaLeft}.`, 'success');
+      if (!testOnly) markRecapSentLocally(d.week);
+    } catch (e3) { mailStatus(e3.message, 'error'); }
+    b.innerHTML = lbl;
   }
 }
 
@@ -6673,9 +6775,18 @@ function showEmailPreview(html) {
   doc.open(); doc.write(html); doc.close();
 }
 
+// What a game still lacks before the board can be posted (mirrors apiAdminPostWeek's check).
+function missingLineFields(g) {
+  const out = [];
+  if (!g.favorite) out.push('favorite');
+  if (g.spread === '' || g.spread == null) out.push('spread');
+  if (!g.kickoff) out.push('kickoff');
+  return out;
+}
+
 function renderAdminGamesCard(games, posted) {
   return `
-    <div class="section-label">Games &amp; Lines</div>
+    <div class="section-label" id="admin-games">Games &amp; Lines</div>
     ${!posted ? `
       <div class="card" style="background:var(--surface-2); margin-bottom:10px;">
         <p class="helptext"><strong style="color:var(--text);">If the picker used the ESPN board</strong>, lines and kickoff times are already filled in — just review below and click Post. If a game is missing a line (picked manually or ESPN didn't have it), use the override fields and the fetch button.</p>
@@ -6684,12 +6795,14 @@ function renderAdminGamesCard(games, posted) {
     ${games.map(g => {
       const result = computeGameResult(g);
       const kickoffLocal = g.kickoff ? toLocalDatetimeInputValue(g.kickoff) : '';
+      const missing = posted ? [] : missingLineFields(g);
       return `
-      <div class="card" style="padding:12px 14px;">
+      <div class="card" data-game-card="${g.gameId}" style="padding:12px 14px;${missing.length ? ' border:1.5px solid var(--loss);' : ''}">
         <div class="flex-between" style="margin-bottom:8px;">
           <strong style="font-size:14px;">${escapeHtml(g.awayTeam)} @ ${escapeHtml(g.homeTeam)}</strong>
           <span class="line-badge">${g.source === 'espn' ? 'ESPN' : (g.source === 'manual' ? 'Manual' : 'No line')}</span>
         </div>
+        ${missing.length ? `<p class="helptext" style="color:var(--loss); font-weight:700; margin-bottom:8px;">Missing: ${missing.join(', ')} — needed before posting</p>` : ''}
         ${!posted ? `
           <div class="row2">
             <select data-gameid="${g.gameId}" style="padding:8px; border-radius:7px; border:1.5px solid var(--hairline);">
@@ -6923,6 +7036,8 @@ function renderAdminLedger(el) {
       </div>
     ` : '<div class="card" style="margin-bottom:12px;"><p class="helptext" style="color:var(--win);">✓ All players have paid!</p></div>'}
 
+    <div id="week-prizes"></div>
+
     <div class="section-label">Record Ledger Entry</div>
     <div class="card">
       <div class="card-title">Record Entry</div>
@@ -6938,8 +7053,9 @@ function renderAdminLedger(el) {
             <option value='bowl_payout'>Bowl Payout</option>
           </select>
         </div>
-        <div class="field"><label>Amount ($)</label><input type="number" id="ledger-amount" placeholder="100"></div>
+        <div class="field"><label>Amount ($)</label><input type="number" id="ledger-amount" placeholder="100" min="0" step="0.01"></div>
       </div>
+      <div class="field"><label>Note (optional)</label><input type="text" id="ledger-note" placeholder="e.g. Week 4" maxlength="80"></div>
       <button class="btn btn-primary btn-block" id="ledger-submit-btn" style="margin-top:8px;">Record</button>
     </div>
 
@@ -6952,13 +7068,152 @@ function renderAdminLedger(el) {
           return `<div style="padding:10px 14px; border-bottom:1px solid var(--hairline); display:flex; justify-content:space-between; align-items:center;">
             <div>
               <div style="font-size:13px; font-weight:600;">${escapeHtml(player ? (player.teamName || player.name) : '—')}</div>
-              <div class="helptext">${escapeHtml(e.type)} · ${escapeHtml(e.date || '')}</div>
+              <div class="helptext">${escapeHtml(e.type)}${e.note ? ' · ' + escapeHtml(e.note) : ''} · ${escapeHtml(e.date || '')}</div>
             </div>
-            <div class="mono" style="font-weight:700; color:${isCredit ? 'var(--loss)' : 'var(--win)'};">${isCredit ? '-' : '+'}$${Number(e.amount).toFixed(0)}</div>
+            <div class="mono" style="font-weight:700; color:${isCredit ? 'var(--loss)' : 'var(--win)'};">${isCredit ? '-' : '+'}$${fmtLedgerAmount(e.amount)}</div>
           </div>`;
         }).join('')}
     </div>
   `;
+
+  // "Still owes" → Mark Paid: same call as the Players tab's toggle.
+  el.querySelectorAll('[data-mark-paid]').forEach(btn => {
+    btn.onclick = async () => {
+      btn.disabled = true; btn.textContent = '...';
+      try {
+        await api('adminTogglePaid', { adminId: State.player.id, playerId: btn.dataset.markPaid, isPaid: true });
+        showToast('Marked paid', 'success');
+        await refreshState(); renderAdminLedger(el);
+      } catch (e) { btn.disabled = false; btn.textContent = 'Mark Paid'; }
+    };
+  });
+
+  document.getElementById('ledger-submit-btn').onclick = async (ev) => {
+    const btn = ev.currentTarget;
+    const playerId = document.getElementById('ledger-player').value;
+    const type = document.getElementById('ledger-type').value;
+    const amount = Number(document.getElementById('ledger-amount').value);
+    const note = document.getElementById('ledger-note').value.trim();
+    if (!playerId) { showToast('Pick a player', 'error'); return; }
+    if (!(amount > 0)) { showToast('Enter an amount above $0', 'error'); return; }
+    btn.disabled = true; btn.innerHTML = '<span class="spinner" style="border-top-color:#fff;"></span>';
+    try {
+      await api('adminLedgerEntry', { adminId: State.player.id, playerId, type, amount, note });
+      showToast('Recorded', 'success');
+      await refreshState(); renderAdminLedger(el);
+    } catch (e) { btn.disabled = false; btn.innerHTML = 'Record'; }
+  };
+
+  renderWeekPrizes(document.getElementById('week-prizes'), el);
+}
+
+function fmtLedgerAmount(a) { const n = Number(a) || 0; return n % 1 === 0 ? n.toFixed(0) : n.toFixed(2); }
+
+/* ---- Admin: "Week N prizes" -- weekly high score (split on ties) + perfect weeks ---- */
+// A week is ready once every game that counts for it is final: the board games plus
+// any non-board game someone used for their Upset Special.
+function weekIsComplete(week) {
+  const counted = (State.games || []).filter(g => Number(g.week) === Number(week) &&
+    (g.source !== 'external' || (State.picks || []).some(p => p.gameId === g.gameId)));
+  return getGamesForWeek(week).length > 0 && counted.every(isGameFinal);
+}
+
+function weekPrizeNote(week) { return 'Week ' + week; }
+
+function isPrizeRecorded(playerId, type, week) {
+  const note = weekPrizeNote(week), year = String(State.season.year || '');
+  return (State.ledger || []).some(l => l.playerId === playerId && l.type === type &&
+    String(l.note || '').trim() === note && (!year || String(l.season) === year));
+}
+
+// Same scoring as the standings (computeStandingsLocally) and the same perfect-week
+// test as the backend's archivePerfectWeeks_: a straight pick on every board game, all covering.
+function computeWeekPrizes(week, standings) {
+  const prize = Number(State.season.weeklyPrize || 0);
+  const bonus = Number(State.season.perfectWeekBonus || 0);
+  standings = standings || computeStandingsLocally();
+  const scores = standings.map(s => ({ playerId: s.playerId, pts: s.weeklyBreakdown[week] || 0 }));
+  const top = Math.max(0, ...scores.map(s => s.pts));
+  const winners = top > 0 ? scores.filter(s => s.pts === top) : [];
+  const rows = [];
+  winners.forEach(w => rows.push({
+    playerId: w.playerId, type: 'weekly_prize', amount: Math.round(prize / winners.length * 100) / 100,
+    why: `High score · ${top} pts${winners.length > 1 ? ` · ${winners.length}-way tie` : ''}`
+  }));
+  const board = getGamesForWeek(week);
+  standings.forEach(s => {
+    const straight = (State.picks || []).filter(p => p.playerId === s.playerId && Number(p.week) === Number(week) &&
+      !(p.isUpset === true || p.isUpset === 'TRUE'));
+    const perfect = board.length > 0 && straight.length === board.length &&
+      board.every(g => { const pk = straight.find(p => p.gameId === g.gameId); return pk && pk.pickedTeam === computeCoveringTeam(g); });
+    if (perfect) rows.push({ playerId: s.playerId, type: 'perfect_bonus', amount: bonus, why: `Perfect week · ${board.length}/${board.length}` });
+  });
+  rows.forEach(r => { r.recorded = isPrizeRecorded(r.playerId, r.type, week); });
+  return { prize, bonus, top, rows };
+}
+
+let _prizeWeek = null;
+function renderWeekPrizes(box, ledgerEl) {
+  if (!box) return;
+  const weeks = [];
+  for (let w = 1; w <= currentWeek(); w++) if (weekIsComplete(w)) weeks.push(w);
+  if (weeks.length === 0) { box.innerHTML = ''; return; }
+  const standings = computeStandingsLocally();
+  // Default to the latest complete week that still has something unrecorded
+  if (!weeks.includes(_prizeWeek)) {
+    const open = weeks.filter(w => computeWeekPrizes(w, standings).rows.some(r => !r.recorded));
+    _prizeWeek = open.length ? open[open.length - 1] : weeks[weeks.length - 1];
+  }
+  const week = _prizeWeek;
+  const { prize, rows } = computeWeekPrizes(week, standings);
+  const name = id => { const p = getPlayerById(id); return p ? (p.teamName || p.name) : '—'; };
+  const pending = rows.filter(r => !r.recorded);
+  box.innerHTML = `
+    <div class="section-label">Week Prizes</div>
+    <div class="card" style="margin-bottom:12px;">
+      <div class="flex-between" style="margin-bottom:10px;">
+        <div class="card-title" style="margin-bottom:0;">Week ${week} prizes</div>
+        <select id="prize-week" style="padding:6px 8px; border-radius:7px; color:#1a1a1a;">
+          ${weeks.map(w => `<option value="${w}" ${w === week ? 'selected' : ''}>Week ${w}</option>`).join('')}
+        </select>
+      </div>
+      ${!prize ? '<p class="helptext" style="color:var(--loss); margin-bottom:8px;">No weekly prize amount set — see Season settings.</p>' : ''}
+      ${rows.length === 0 ? '<p class="helptext">No winner for this week (nobody scored).</p>' : rows.map((r, i) => `
+        <label style="display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--hairline);">
+          ${r.recorded ? '<span style="width:18px; color:var(--win); font-weight:700;">✓</span>'
+            : `<input type="checkbox" data-prize-row="${i}" checked style="width:18px; height:18px;">`}
+          <div style="flex:1; min-width:0;">
+            <div style="font-weight:700; font-size:13px;">${escapeHtml(name(r.playerId))}</div>
+            <div class="helptext">${escapeHtml(r.type === 'weekly_prize' ? 'Weekly prize' : 'Perfect week bonus')} · ${escapeHtml(r.why)}${r.recorded ? ' · recorded' : ''}</div>
+          </div>
+          ${r.recorded ? `<span class="mono" style="font-weight:700;">$${fmtLedgerAmount(r.amount)}</span>`
+            : `<span style="display:flex; align-items:center; gap:2px;">$<input type="number" data-prize-amount="${i}" value="${r.amount}" min="0" step="0.01" style="width:70px; padding:6px; border-radius:7px; color:#1a1a1a;"></span>`}
+        </label>`).join('')}
+      ${pending.length ? `<button class="btn btn-gold btn-block" id="prize-record-btn" style="margin-top:12px;">Record ${pending.length === 1 ? 'it' : 'all ' + pending.length} as “${weekPrizeNote(week)}”</button>
+        <p class="helptext" style="margin-top:8px;">Untick or change an amount first if the league settled it differently.</p>`
+        : rows.length ? '<p class="helptext" style="margin-top:10px; color:var(--win);">✓ All recorded for this week.</p>' : ''}
+    </div>`;
+
+  document.getElementById('prize-week').onchange = (e) => { _prizeWeek = Number(e.target.value); renderWeekPrizes(box, ledgerEl); };
+  const recBtn = document.getElementById('prize-record-btn');
+  if (recBtn) recBtn.onclick = async () => {
+    const entries = [];
+    box.querySelectorAll('[data-prize-row]').forEach(cb => {
+      if (!cb.checked) return;
+      const i = Number(cb.dataset.prizeRow);
+      const amount = Number(box.querySelector(`[data-prize-amount="${i}"]`).value);
+      if (amount > 0) entries.push({ playerId: rows[i].playerId, type: rows[i].type, amount, note: weekPrizeNote(week) });
+    });
+    if (!entries.length) { showToast('Nothing ticked to record', 'error'); return; }
+    const total = entries.reduce((s, e) => s + e.amount, 0);
+    if (!confirm(`Record ${entries.length} payout${entries.length === 1 ? '' : 's'} for Week ${week} ($${fmtLedgerAmount(total)} total)?`)) return;
+    recBtn.disabled = true; recBtn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+    try {
+      const r = await api('adminLedgerBatch', { adminId: State.player.id, entries });
+      showToast(`Recorded ${r.recorded}${r.skipped ? ` (${r.skipped} already on file)` : ''}`, 'success');
+      await refreshState(); renderAdminLedger(ledgerEl);
+    } catch (e) { recBtn.disabled = false; recBtn.textContent = 'Try again'; }
+  };
 }
 
 /* ---- Admin: Season Settings ---- */

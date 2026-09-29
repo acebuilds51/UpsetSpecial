@@ -750,6 +750,101 @@ test('Post Week: matching lines post straight away; older apps (no checkLines) p
   ok(r.ok && !r.needsConfirm); eq(w2Locked(env), 3, 'old app behavior unchanged');
 });
 
+test('Post Week refusal names EVERY incomplete game and what it lacks', () => {
+  const env = loadBackend(); seedLeague(env); seedUnpostedWeek2(env, null);
+  const gs = env.ss.getSheetByName('Games'); const h = gs._data[0];
+  gs._data.forEach(row => {
+    if (row[h.indexOf('gameId')] === 'w2g1') row[h.indexOf('kickoff')] = '';
+    if (row[h.indexOf('gameId')] === 'w2g3') { row[h.indexOf('spread')] = ''; row[h.indexOf('favorite')] = ''; }
+  });
+  env.ctx._sheetDataCache = {};
+  const r = env.call('adminPostWeek', { adminId: 'p1', week: 2, checkLines: true });
+  ok(!r.ok, 'refused');
+  eq(r.incomplete.map(x => x.gameId), ['w2g1', 'w2g3']);
+  eq(r.incomplete[1].missing, ['favorite', 'spread']);
+  ok(/W2Away1 @ W2Home1 \(no kickoff\)/.test(r.error) && /W2Away3 @ W2Home3 \(no favorite, no spread\)/.test(r.error), r.error);
+  eq(w2Locked(env), 0, 'nothing posted');
+});
+
+// ---------------------------------------------------------------- ledger batch (Week N prizes)
+test('ledger batch: records all rows in one write; a repeat (double tap / lost reply) never pays twice', () => {
+  const env = loadBackend(); seedLeague(env);
+  const entries = [
+    { playerId: 'p2', type: 'weekly_prize', amount: 50, note: 'Week 1' },
+    { playerId: 'p3', type: 'weekly_prize', amount: 50, note: 'Week 1' },
+    { playerId: 'p2', type: 'perfect_bonus', amount: 100, note: 'Week 1' }
+  ];
+  let r = env.call('adminLedgerBatch', { adminId: 'p1', entries });
+  ok(r.ok, JSON.stringify(r)); eq(r.recorded, 3); eq(r.skipped, 0);
+  r = env.call('adminLedgerBatch', { adminId: 'p1', entries });
+  eq([r.recorded, r.skipped], [0, 3], 'second tap records nothing');
+  r = env.call('adminLedgerBatch', { adminId: 'p1', entries: [{ playerId: 'p2', type: 'weekly_prize', amount: 50, note: 'Week 2' }] });
+  eq(r.recorded, 1, 'a different week is a new payout');
+  const rows = rowsOf(env, 'Ledger');
+  eq(rows.length, 4); eq(rows.filter(x => x.note === 'Week 1').length, 3);
+  eq(env.call('getState', { compact: 1 }).ledger.length, 4, 'visible on the next app load');
+  ok(!env.call('adminLedgerBatch', { adminId: 'p1', entries: [{ playerId: 'p2', type: 'weekly_prize', amount: 0, note: 'Week 3' }] }).ok, 'zero amount rejected');
+  ok(!env.call('adminLedgerBatch', { adminId: 'p1', entries: [{ playerId: 'p2', type: 'bogus', amount: 5, note: 'Week 3' }] }).ok, 'unknown type rejected');
+  ok(!env.call('adminLedgerBatch', { adminId: 'p2', entries }).ok, 'non-admin rejected');
+});
+
+// ---------------------------------------------------------------- AI recap draft + check log
+function stubRecap(env, texts) {
+  const fx = week4RecapFixture();
+  Object.assign(fx, { week: 4, year: 2026, gameLines: fx.gameResults.map(g => g.awayTeam + ' @ ' + g.homeTeam) });
+  env.ctx.buildWeekRecap_ = () => fx;
+  env.ctx.buildOfficialBoxScoreHtml_ = () => '<div>BOX</div>';
+  env.props.ANTHROPIC_API_KEY = 'test-key';
+  let n = 0;
+  env.ctx.UrlFetchApp.fetch = () => {
+    const text = texts[Math.min(n++, texts.length - 1)];
+    return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ content: [{ type: 'text', text }], stop_reason: 'end_turn' }) };
+  };
+  return () => n;
+}
+const recapRows = env => { const s = env.ss.getSheetByName('PerfLog'); return s ? s._data.filter(r => r[1] === 'recapCheck') : []; };
+
+test('recap: the draft is saved server-side and can be loaded again (lost reply / closed tab)', () => {
+  const env = loadBackend(); seedLeague(env);
+  const calls = stubRecap(env, [WEEK4_GOOD]);
+  eq(env.call('adminGetResultsDraft', { adminId: 'p1', week: 4 }).draft, null, 'nothing saved yet');
+  const d = env.call('adminGenerateResultsEmail', { adminId: 'p1', week: 4 });
+  ok(d.ok && d.verified, JSON.stringify(d.validationIssues)); eq(d.attempts, 1); eq(calls(), 1, 'one AI call when the check passes');
+  const saved = env.call('adminGetResultsDraft', { adminId: 'p1', week: 4 }).draft;
+  eq(saved.bodyHtml, d.bodyHtml); eq(saved.verified, true); ok(saved.html && saved.generatedAt);
+  ok(/BOX/.test(saved.bodyHtml), 'box score kept');
+  eq(env.call('adminGetResultsDraft', { adminId: 'p1', week: 5 }).draft, null, 'per week');
+  ok(!env.call('adminGetResultsDraft', { adminId: 'p2', week: 4 }).ok, 'admins only');
+  const rows = recapRows(env); eq(rows.length, 1); eq(rows[0][3], true); eq(rows[0][4], '', 'no issues logged on a clean first pass');
+});
+
+test('recap: every attempt\'s accuracy issues are logged to PerfLog (recapCheck) so the repeat failure can be fixed', () => {
+  const env = loadBackend(); seedLeague(env);
+  const bad = WEEK4_GOOD.replace('a 31-point margin', 'a 36-point margin');
+  const calls = stubRecap(env, [bad]);
+  const d = env.call('adminGenerateResultsEmail', { adminId: 'p1', week: 4 });
+  ok(d.ok && !d.verified); eq(d.attempts, 3); eq(calls(), 3);
+  const rows = recapRows(env); eq(rows.length, 1);
+  eq(rows[0][3], false); ok(/36/.test(rows[0][4]), 'first attempt issue in the error column: ' + rows[0][4]);
+  eq(JSON.parse(rows[0][6]).attempts.length, 3);
+  ok(env.call('adminGetResultsDraft', { adminId: 'p1', week: 4 }).draft.validationIssues.length > 0, 'unverified draft is still saved');
+});
+
+test('recap sent: a real send tagged with the week is remembered for the admin to-do strip; tests are not', () => {
+  const env = loadBackend(); seedLeague(env);
+  const players = env.ss.getSheetByName('Players'); const h = players._data[0];
+  players._data.forEach((row, i) => { if (i > 0) row[h.indexOf('email')] = 'x' + i + '@example.com'; });
+  env.ctx._sheetDataCache = {};
+  const season = () => { const s = {}; env.call('getState').season.forEach(r => s[r.key] = r.value); return s; };
+  const mail = { adminId: 'p1', subject: 'S', title: 'T', subtitle: '', bodyHtml: '<p>b</p>' };
+  ok(env.call('adminSendCustomEmail', Object.assign({ testOnly: true, recapWeek: 3 }, mail)).ok);
+  ok(!season().recapSentWeeks, 'a test send is not a recap send');
+  env.call('adminSendCustomEmail', Object.assign({ recapWeek: 3 }, mail));
+  env.call('adminSendCustomEmail', Object.assign({ recapWeek: 1 }, mail));
+  env.call('adminSendCustomEmail', Object.assign({ recapWeek: 3 }, mail));
+  eq(season().recapSentWeeks, 'y' + season().year + ':1,3', 'visible in the next getState (cache busted), deduped and sorted');
+});
+
 // ---------------------------------------------------------------- picks cache
 test('picks cache: repeat app loads skip the sheet; submissions and ledger entries show up immediately', () => {
   const env = loadBackend(); seedLeague(env);

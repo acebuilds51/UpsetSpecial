@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v12-partial-picks-sep29';
+var CODE_VERSION = 'v13-admin-week-sep29';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -99,7 +99,7 @@ var READ_ONLY_ACTIONS = {
   adminGetPending: 1, getWeeklyEspnSlate: 1, getPickerSlateFromSnapshot: 1,
   searchEspnGames: 1, searchSnapshotGames: 1, fetchEspnGamesByDateRange: 1,
   getStandings: 1, getBowlStandings: 1, adminListEmailTemplates: 1, adminGetEmailTemplate: 1, logClientError: 1, getDiagnosticsSummary: 1,
-  adminPreviewCustomEmail: 1, adminGenerateResultsEmail: 1, adminSendTemplateEmail: 1,
+  adminPreviewCustomEmail: 1, adminGenerateResultsEmail: 1, adminGetResultsDraft: 1, adminSendTemplateEmail: 1,
   adminSendCustomEmail: 1, registerFcmToken: 0 /* fcmToken is in the cached player list */
 };
 
@@ -208,6 +208,8 @@ function handle(e) {
       case 'adminGenerateResultsEmail': result = apiAdminGenerateResultsEmail(payload); break;
       case 'adminClearSeasonTrophies': result = apiAdminClearSeasonTrophies(payload); break;
       case 'adminLedgerEntry': result = apiAdminLedgerEntry(payload); break;
+      case 'adminLedgerBatch': result = apiAdminLedgerBatch(payload); break;
+      case 'adminGetResultsDraft': result = apiAdminGetResultsDraft(payload); break;
       case 'getStandings': result = apiGetStandings(payload); break;
 
       // bowl bonanza
@@ -2653,8 +2655,17 @@ function apiAdminPostWeek(payload) {
   requireAdmin(payload);
   const week = Number(payload.week);
   const games = sheetToObjects(SHEET_NAMES.GAMES).filter(g => Number(g.week) === week);
-  const missing = games.find(g => g.favorite === '' || g.spread === '' || g.kickoff === '');
-  if (missing) return { ok: false, error: 'Every game needs a favorite, spread, and kickoff time before posting.' };
+  // Name EVERY incomplete game and what it lacks -- the old message stopped at the
+  // first one without saying which, so admins fixed the board by trial and error.
+  const incomplete = games.map(g => ({
+    gameId: g.gameId, game: g.awayTeam + ' @ ' + g.homeTeam,
+    missing: [g.favorite === '' ? 'favorite' : '', g.spread === '' ? 'spread' : '', g.kickoff === '' ? 'kickoff' : ''].filter(Boolean)
+  })).filter(x => x.missing.length);
+  if (incomplete.length) return {
+    ok: false, incomplete: incomplete,
+    error: 'Every game needs a favorite, spread, and kickoff time before posting. Fix: ' +
+      incomplete.map(x => x.game + ' (no ' + x.missing.join(', no ') + ')').join('; ')
+  };
 
   // Automatically snapshot every college football game ESPN has for this week --
   // this freezes the opening lines so upset special picks always use the opening line
@@ -5569,6 +5580,46 @@ function apiAdminLedgerEntry(payload) {
   return { ok: true };
 }
 
+var LEDGER_TYPES_ = { paid: 1, payout: 1, weekly_prize: 1, perfect_bonus: 1, bowl_paid: 1, bowl_payout: 1 };
+
+// Several ledger rows in one write (the admin's "Week N prizes" card). Under the script
+// lock, rows that already exist (same player + type + note + season) are skipped, so a
+// double tap or a retry after a lost reply can never pay a week twice.
+function apiAdminLedgerBatch(payload) {
+  requireAdmin(payload);
+  var season = payload.season || getSeasonConfig().year;
+  var entries = payload.entries || [];
+  if (!entries.length) return { ok: false, error: 'Nothing to record.' };
+  for (var i = 0; i < entries.length; i++) {
+    var en = entries[i];
+    if (!en.playerId || !LEDGER_TYPES_[en.type] || !(Number(en.amount) > 0) || !String(en.note || '').trim()) {
+      return { ok: false, error: 'Each entry needs a player, a type, an amount above 0 and a note.' };
+    }
+  }
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(15000); } catch (e) {
+    return { ok: false, error: 'Another save is still processing -- please try again in a moment.' };
+  }
+  try {
+    invalidateSheetCache(SHEET_NAMES.LEDGER); // re-read inside the lock
+    var seen = {};
+    var keyOf = function(r) { return [r.playerId, r.type, String(r.note || '').trim(), String(r.season)].join('|'); };
+    sheetToObjects(SHEET_NAMES.LEDGER).forEach(function(r) { seen[keyOf(r)] = true; });
+    var now = new Date().toISOString();
+    var rows = [], skipped = 0;
+    entries.forEach(function(en) {
+      var row = { playerId: en.playerId, season: season, type: en.type, amount: Number(en.amount), note: String(en.note).trim(), date: now };
+      if (seen[keyOf(row)]) { skipped++; return; }
+      seen[keyOf(row)] = true;
+      rows.push(row);
+    });
+    appendObjects_(SHEET_NAMES.LEDGER, rows);
+    return { ok: true, recorded: rows.length, skipped: skipped };
+  } finally {
+    releaseLock_(lock);
+  }
+}
+
 // ---------- REGULAR SEASON STANDINGS ----------
 
 function apiGetStandings(payload) {
@@ -6417,6 +6468,22 @@ function apiAdminSendCustomEmail(payload) {
   });
 
   logEmailSend_(subject, sent, testOnly ? 'custom-test' : 'custom', payload.adminId);
+  // The AI Results panel tags its real send with the week, so the admin's to-do strip
+  // can show the recap as done. (This action is read-only for the router, so bust the
+  // state cache here.)
+  // Stored as "y<year>:<week>,<week>,…" in Season key recapSentWeeks (resets each
+  // season; the "y" keeps Sheets from reading "2026:1" as a time).
+  if (!testOnly && sent > 0 && payload.recapWeek !== undefined && payload.recapWeek !== '' && !isNaN(Number(payload.recapWeek))) {
+    try {
+      var cfg = getSeasonConfig();
+      var year = 'y' + (cfg.year || new Date().getFullYear());
+      var prev = String(cfg.recapSentWeeks || '').split(':');
+      var weeks = prev[0] === year && prev[1] ? prev[1].split(',').map(Number) : [];
+      if (weeks.indexOf(Number(payload.recapWeek)) < 0) weeks.push(Number(payload.recapWeek));
+      setSeasonConfig('recapSentWeeks', year + ':' + weeks.sort(function(a, b) { return a - b; }).join(','));
+      invalidateStateCache();
+    } catch (e) { Logger.log('recapSentWeeks: ' + e.message); }
+  }
   return { ok: true, sent: sent, failed: failed, testOnly: testOnly, quotaLeft: MailApp.getRemainingDailyQuota() };
 }
 
@@ -6739,7 +6806,7 @@ function apiAdminGenerateResultsEmail(payload) {
     '350-500 words. Bold team names with <strong>.';
 
   var bodyHtml = '', lastErrors = [], verified = false;
-  var maxAttempts = 3;
+  var maxAttempts = 3, attemptIssues = [];
   for (var attempt = 1; attempt <= maxAttempts; attempt++) {
     var userMsg = 'Write the Week ' + recap.week + ' recap.\n\n' + dataBlock;
     if (lastErrors.length) {
@@ -6776,9 +6843,11 @@ function apiAdminGenerateResultsEmail(payload) {
     if (data.stop_reason === 'max_tokens') {
       lastErrors.unshift('Your previous recap was cut off before it finished. Write a complete recap within the 350-500 word target.');
     }
+    attemptIssues.push(lastErrors.slice());
     if (lastErrors.length === 0) { verified = true; break; }
     Logger.log('Recap validation attempt ' + attempt + ' found issues: ' + lastErrors.join(' | '));
   }
+  logRecapCheck_(week, verified, attemptIssues);
 
   // Never let a cut-off tag swallow the box score appended below it
   bodyHtml = bodyHtml.replace(/<[^>]*$/, '');
@@ -6794,15 +6863,16 @@ function apiAdminGenerateResultsEmail(payload) {
   // above performs.
   var boxScoreHtml = buildOfficialBoxScoreHtml_(recap);
 
-  return {
+  var draft = {
     ok: true,
     week: recap.week,
     title: headline,
     subtitle: sub,
     bodyHtml: bodyHtml + boxScoreHtml,
-    html: buildEmailHtml(headline, sub, bodyHtml + boxScoreHtml),
     verified: verified,
     validationIssues: lastErrors,
+    attempts: attemptIssues.length,
+    generatedAt: new Date().toISOString(),
     stats: {
       games: recap.gameLines.length,
       players: recap.performances.length,
@@ -6810,6 +6880,54 @@ function apiAdminGenerateResultsEmail(payload) {
       perfectWeeks: recap.perfectWeeks.length
     }
   };
+  // Keep the draft server-side: a run takes 30-100s, and Google often loses replies
+  // that slow -- without this the admin lost the draft (and 3 AI calls) and started over.
+  saveResultsDraft_(draft);
+  draft.html = buildEmailHtml(headline, sub, bodyHtml + boxScoreHtml);
+  return draft;
+}
+
+var RESULTS_DRAFT_TTL = 21600; // 6h, CacheService's maximum
+
+function resultsDraftKey_(week) { return 'resultsDraft_' + Number(week); }
+
+function saveResultsDraft_(draft) {
+  try { cachePutChunked_(CacheService.getScriptCache(), resultsDraftKey_(draft.week), JSON.stringify(draft), RESULTS_DRAFT_TTL); }
+  catch (e) { Logger.log('results draft save: ' + e.message); }
+}
+
+// The last generated recap for a week (up to 6h old), so a lost reply or closed tab
+// doesn't cost a new generation. Read-only.
+function apiAdminGetResultsDraft(payload) {
+  requireAdmin(payload);
+  var raw = null;
+  try { raw = cacheGetChunked_(CacheService.getScriptCache(), resultsDraftKey_(payload.week)); } catch (e) {}
+  if (!raw) return { ok: true, draft: null };
+  var draft = JSON.parse(raw);
+  draft.html = buildEmailHtml(draft.title, draft.subtitle, draft.bodyHtml);
+  return { ok: true, draft: draft };
+}
+
+// One PerfLog row per recap run (`recapCheck`): ok = passed the accuracy check, error =
+// the first attempt's issues (shows up as topError in diagnostics), notes = every
+// attempt's issues. Shows which check keeps failing, so the prompt or the check can
+// be fixed and most runs need one AI call instead of three.
+function logRecapCheck_(week, verified, attemptIssues) {
+  try {
+    var ss = getSS();
+    var sheet = ss.getSheetByName('PerfLog');
+    if (!sheet) {
+      sheet = ss.insertSheet('PerfLog');
+      sheet.appendRow(['timestamp', 'action', 'ms', 'ok', 'error', 'reason', 'notes']);
+      sheet.setFrozenRows(1);
+    }
+    var first = (attemptIssues[0] || []).join(' | ');
+    sheet.appendRow([
+      new Date().toISOString(), 'recapCheck', attemptIssues.length, verified,
+      verified && attemptIssues.length === 1 ? '' : String(first || 'passed on retry').slice(0, 200),
+      'recap', JSON.stringify({ week: week, attempts: attemptIssues }).slice(0, 1000)
+    ]);
+  } catch (e) { /* logging must never break the recap */ }
 }
 
 // Checks the AI-generated narrative against the ground-truth recap data.

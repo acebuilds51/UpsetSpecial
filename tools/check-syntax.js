@@ -26,6 +26,30 @@ while ((m = re.exec(html))) {
   check('index.html <script #' + n + ' @ line ' + line + '>', m[1]);
 }
 
+// Dead-button guard: a redesign once rebuilt the admin Pot tab's markup and dropped its
+// handlers, so "Record" and "Mark Paid" silently did nothing for weeks. Every
+// <button id="…"> must be looked up somewhere, and every data-* attribute on a button
+// must be queried ([data-x]) or read (dataset.x) somewhere.
+const camel = s => s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+const dead = new Set();
+const btnRe = /<button\b([^>]*)>/gi;
+while ((m = btnRe.exec(html))) {
+  const attrs = m[1];
+  const id = (attrs.match(/\bid="([\w-]+)"/) || [])[1];
+  // ids looked up through a template (`pref-${x}-btn`) count as used
+  const parts = id ? id.split('-') : [];
+  const viaTemplate = parts.some((_, i) => i > 0 && html.includes(parts.slice(0, i).join('-') + '-${'));
+  if (id && html.split(id).length - 1 < 2 && !viaTemplate) dead.add('#' + id);
+  (attrs.match(/\bdata-[\w-]+(?==)/g) || []).forEach(a => {
+    const name = a.slice(5);
+    if (!html.includes('[' + a) && !html.includes('dataset.' + camel(name))) dead.add('[' + a + ']');
+  });
+}
+if (dead.size) {
+  failed = true;
+  console.error('BUTTONS WITH NO HANDLER in index.html (nothing looks them up): ' + [...dead].join(', '));
+}
+
 const backend = path.join(root, 'backend');
 const gsFiles = fs.existsSync(backend) ? fs.readdirSync(backend).filter(f => f.endsWith('.gs')) : [];
 gsFiles.forEach(f => check('backend/' + f, fs.readFileSync(path.join(backend, f), 'utf8')));

@@ -21,9 +21,9 @@ Verify a backend deploy took effect: every API response carries `_version` (= `C
 - `node tools/diag.js` — read-only fetch of the live nightly diagnostics summary (no player names).
 
 ## Checks (run before every deploy; CI runs them on push)
-- `node tools/check-syntax.js` — parses every inline script in index.html + Code.gs
+- `node tools/check-syntax.js` — parses every inline script in index.html + Code.gs, and fails on any `<button id=…>` / button `data-*` attribute that no code looks up (a dead button)
 - `node tools/backend-tests.js` — runs Code.gs under Node against in-memory fakes of SpreadsheetApp/Cache/Lock/ESPN (never touches the real sheet). Add a test for every bug fix.
-- `node tools/make-frontend-harness.js` then `node tools/serve-harness.js` → http://localhost:8765/?session=1 — the real frontend against a fake backend (`window.__apiCalls` counts requests; `&fail=1` simulates outages, `&delay=ms` slowness).
+- `node tools/make-frontend-harness.js` then `node tools/serve-harness.js` → http://localhost:8765/?session=1 — the real frontend against a fake backend (`window.__apiCalls` counts requests; `&fail=1` simulates outages, `&delay=ms` slowness, `&final=1` a finished week with a tie + perfect weeks, `&unposted=1` an unposted board with missing fields).
 
 ## Performance rules (the Apps Script backend is the bottleneck)
 - Never call `appendObject` / `updateRowByMatch` / `deleteRow` in a loop — use `appendObjects_`, `updateRowsByMatchBatch_`, `deleteRowsByMatch` (grouped) / `deleteRowsByMatchFast_`.
