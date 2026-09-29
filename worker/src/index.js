@@ -16,7 +16,7 @@
 // SERVE_COPIES = "1" and Apps Script's signal has been seen at least once.
 // Apps Script stays the back office. Pointing CONFIG.API_URL back at Apps Script undoes this.
 
-export const VERSION = 'us2';
+export const VERSION = 'us3';
 
 // Actions whose answer never changes anything, so sending one twice is harmless. This is
 // NOT Code.gs's READ_ONLY_ACTIONS (that list means "doesn't bust the state cache" and
@@ -38,6 +38,11 @@ export const PATIENT_READS = new Set([
   'getTrophyRoom', 'getGameSummary', 'getWeeklyEspnSlate', 'searchEspnGames', 'searchSnapshotGames',
   'fetchEspnGamesByDateRange', 'adminAuditCareerHistory', 'adminListEmailTemplates', 'adminGetEmailTemplate'
 ]);
+
+// Writes that Apps Script makes safe to repeat when the app sends a requestId (phase 3):
+// a repeat gets the first save's answer back and saves nothing (submitRequestKey_ in
+// Code.gs). Resent ONLY after an error page / lost reply -- never just because it's slow.
+export const RETRYABLE_WRITES = new Set(['submitPicks']);
 
 export const HEDGE_MS = 7000;     // start another copy of a read after this long without an answer (probe: typical 4.8 s)
 export const MAX_READ_TRIES = 3;  // at most this many copies of one read
@@ -138,6 +143,12 @@ export async function handle(req, env, ctx) {
   // own next read (e.g. getState right after saving picks) goes to Apps Script.
   stats.writes++;
   let out;
+  if (RETRYABLE_WRITES.has(action) && typeof body.requestId === 'string' && body.requestId) {
+    out = await hedgedRead(send, 0, READ_DEADLINE_MS);
+    if (out.status !== 200) stats.writesFailed++;
+    if (env.DB) { try { await bumpGen(env); } catch (e) {} }
+    return out;
+  }
   try {
     const r = await send();
     const text = await r.text();

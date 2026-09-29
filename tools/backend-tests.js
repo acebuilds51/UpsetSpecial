@@ -1228,6 +1228,35 @@ test('front door: a failing Worker never breaks the request', () => {
   ok(r.ok, r.error);
 });
 
+// ---------------------------------------------------------------- phase 3: safe pick-save retries
+test('a repeated submitPicks (same player + requestId) gets the first answer back and saves NOTHING', () => {
+  const env = loadBackend(); seedLeague(env);
+  const first = env.call('submitPicks', Object.assign(straightOnly('p2', [1, 2, 3]), { requestId: 'req-A1' }));
+  ok(first.ok, first.error); eq(first.missing, 7);
+  // the resend carries the same id -- even if its body somehow differed, nothing is written
+  const again = env.call('submitPicks', Object.assign(straightOnly('p2', [4, 5], 'Away'), { requestId: 'req-A1' }));
+  eq(again.missing, first.missing, 'same answer as the first save');
+  const mine = rowsOf(env, 'Picks').filter(p => p.playerId === 'p2');
+  eq(mine.map(p => p.gameId).sort(), ['g1', 'g2', 'g3'], 'the repeat changed nothing');
+});
+
+test('a NEW requestId (the player tapping Save again) saves normally; ids never cross players', () => {
+  const env = loadBackend(); seedLeague(env);
+  ok(env.call('submitPicks', Object.assign(straightOnly('p2', [1]), { requestId: 'same-id' })).ok);
+  ok(env.call('submitPicks', Object.assign(straightOnly('p2', [2]), { requestId: 'next-id' })).ok);
+  eq(rowsOf(env, 'Picks').filter(p => p.playerId === 'p2').length, 2);
+  ok(env.call('submitPicks', Object.assign(straightOnly('p3', [1]), { requestId: 'same-id' })).ok);
+  eq(rowsOf(env, 'Picks').filter(p => p.playerId === 'p3').length, 1, 'p3 is not answered with p2\'s save');
+});
+
+test('submitPicks without a requestId (old app copies) works exactly as before; junk ids are ignored', () => {
+  const env = loadBackend(); seedLeague(env);
+  ok(env.call('submitPicks', straightOnly('p2', [1])).ok);
+  ok(env.call('submitPicks', Object.assign(straightOnly('p2', [2]), { requestId: 'bad id with spaces' })).ok);
+  ok(env.call('submitPicks', Object.assign(straightOnly('p2', [3]), { requestId: 'bad id with spaces' })).ok);
+  eq(rowsOf(env, 'Picks').filter(p => p.playerId === 'p2').length, 3, 'an invalid id is treated as no id');
+});
+
 // ---------------------------------------------------------------- report
 let failed = 0;
 results.forEach(([pass, name, err]) => {

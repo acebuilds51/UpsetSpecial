@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v15-front-door-sep29';
+var CODE_VERSION = 'v16-safe-pick-retry-sep29';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -5231,10 +5231,29 @@ function apiSubmitPicks(payload) {
     return { ok: false, error: 'Another submission for this player is still processing -- please try again in a moment.' };
   }
   try {
-    return apiSubmitPicks_(payload, week, playerId, picks);
+    // A repeat of a save that already ran (same player + requestId: the app or the Cloudflare
+    // front door resending after Google lost the answer or sent an error page) gets the
+    // original answer back and saves NOTHING. Checked inside the lock, so a repeat that
+    // arrives while the original is still running waits for it and then finds its answer.
+    var reqKey = submitRequestKey_(playerId, payload.requestId);
+    var cache = reqKey ? CacheService.getScriptCache() : null;
+    if (reqKey) {
+      var prev = null;
+      try { prev = cache.get(reqKey); } catch (e) {}
+      if (prev) { perfNote_('repeatSave', 'answered from first save'); return JSON.parse(prev); }
+    }
+    var result = apiSubmitPicks_(payload, week, playerId, picks);
+    if (reqKey && result) { try { cache.put(reqKey, JSON.stringify(result), 21600); } catch (e) {} }
+    return result;
   } finally {
     releaseLock_(lock);
   }
+}
+
+function submitRequestKey_(playerId, requestId) {
+  requestId = String(requestId || '');
+  if (!requestId || requestId.length > 64 || !/^[A-Za-z0-9_-]+$/.test(requestId)) return null;
+  return 'submitReq_' + String(playerId || '') + '_' + requestId;
 }
 
 function apiSubmitPicks_(payload, week, playerId, picks) {

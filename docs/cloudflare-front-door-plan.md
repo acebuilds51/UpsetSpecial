@@ -103,6 +103,11 @@ Picks stay **synchronous**. Apps Script still enforces the 5-minute lock, frozen
 - **Apps Script** remembers each `requestId`'s answer for 6 hours (CacheService) and returns it for a repeat without saving again.
 - **The Worker** can then retry a pick save when Google returns an error page.
 
+**As built (2026-09-29, backend `v16-safe-pick-retry-sep29`, Worker `us3`):**
+- **Apps Script** checks `player + requestId` inside the existing pick-save lock (`submitRequestKey_`) and keeps each answer for 6 hours. A repeat that arrives while the first save is still running waits for the lock, then finds the answer.
+- **The Worker and the app** each resend a save only after an error page or a lost reply.
+- **Old app copies** send no `requestId` and are handled exactly as before.
+
 Picks are **never** queued. A queued pick delivered after kickoff would force Apps Script to trust the Worker's timestamp, which changes how locks are enforced in a real-money league.
 
 ## Phase 4 (optional): queue writes nobody waits on

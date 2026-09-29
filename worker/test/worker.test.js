@@ -78,6 +78,27 @@ test('a write is sent exactly once, even when Google answers with an error page'
   }
 });
 
+test('submitPicks WITH a requestId is resent after an error page / lost reply (Apps Script dedupes it)', async () => {
+  const w = setup((c, n) => n === 1 ? ERROR_PAGE : n === 2 ? { ok: false, error: 'No action.' } : { ok: true, missing: 0 });
+  const r = await w.post({ action: 'submitPicks', week: 1, picks: [], requestId: 'abc-123' });
+  assert.deepEqual(await r.json(), { ok: true, missing: 0 });
+  assert.equal(w.calls.length, 3);
+  assert.ok(w.calls.every(c => JSON.parse(c.body).requestId === 'abc-123'), 'every copy carries the same requestId');
+});
+
+test('submitPicks WITHOUT a requestId (old app copies) is still sent exactly once', async () => {
+  const w = setup(() => ERROR_PAGE);
+  await w.post({ action: 'submitPicks', week: 1, picks: [] });
+  assert.equal(w.calls.length, 1);
+});
+
+test('a slow submitPicks is never duplicated just for being slow', async () => {
+  let n = 0;
+  const w = setup(async () => { n++; await sleep(200); return { ok: true }; });
+  await w.post({ action: 'submitPicks', week: 1, picks: [], requestId: 'slow-1' });
+  assert.equal(n, 1);
+});
+
 test('a write\'s answer is passed through exactly, including ok:false', async () => {
   const w = setup(() => ({ ok: false, error: 'That game has already locked' }));
   const r = await w.post({ action: 'submitPicks', week: 1, picks: [] });

@@ -491,6 +491,14 @@ let _chatUnread = { general: 0, commissioner: 0 };
 // NEVER add a write action here — a retried write could double-apply.
 const RETRYABLE_ACTIONS = { getState: 1, getMessages: 1, getCareerHistory: 1, getAvatars: 1, getAllEspnScores: 1, getAllTimeLeaderboard: 1, getTrophyRoom: 1, getStandings: 1, getBowlStandings: 1, getPickerSlateFromSnapshot: 1, getWeeklyEspnSlate: 1 };
 const RETRY_DELAYS_MS = [1500, 4000];
+// Writes the server makes safe to repeat when they carry a requestId: a repeat gets the
+// first save's answer and saves nothing (submitRequestKey_ in Code.gs). Retried like the
+// reads above (error page / lost reply only, never a timeout), and ONLY with a requestId.
+const IDEMPOTENT_ACTIONS = { submitPicks: 1 };
+function newRequestId() {
+  try { if (crypto.randomUUID) return crypto.randomUUID(); } catch (e) {}
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12);
+}
 
 // Fire-and-forget report of a problem the backend can't see on its own (see
 // apiLogClientError in Code.gs). Throttled to one report per 20s, delayed a few
@@ -512,7 +520,8 @@ async function api(action, payload, silent) {
   // Per-action timeouts — trophy room needs more time for heavy players
   const timeouts = { getTrophyRoom: 55000, helpChat: 40000, adminGenerateResultsEmail: 120000, adminClearWeek: 90000, adminSendCustomEmail: 60000, adminSendTemplateEmail: 60000, adminPostWeek: 90000 };
   const ms = timeouts[action] || 25000;
-  const maxAttempts = RETRYABLE_ACTIONS[action] ? RETRY_DELAYS_MS.length + 1 : 1;
+  const retryable = RETRYABLE_ACTIONS[action] || (IDEMPOTENT_ACTIONS[action] && payload.requestId);
+  const maxAttempts = retryable ? RETRY_DELAYS_MS.length + 1 : 1;
   let lastErr;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0) await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt - 1]));
@@ -2896,7 +2905,8 @@ async function submitMyPicks(week, games) {
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
   try {
-    await api('submitPicks', { week, playerId: State.player.id, picks });
+    // One requestId per tap: if Google loses the answer, the resend can't save twice.
+    await api('submitPicks', { week, playerId: State.player.id, picks, requestId: newRequestId() });
   } catch (e) {
     btn.disabled = false;
     btn.innerHTML = getMyPicksForWeek(week).length > 0 ? 'Update My Picks' : 'Submit My Picks';
