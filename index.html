@@ -470,8 +470,11 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 /* ============================================================
    UPSET SPECIAL LEAGUE — App logic v2
    ============================================================ */
-const VERSION = 'v13.2';
-const BUILD_TIME = '2026-08-15T13:46:12Z'; // auto-identifies this exact build -- never edit manually
+// Shown in the app header. BUMP ON EVERY CHANGE to this file (v14.0 -> v14.1 ...), so the
+// owner can see at a glance whether a phone is running the latest version.
+// v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
+// selections, update banner on resume, This Week fits on phones.
+const VERSION = 'v14.0';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
