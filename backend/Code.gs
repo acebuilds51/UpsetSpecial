@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v14-trophy-fast-sep29';
+var CODE_VERSION = 'v15-front-door-sep29';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -115,6 +115,8 @@ function handle(e) {
   _sheetDataCache = {};
   _perfNotes = {};
   _picksDirty = false;
+  _inWebRequest = true;
+  _frontDoorDirty = false;
 
   let action = (e.parameter && e.parameter.action) || '';
   let payload = {};
@@ -134,6 +136,7 @@ function handle(e) {
   // the URL -- never the app. Answer immediately: no sheet work, no PerfLog row
   // (they were showing up as ~70 "Unknown action" errors a week in diagnostics).
   if (!action) {
+    _inWebRequest = false;
     return ContentService.createTextOutput(JSON.stringify({ ok: false, error: 'No action.', _version: CODE_VERSION }))
       .setMimeType(ContentService.MimeType.JSON);
   }
@@ -253,6 +256,11 @@ function handle(e) {
   // slowed the whole spreadsheet down). Now only slow/failed requests plus a small
   // random sample are recorded, which is what runDiagnostics() summarizes nightly.
   logPerf_(action, Date.now() - t0, result);
+
+  // Anything this request changed makes the Cloudflare front door's copies out of date
+  // (writes from app copies that talk to Apps Script directly, getState's own score fetch).
+  if (_frontDoorDirty) sendFrontDoorStale_();
+  _inWebRequest = false;
 
   result._version = CODE_VERSION;
   return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
@@ -1726,6 +1734,41 @@ function invalidatePicksBundle_() {
     cache.put('picksBundleGen', String(Date.now()) + Math.random().toString(36).slice(2, 6), 21600);
     cache.remove(PICKS_BUNDLE_KEY + '_n');
   } catch (e) {}
+  markFrontDoorStale_(); // every state/picks bust passes through here (invalidateStateCache calls it)
+}
+
+// ---- Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md) ----
+// The Worker answers the busy reads (getState, standings, messages, Trophy Room) from its
+// own copies while nothing has changed. Whenever this script busts its own caches, the
+// Worker's copies are out of date too, so it is told "stale" (action frontDoorStale + the
+// shared secret from Script Properties FRONT_DOOR_URL / FRONT_DOOR_SECRET; nothing is sent
+// until both are set). In a web request that's sent ONCE, at the end of handle() after the
+// writes are flushed; from triggers / the editor / onSheetChange it's sent right away.
+var _inWebRequest = false;
+var _frontDoorDirty = false;
+function markFrontDoorStale_() {
+  if (_inWebRequest) { _frontDoorDirty = true; return; }
+  sendFrontDoorStale_();
+}
+
+function sendFrontDoorStale_() {
+  _frontDoorDirty = false;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var url = props.getProperty('FRONT_DOOR_URL'), secret = props.getProperty('FRONT_DOOR_SECRET');
+    if (!url || !secret) return;
+    // A read the Worker sends after this must see the new data: land buffered writes first.
+    try { SpreadsheetApp.flush(); } catch (e) {}
+    UrlFetchApp.fetch(url, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true,
+      payload: JSON.stringify({ action: 'frontDoorStale', secret: secret }) });
+  } catch (e) { Logger.log('front door stale signal failed: ' + e.message); }
+}
+
+// Run once from the editor after setting FRONT_DOOR_URL / FRONT_DOOR_SECRET: the Worker's
+// /health page should then show "lastStaleSignal: 0 min ago".
+function testFrontDoorSignal() {
+  sendFrontDoorStale_();
+  Logger.log('Stale signal sent to ' + (PropertiesService.getScriptProperties().getProperty('FRONT_DOOR_URL') || '(FRONT_DOOR_URL not set)'));
 }
 
 function getPicksBundle_(currentWeek) {
@@ -1814,6 +1857,7 @@ function invalidateStateCache() {
 
 function invalidateTrophyCache(playerId) {
   try { CacheService.getScriptCache().remove('trophy_v4_' + playerId); } catch(e) {}
+  markFrontDoorStale_();
 }
 
 
@@ -3242,6 +3286,7 @@ function apiPostMessage(payload) {
   // Bust chat cache AFTER the append (busting before it let a concurrent reader
   // re-cache the list without the new message for 30s)
   try { CacheService.getScriptCache().remove('chat_' + type + '_' + season); } catch(e) {}
+  markFrontDoorStale_();
 
   // send push notification: commissioner messages notify everyone (using the same
   // shared broadcast helper as board-posted alerts); general messages only notify
@@ -3385,6 +3430,7 @@ function invalidateUpsetHistoryIndex_() {
     cache.put('upsetIndexGen', String(Date.now()) + Math.random().toString(36).slice(2, 6), 21600);
     cache.remove(UPSET_INDEX_KEY + '_n');
   } catch (e) {}
+  markFrontDoorStale_();
 }
 
 // Reads one player's avatar without loading every player's photo (the Players tab
@@ -3943,6 +3989,7 @@ function apiDeleteMessage(payload) {
         var season = getSeasonConfig().year || new Date().getFullYear();
         CacheService.getScriptCache().removeAll(['chat_general_' + season, 'chat_commissioner_' + season]);
       } catch(e) {}
+      markFrontDoorStale_();
       return { ok: true };
     }
   }

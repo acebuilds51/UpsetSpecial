@@ -69,6 +69,7 @@ function makeCache() {
 }
 const counters = { appendRow: 0, deleteRow: 0, deleteRows: 0, fetch: 0, fetchAll: 0, mails: 0 };
 const sentRequests = []; // every request passed to UrlFetchApp.fetchAll (pushes included)
+const fetchLog = [];     // every UrlFetchApp.fetch call: { url, opts }
 let mockWeekday = null;   // Utilities.formatDate(..., 'u') override: 1=Mon .. 7=Sun
 let mailQuota = 100;      // MailApp.getRemainingDailyQuota()
 const sentMails = [];     // every MailApp.sendEmail call
@@ -100,6 +101,7 @@ function loadBackend() {
   const props = {};
   const triggers = [];
   sentRequests.length = 0;
+  fetchLog.length = 0;
   const ctx = {
     console,
     SpreadsheetApp: { getActiveSpreadsheet: () => ss, flush: () => {} },
@@ -112,7 +114,11 @@ function loadBackend() {
     },
     Session: { getScriptTimeZone: () => 'America/New_York', getEffectiveUser: () => ({ getEmail: () => 'owner@example.com' }) },
     UrlFetchApp: {
-      fetch: () => { counters.fetch++; return espnResponse(); },
+      fetch: (url, opts) => {
+        counters.fetch++; fetchLog.push({ url: String(url), opts: opts || {} });
+        if (String(url).indexOf('frontdoor.example') >= 0) return { getResponseCode: () => 200, getContentText: () => '{"ok":true}' };
+        return espnResponse();
+      },
       fetchAll: reqs => { counters.fetchAll++; sentRequests.push(...reqs); return reqs.map(() => espnResponse()); }
     },
     MailApp: { sendEmail: m => { counters.mails++; sentMails.push(m); }, getRemainingDailyQuota: () => mailQuota },
@@ -1172,6 +1178,54 @@ test('approving a name claim links CareerHistory in one write per column, touchi
   const rows = rowsOf(env, 'CareerHistory');
   eq(rows.map(x => [x.playerId, x.matched]), [['p2', 'YES'], ['x9', 'NO'], ['p2', 'YES']]);
   eq(rows.map(x => x.points), [50, 70, 80], 'other columns untouched');
+});
+
+// ---------------------------------------------------------------- Cloudflare front door (phase 2)
+const staleSignals = () => fetchLog.filter(c => c.url.indexOf('frontdoor.example') >= 0);
+function enableFrontDoor(env) {
+  env.props.FRONT_DOOR_URL = 'https://frontdoor.example/';
+  env.props.FRONT_DOOR_SECRET = 'test-secret';
+}
+
+test('front door: nothing is sent until FRONT_DOOR_URL and FRONT_DOOR_SECRET are set', () => {
+  const env = loadBackend(); seedLeague(env);
+  ok(env.call('adminOverrideLine', { adminId: 'p1', gameId: 'g1', favorite: 'Away1', spread: 7 }).ok);
+  env.ctx.onSheetChange({});
+  eq(staleSignals().length, 0);
+});
+
+test('front door: a web write sends ONE stale signal (with the secret), after the change; a plain read sends none', () => {
+  const env = loadBackend(); seedLeague(env); enableFrontDoor(env);
+  env.call('getState'); env.call('getStandings');
+  eq(staleSignals().length, 0, 'reads that change nothing');
+  ok(env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' })).ok);
+  eq(staleSignals().length, 1, 'several caches busted, one signal');
+  const sig = staleSignals()[0];
+  eq(JSON.parse(sig.opts.payload), { action: 'frontDoorStale', secret: 'test-secret' });
+  eq(sig.opts.method, 'post');
+  ok(env.call('adminOverrideLine', { adminId: 'p1', gameId: 'g1', favorite: 'Away1', spread: 7 }).ok);
+  ok(env.call('postMessage', { playerId: 'p2', type: 'general', message: 'hi' }).ok);
+  eq(staleSignals().length, 3, 'admin write and chat post each signal once');
+});
+
+test('front door: triggers and hand edits signal straight away (no web request to wait for)', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env, { kickoffOffset: -3600000 }); enableFrontDoor(env);
+  env.ctx.onSheetChange({});
+  ok(staleSignals().length >= 1, 'hand edit');
+  const n = staleSignals().length;
+  espnEvents = [];
+  for (let i = 1; i <= 10; i++) espnEvents.push(mkEvent('E' + i, 'Away' + i, 'Home' + i, { date: kickoff, homeScore: 7, awayScore: 3 }));
+  env.props.lastAutoScoreFetch = '0';
+  env.ctx.keepWarm();
+  ok(staleSignals().length > n, 'live score fetch on the keepWarm trigger');
+});
+
+test('front door: a failing Worker never breaks the request', () => {
+  const env = loadBackend(); seedLeague(env); enableFrontDoor(env);
+  const orig = env.ctx.UrlFetchApp.fetch;
+  env.ctx.UrlFetchApp.fetch = (url, opts) => { if (String(url).indexOf('frontdoor') >= 0) throw new Error('DNS failure'); return orig(url, opts); };
+  const r = env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' }));
+  ok(r.ok, r.error);
 });
 
 // ---------------------------------------------------------------- report

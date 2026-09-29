@@ -734,6 +734,7 @@ async function unregisterPushNotifications(playerId) {
 
 async function boot() {
   checkAppVersion();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkAppVersion(true); });
 
   const saved = loadSession();
   if (saved) {
@@ -806,9 +807,19 @@ async function boot() {
   }
 }
 
-async function checkAppVersion() {
-  // Deferred so it never competes with the first getState for bandwidth.
-  await new Promise(r => setTimeout(r, 8000));
+// Also runs when the player comes back to the app (visibilitychange, set up in boot): a PWA
+// left open in the background can run for days, and checking only at start meant those
+// players never saw an update. At most one check per 10 minutes; the banner stays a
+// prompt (never an automatic reload) so nobody loses picks they're in the middle of.
+let _lastVersionCheck = 0;
+async function checkAppVersion(onResume) {
+  if (onResume) {
+    if (Date.now() - _lastVersionCheck < 10 * 60 * 1000 || document.getElementById('version-banner')) return;
+  } else {
+    // Deferred so it never competes with the first getState for bandwidth.
+    await new Promise(r => setTimeout(r, 8000));
+  }
+  _lastVersionCheck = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8000);
   try {

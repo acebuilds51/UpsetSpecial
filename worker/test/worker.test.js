@@ -3,7 +3,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import worker, { PURE_READS, PATIENT_READS, hedgedRead } from '../src/index.js';
+import { DatabaseSync } from 'node:sqlite';
+import worker, { PURE_READS, PATIENT_READS, COPY_RULES, hedgedRead } from '../src/index.js';
 
 const GS = 'https://script.example/exec';
 const ERROR_PAGE = { status: 404, body: '<html>Sorry, unable to open the file at this time.</html>' };
@@ -132,6 +133,154 @@ test('CORS preflight is answered by the Worker', async () => {
   const r = await worker.fetch(new Request('https://api.example/', { method: 'OPTIONS' }), env);
   assert.equal(r.status, 204);
   assert.equal(r.headers.get('access-control-allow-origin'), '*');
+});
+
+// ── Phase 2: copies ──────────────────────────────────────────────────────────
+const SCHEMA = fs.readFileSync(new URL('../schema.sql', import.meta.url), 'utf8');
+const SECRET = 'test-secret';
+function fakeD1() {
+  const db = new DatabaseSync(':memory:');
+  db.exec(SCHEMA);
+  return {
+    raw: db,
+    prepare(sql) {
+      let args = [];
+      const st = {
+        bind(...a) { args = a; return st; },
+        async first() { return db.prepare(sql).get(...args) ?? null; },
+        async all() { return { results: db.prepare(sql).all(...args) }; },
+        async run() { const r = db.prepare(sql).run(...args); return { meta: { changes: Number(r.changes) } }; }
+      };
+      return st;
+    }
+  };
+}
+// Apps Script fake with a counter per action; answers can be changed between calls.
+function setup2(opts = {}) {
+  const env = { APPS_SCRIPT_URL: GS, DB: fakeD1(), SYNC_SECRET: SECRET, SERVE_COPIES: opts.serve === false ? '0' : '1' };
+  const hits = {}; let n = 0;
+  const answers = { getState: () => ({ ok: true, v: 'state' + n }), getMessages: () => ({ ok: true, messages: ['m' + n] }),
+    getTrophyRoom: b => ({ ok: true, player: b.playerId, n }), submitPicks: () => ({ ok: true, missing: 0 }), ...(opts.answers || {}) };
+  globalThis.fetch = async (url, init = {}) => {
+    const b = JSON.parse(init.body || '{}');
+    hits[b.action] = (hits[b.action] || 0) + 1; n++;
+    const out = await (answers[b.action] ? answers[b.action](b) : { ok: true });
+    return new Response(JSON.stringify(out), { status: 200 });
+  };
+  const later = [];
+  const ctx = { waitUntil: p => later.push(p) };
+  const post = async payload => {
+    const r = await worker.fetch(new Request('https://api.example/', { method: 'POST', body: JSON.stringify(payload) }), env, ctx);
+    await Promise.all(later.splice(0));
+    return r;
+  };
+  const stale = secret => post({ action: 'frontDoorStale', secret: secret === undefined ? SECRET : secret });
+  return { env, hits, post, stale, answers };
+}
+
+test('copies: a busy read is answered from the copy once Apps Script has signalled, until something changes', async () => {
+  const w = setup2();
+  await w.stale();                                           // Apps Script is wired up
+  const a = await w.post({ action: 'getState', compact: 1 });
+  const b = await w.post({ action: 'getState', compact: 1 });
+  assert.deepEqual(await b.json(), await a.json());
+  assert.equal(b.headers.get('x-front-door'), 'copy');
+  assert.equal(w.hits.getState, 1, 'second read never reached Apps Script');
+});
+
+test('copies: no copy is served before Apps Script\'s first stale signal, or with SERVE_COPIES off', async () => {
+  let w = setup2();
+  await w.post({ action: 'getState', compact: 1 }); await w.post({ action: 'getState', compact: 1 });
+  assert.equal(w.hits.getState, 2, 'Apps Script not wired up yet -> always ask it');
+  w = setup2({ serve: false });
+  await w.stale();
+  await w.post({ action: 'getState', compact: 1 }); await w.post({ action: 'getState', compact: 1 });
+  assert.equal(w.hits.getState, 2, 'kill switch');
+});
+
+test('copies: a write through the Worker makes the player\'s very next read go to Apps Script (fresh picks)', async () => {
+  const w = setup2();
+  await w.stale();
+  await w.post({ action: 'getState', compact: 1 });
+  await w.post({ action: 'submitPicks', week: 1, picks: [] });
+  const r = await w.post({ action: 'getState', compact: 1 });
+  assert.equal(r.headers.get('x-front-door'), null);
+  assert.equal(w.hits.getState, 2);
+  assert.equal(w.hits.submitPicks, 1);
+  await w.post({ action: 'getState', compact: 1 });
+  assert.equal(w.hits.getState, 2, 'and the fresh answer becomes the new copy');
+});
+
+test('copies: Apps Script\'s stale signal (hand edits, triggers, old app copies) drops every copy; a wrong secret is refused', async () => {
+  const w = setup2();
+  await w.stale();
+  await w.post({ action: 'getState', compact: 1 });
+  const bad = await w.stale('nope');
+  assert.equal(bad.status, 403);
+  await w.post({ action: 'getState', compact: 1 });
+  assert.equal(w.hits.getState, 1, 'wrong secret changed nothing');
+  await w.stale();
+  await w.post({ action: 'getState', compact: 1 });
+  assert.equal(w.hits.getState, 2);
+  assert.equal(w.hits.frontDoorStale, undefined, 'the signal is never passed on to Apps Script');
+});
+
+test('copies: a read that was on its way while something changed is never kept as the copy', async () => {
+  let release;
+  const w = setup2({ answers: { getState: () => new Promise(r => { release = () => r({ ok: true, v: 'OLD' }); }) } });
+  await w.stale();
+  const slow = w.post({ action: 'getState', compact: 1 });  // Apps Script reading pre-change data...
+  await new Promise(r => setTimeout(r, 10));
+  await w.stale();                                          // ...when the Sheet changes
+  release();
+  assert.deepEqual(await (await slow).json(), { ok: true, v: 'OLD' });
+  w.answers.getState = () => ({ ok: true, v: 'NEW' });
+  const r = await w.post({ action: 'getState', compact: 1 });
+  assert.deepEqual(await r.json(), { ok: true, v: 'NEW' }, 'the OLD answer was not served as a copy');
+});
+
+test('copies: max age -- chat copies last 30 s, then go back to Apps Script', async () => {
+  const w = setup2();
+  await w.stale();
+  await w.post({ action: 'getMessages', type: 'general' });
+  await w.post({ action: 'getMessages', type: 'general' });
+  assert.equal(w.hits.getMessages, 1);
+  w.env.DB.raw.prepare("UPDATE copies SET stored_at = stored_at - 31000 WHERE key = 'getMessages|general'").run();
+  await w.post({ action: 'getMessages', type: 'general' });
+  assert.equal(w.hits.getMessages, 2);
+  await w.post({ action: 'getMessages', type: 'commissioner' });
+  assert.equal(w.hits.getMessages, 3, 'each channel has its own copy');
+});
+
+test('copies: each player\'s Trophy Room is its own copy; old-app getState (not compact) and ok:false answers are never copied', async () => {
+  const w = setup2({ answers: { getStandings: () => ({ ok: false, error: 'Sheet busy' }) } });
+  await w.stale();
+  await w.post({ action: 'getTrophyRoom', playerId: 'p1' });
+  const p2 = await w.post({ action: 'getTrophyRoom', playerId: 'p2' });
+  assert.equal((await p2.json()).player, 'p2');
+  await w.post({ action: 'getTrophyRoom', playerId: 'p1' });
+  assert.equal(w.hits.getTrophyRoom, 2);
+  await w.post({ action: 'getState' }); await w.post({ action: 'getState' });
+  assert.equal(w.hits.getState, 2);
+  await w.post({ action: 'getStandings' }); await w.post({ action: 'getStandings' });
+  assert.equal(w.hits.getStandings, 2);
+});
+
+test('copies: /health shows ages and counts only (no player data)', async () => {
+  const w = setup2();
+  await w.stale();
+  await w.post({ action: 'getState', compact: 1 });
+  await w.post({ action: 'getTrophyRoom', playerId: 'p_secret' });
+  const h = await (await worker.fetch(new Request('https://api.example/health'), w.env)).json();
+  assert.equal(h.serveCopies, true);
+  assert.equal(h.lastStaleSignal, '0 min ago');
+  assert.deepEqual(h.copies.map(c => c.key), ['getState|compact']);
+  assert.equal(h.trophyRoomCopies, 1);
+  assert.ok(!JSON.stringify(h).includes('p_secret'));
+});
+
+test('every copied read is a pure read', () => {
+  for (const a of Object.keys(COPY_RULES)) assert.ok(PURE_READS.has(a), a);
 });
 
 test('every PURE_READ / PATIENT_READ is a real action in Code.gs, and no known write is on the list', () => {

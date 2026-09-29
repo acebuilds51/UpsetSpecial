@@ -86,6 +86,14 @@ The Worker forwards every request to Apps Script unchanged. The one difference: 
 - **Apps Script changes:** a `pingFrontDoor_()` helper, called where caches are busted. Add a test in `tools/backend-tests.js` that one execution sends one ping, and that nothing is sent when `FRONT_DOOR_URL` is unset. Bump `CODE_VERSION`.
 - **Parity test:** for each copied action, the Worker's answer matches Apps Script's byte for byte, including `_version`, which is taken from the copy.
 
+**As built (2026-09-29, Worker `us2`, backend `v15-front-door-sep29`):**
+- **Copies are made lazily.** The Worker keeps its own last good answer to each busy read, instead of Apps Script pushing the data. Apps Script only sends the small "stale" signal (`sendFrontDoorStale_` in Code.gs).
+- **Every cache bust signals.** The signal is hooked into `invalidatePicksBundle_` (which every state bust calls), the chat caches, the Trophy Room cache and the UpsetHistory summary.
+  - **In a web request:** sent once, at the end of `handle()`.
+  - **From triggers and hand edits:** sent straight away, after a flush.
+- **Kill switch:** copies are served only with `SERVE_COPIES = "1"` in `wrangler.toml`, and only after the Worker has received Apps Script's signal at least once.
+- **Tests:** 22 Worker tests and 4 backend tests cover it.
+
 **Expected effect:** app opens, 90-second polls, tab switches and the Trophy Room answer in about 0.2 s instead of 2–40 s. That removes most of the load from Apps Script too, which also helps the writes that still go there.
 
 ## Phase 3: make pick saves safe to retry (recommended)

@@ -1,5 +1,5 @@
 # Upset Special front door. Deploy from this folder: npx wrangler deploy
-# Secrets (phase 2) are set with `npx wrangler secret put ...`, never written here.
+# Secrets are set with `npx wrangler secret put SYNC_SECRET`, never written here.
 name = "upset-special-api"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
@@ -7,3 +7,13 @@ compatibility_date = "2026-09-01"
 [vars]
 # The live Apps Script deployment (the same URL index.html used before the front door).
 APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyzaF-6ImTDg7dV39bd09A9AwKLaCNiNoEZaAwI-jt83URUu2yWQcWk2NowlQ6XAApe/exec"
+# Phase 2 kill switch: "1" = answer busy reads from copies, "0" = pass everything through
+# (copies are still collected, so switching on is instant).
+SERVE_COPIES = "0"
+
+# Phase 2 copies. Created with: npx wrangler d1 create upset-special
+# then the tables with:        npx wrangler d1 execute upset-special --remote --file=schema.sql
+[[d1_databases]]
+binding = "DB"
+database_name = "upset-special"
+database_id = "PASTE-DATABASE-ID-HERE"
