@@ -1228,6 +1228,18 @@ test('front door: a failing Worker never breaks the request', () => {
   ok(r.ok, r.error);
 });
 
+// The owner checks what's pasted in the Apps Script editor by its first line.
+test('line 1 of every backend .gs file shows the current CODE_VERSION', () => {
+  const dir = path.join(__dirname, '..', 'backend');
+  const code = fs.readFileSync(path.join(dir, 'Code.gs'), 'utf8');
+  const v = (code.match(/var CODE_VERSION = '([^']+)'/) || [])[1];
+  ok(v, 'CODE_VERSION not found');
+  fs.readdirSync(dir).filter(f => f.endsWith('.gs')).forEach(f => {
+    const first = fs.readFileSync(path.join(dir, f), 'utf8').split(/\r?\n/)[0];
+    ok(first.startsWith('// ' + v + ' '), f + ' line 1 should start with "// ' + v + '" but is: ' + first);
+  });
+});
+
 // ---------------------------------------------------------------- phase 3: safe pick-save retries
 test('a repeated submitPicks (same player + requestId) gets the first answer back and saves NOTHING', () => {
   const env = loadBackend(); seedLeague(env);

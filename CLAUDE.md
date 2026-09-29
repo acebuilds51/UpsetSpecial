@@ -14,6 +14,7 @@ The Apps Script project also holds one-time migration/test files that are delibe
 public repo (they contain player names / Drive IDs). Never put credentials in `.gs` files — use
 Script Properties (e.g. `FCM_SERVICE_ACCOUNT_JSON`).
 Verify a backend deploy took effect: every API response carries `_version` (= `CODE_VERSION` in Code.gs); bump it on each backend change.
+**Line 1 of every `backend/*.gs` file is `// <CODE_VERSION>  (...)`** so the owner can see at a glance what's pasted in the editor. Update it in EVERY .gs file whenever CODE_VERSION changes (a backend test fails otherwise), and hand over all changed .gs files together.
 
 ## Cloudflare front door (`worker/`, docs/cloudflare-front-door-plan.md)
 - The app's `CONFIG.API_URL` is the Worker `upset-special-api`. It passes everything to Apps Script (`CONFIG.APPS_SCRIPT_URL`) and retries/hedges PURE reads only. Writes are always sent exactly once.
