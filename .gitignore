@@ -1,1 +1,4 @@
 tools/.harness/
+# wrangler's local cache (Cloudflare account details) -- never commit
+.wrangler/
+node_modules/

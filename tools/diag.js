@@ -9,7 +9,9 @@ const fs = require('fs');
 const path = require('path');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
-const m = html.match(/API_URL:\s*'([^']+)'/);
+// The Apps Script address itself, not the Cloudflare front door: _version must come from
+// the deployed script (phase 2 of the front door will answer some reads from copies).
+const m = html.match(/APPS_SCRIPT_URL:\s*'([^']+)'/) || html.match(/API_URL:\s*'([^']+)'/);
 if (!m) { console.error('Could not find CONFIG.API_URL in index.html'); process.exit(1); }
 
 const url = m[1] + (m[1].includes('?') ? '&' : '?') + 'action=getDiagnosticsSummary';

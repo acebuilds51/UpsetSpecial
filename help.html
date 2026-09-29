@@ -524,7 +524,9 @@ function removeHighlight(el) {
 // ── AI Chat ────────────────────────────────────────────────────────────────────
 // Same backend as the app (index.html CONFIG.API_URL). This used to point at an old
 // deployment still running pre-August code; one address keeps everything current.
-var GAS_URL = 'https://script.google.com/macros/s/AKfycbyzaF-6ImTDg7dV39bd09A9AwKLaCNiNoEZaAwI-jt83URUu2yWQcWk2NowlQ6XAApe/exec';
+// Goes through the Cloudflare front door like the app (ROLLBACK: the Apps Script URL in
+// index.html's CONFIG.APPS_SCRIPT_URL).
+var GAS_URL = 'https://upset-special-api.tonyedmonds2003.workers.dev/';
 var aiHistory = [];
 
 function openAI() {

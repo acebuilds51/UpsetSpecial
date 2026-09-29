@@ -1,0 +1,9 @@
+# Upset Special front door. Deploy from this folder: npx wrangler deploy
+# Secrets (phase 2) are set with `npx wrangler secret put ...`, never written here.
+name = "upset-special-api"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+# The live Apps Script deployment (the same URL index.html used before the front door).
+APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyzaF-6ImTDg7dV39bd09A9AwKLaCNiNoEZaAwI-jt83URUu2yWQcWk2NowlQ6XAApe/exec"

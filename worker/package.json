@@ -1,0 +1,9 @@
+{
+  "name": "upset-special-api",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker front door for the Upset Special backend. See ../docs/cloudflare-front-door-plan.md.",
+  "scripts": {
+    "test": "node --test test/worker.test.js"
+  }
+}

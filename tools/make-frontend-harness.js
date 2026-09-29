@@ -54,7 +54,7 @@ const mock = `<script>
   var draft = null;
   var realFetch = window.fetch.bind(window);
   window.fetch = function(url, opts) {
-    if (String(url).indexOf('script.google.com') < 0) return realFetch(url, opts);
+    if (String(url).indexOf('script.google.com') < 0 && String(url).indexOf('workers.dev') < 0) return realFetch(url, opts);
     var body = {}; try { body = JSON.parse(opts && opts.body || '{}'); } catch (e) {}
     window.__apiCalls.push({ action: body.action, t: Math.round(performance.now()) });
     return new Promise(function(resolve, reject) {
