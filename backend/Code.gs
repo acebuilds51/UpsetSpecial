@@ -85,7 +85,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v9-compact-picks-sep28';
+var CODE_VERSION = 'v10-picks-cache-postweek-check-sep29';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -114,6 +114,7 @@ function handle(e) {
   _ssCache = null;
   _sheetDataCache = {};
   _perfNotes = {};
+  _picksDirty = false;
 
   let action = (e.parameter && e.parameter.action) || '';
   let payload = {};
@@ -230,8 +231,14 @@ function handle(e) {
   // responsible for this and ~15 of them forgot (line overrides, picker assignment,
   // results, every bowl action...), leaving stale data on screen for minutes. This is
   // what makes the longer cache TTL safe.
+  // Writes are buffered until flushed; flush FIRST so a concurrent app load can't
+  // re-cache pre-write data right after we bust the cache.
   if (result && result.ok !== false && !READ_ONLY_ACTIONS[action] && action !== 'submitPicks') {
+    try { SpreadsheetApp.flush(); } catch (e) {}
     invalidateStateCache();
+  } else if (_picksDirty) {
+    try { SpreadsheetApp.flush(); } catch (e) {}
+    invalidatePicksBundle_();
   }
 
   // Performance trail (replaces the old DebugLog, which appended a row for EVERY
@@ -358,8 +365,14 @@ function sheetToObjects(sheetName) {
   return result;
 }
 
-// Call after any write to invalidate the per-request cache for that sheet
-function invalidateSheetCache(sheetName) { delete _sheetDataCache[sheetName]; }
+// Call after any write to invalidate the per-request cache for that sheet. Every
+// write helper below calls this, so it is also where the cross-request picks cache
+// (getState's picks/ledger/bowlPicks) learns that those tabs changed.
+var PICKS_BUNDLE_SHEETS = { Picks: 1, Ledger: 1, BowlPicks: 1 };
+function invalidateSheetCache(sheetName) {
+  delete _sheetDataCache[sheetName];
+  if (PICKS_BUNDLE_SHEETS[sheetName]) invalidatePicksBundle_();
+}
 
 // Reads the sheet's LIVE header row rather than trusting the hardcoded HEADERS
 // object -- this is what fixes the "Cannot read properties of undefined (reading
@@ -372,6 +385,10 @@ function appendObject(sheetName, obj) {
   const headers = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : (HEADERS[sheetName] || []);
   const row = headers.map(h => (obj[h] !== undefined ? obj[h] : ''));
   sheet.appendRow(row);
+  // Only the cross-request picks cache is busted here; the request-scoped sheet
+  // cache is deliberately left alone (loops that read-then-append would otherwise
+  // re-read the whole sheet every pass).
+  if (PICKS_BUNDLE_SHEETS[sheetName]) invalidatePicksBundle_();
   return obj;
 }
 
@@ -521,6 +538,10 @@ function requireAdmin(payload) {
 // external Upset Special game, or a pick submission overwritten by stale data).
 function releaseLock_(lock) {
   try { SpreadsheetApp.flush(); } catch (e) {}
+  // Bust the picks cache again now that the writes are really in the sheet: a
+  // concurrent app load between our first bust and the flush could have cached
+  // the pre-write picks.
+  if (_picksDirty) invalidatePicksBundle_();
   lock.releaseLock();
 }
 
@@ -1026,6 +1047,7 @@ function findAndFixDuplicateUpsetPicks(week, dryRun) {
   });
   if (!foundAny) Logger.log('No duplicate upset picks found for week ' + week + '.');
   else if (dryRun) Logger.log('\nDRY RUN -- nothing changed. Run findAndFixDuplicateUpsetPicks(' + week + ', false) to actually fix these.');
+  else { SpreadsheetApp.flush(); invalidateStateCache(); } // raw deleteRow calls bypass the helpers -- refresh the app's caches
 }
 
 // Broader than findAndFixDuplicateUpsetPicks above -- this checks for ANY
@@ -1078,6 +1100,7 @@ function auditAndFixDuplicatePicks(week, dryRun) {
   });
   if (!foundAny) Logger.log('No duplicate picks found for week ' + week + '.');
   else if (dryRun) Logger.log('\nDRY RUN -- nothing changed. Run auditAndFixDuplicatePicks(' + week + ', false) to actually fix these.');
+  else { SpreadsheetApp.flush(); invalidateStateCache(); } // raw deleteRow calls bypass the helpers -- refresh the app's caches
 }
 
 // Diagnostic: trace exactly what data exists for a specific player's pick on
@@ -1649,15 +1672,64 @@ function apiGetState(payload) {
     shared = rebuildStateCache_();
   }
 
-  // Picks/ledger/bowlPicks are always read fresh (never cached) — they change constantly
-  var picks = slimPicksForClient_(sheetToObjects(SHEET_NAMES.PICKS), currentWeekOf_(shared));
-  // App versions that ask for it get picks packed ~10x smaller (see compactPicks_).
-  // Older cached app versions still get the plain list until they update.
-  if (payload && payload.compact) shared.picksCompact = compactPicks_(picks);
-  else shared.picks = picks;
-  shared.ledger = sheetToObjects(SHEET_NAMES.LEDGER).map(withoutRow_);
-  shared.bowlPicks = sheetToObjects(SHEET_NAMES.BOWL_PICKS).map(withoutRow_);
+  if (payload && payload.compact) {
+    // Current app: picks arrive packed ~10x smaller (see compactPicks_), served from a
+    // cache that every write to Picks/Ledger/BowlPicks busts -- so a typical app load
+    // does no spreadsheet reads at all. Slow runs are what make Google lose the reply.
+    var bundle = getPicksBundle_(currentWeekOf_(shared));
+    shared.picksCompact = bundle.picksCompact;
+    shared.ledger = bundle.ledger;
+    shared.bowlPicks = bundle.bowlPicks;
+  } else {
+    // Older cached app versions: plain lists read fresh, until they update.
+    shared.picks = slimPicksForClient_(sheetToObjects(SHEET_NAMES.PICKS), currentWeekOf_(shared));
+    shared.ledger = sheetToObjects(SHEET_NAMES.LEDGER).map(withoutRow_);
+    shared.bowlPicks = sheetToObjects(SHEET_NAMES.BOWL_PICKS).map(withoutRow_);
+  }
   return Object.assign({ ok: true }, shared);
+}
+
+// ---- Picks cache ------------------------------------------------------------
+// { week, picksCompact, ledger, bowlPicks } for the current week, cached across
+// requests. Busted by invalidatePicksBundle_() on every script write to those tabs
+// (via invalidateSheetCache/appendObject), by invalidateStateCache() (router writes,
+// manual edits once installSheetChangeTrigger has run), and it expires after 10 min
+// as a safety net for raw writes that bypass the helpers. A generation counter stops
+// a slow build from caching data it read before a concurrent write.
+var PICKS_BUNDLE_KEY = 'picksBundle_v1';
+var PICKS_BUNDLE_TTL = 600;
+
+var _picksDirty = false; // this execution wrote to Picks/Ledger/BowlPicks (see releaseLock_ / handle)
+function invalidatePicksBundle_() {
+  _picksDirty = true;
+  try {
+    var cache = CacheService.getScriptCache();
+    cache.put('picksBundleGen', String(Date.now()) + Math.random().toString(36).slice(2, 6), 21600);
+    cache.remove(PICKS_BUNDLE_KEY + '_n');
+  } catch (e) {}
+}
+
+function getPicksBundle_(currentWeek) {
+  var cache = CacheService.getScriptCache();
+  try {
+    var raw = cacheGetChunked_(cache, PICKS_BUNDLE_KEY);
+    if (raw) {
+      var hit = JSON.parse(raw);
+      if (hit.week === currentWeek) { perfNote_('picksCache', 'hit'); return hit; }
+    }
+  } catch (e) {}
+  perfNote_('picksCache', 'miss');
+  var genBefore = cache.get('picksBundleGen') || '0';
+  var bundle = {
+    week: currentWeek,
+    picksCompact: compactPicks_(slimPicksForClient_(sheetToObjects(SHEET_NAMES.PICKS), currentWeek)),
+    ledger: sheetToObjects(SHEET_NAMES.LEDGER).map(withoutRow_),
+    bowlPicks: sheetToObjects(SHEET_NAMES.BOWL_PICKS).map(withoutRow_)
+  };
+  try {
+    if ((cache.get('picksBundleGen') || '0') === genBefore) cachePutChunked_(cache, PICKS_BUNDLE_KEY, JSON.stringify(bundle), PICKS_BUNDLE_TTL);
+  } catch (e) { Logger.log('picks cache write: ' + e.message); }
+  return bundle;
 }
 
 function withoutRow_(r) { var o = Object.assign({}, r); delete o._row; return o; }
@@ -1716,6 +1788,7 @@ function invalidateStateCache() {
     cache.put('appStateGen', String(Date.now()) + Math.random().toString(36).slice(2, 6), 21600);
     cache.remove(STATE_CACHE_KEY + '_n');
   } catch(e) {}
+  invalidatePicksBundle_(); // same triggers (writes, manual edits, week changes) apply to picks
 }
 
 function invalidateTrophyCache(playerId) {
@@ -2545,6 +2618,31 @@ function apiAdminOverrideLine(payload) {
   return { ok: found };
 }
 
+// Board games whose favorite or spread differs from ESPN's frozen opening line for
+// the same event. Games without a frozen line (or where ESPN had no clear favorite)
+// are skipped -- there's nothing reliable to compare against.
+function boardLineMismatches_(week, games) {
+  const snap = {};
+  sheetToObjects(SHEET_NAMES.LINE_SNAPSHOT)
+    .filter(r => Number(r.week) === week)
+    .forEach(r => { if (!snap[String(r.espnEventId)]) snap[String(r.espnEventId)] = r; });
+  const out = [];
+  games.filter(g => g.source !== 'external' && g.espnEventId).forEach(g => {
+    const s = snap[String(g.espnEventId)];
+    if (!s || !String(s.favorite || '').trim()) return;
+    const favDiff = String(g.favorite).trim() !== String(s.favorite).trim();
+    const spreadDiff = Math.abs((Number(g.spread) || 0) - (Number(s.spread) || 0)) >= 0.5;
+    if (!favDiff && !spreadDiff) return;
+    out.push({
+      game: g.awayTeam + ' @ ' + g.homeTeam,
+      kind: favDiff ? 'favorite' : 'spread',
+      board: g.favorite + ' by ' + g.spread,
+      espn: s.favorite + ' by ' + s.spread
+    });
+  });
+  return out;
+}
+
 function apiAdminPostWeek(payload) {
   // notification called after board is posted (below)
   requireAdmin(payload);
@@ -2552,14 +2650,27 @@ function apiAdminPostWeek(payload) {
   const games = sheetToObjects(SHEET_NAMES.GAMES).filter(g => Number(g.week) === week);
   const missing = games.find(g => g.favorite === '' || g.spread === '' || g.kickoff === '');
   if (missing) return { ok: false, error: 'Every game needs a favorite, spread, and kickoff time before posting.' };
+
+  // Automatically snapshot every college football game ESPN has for this week --
+  // this freezes the opening lines so upset special picks always use the opening line
+  // regardless of when the player makes their pick later in the week. Done BEFORE
+  // locking so the board can be checked against it (it only ever adds missing games,
+  // so running it here even if the admin then cancels changes no frozen line).
+  snapshotWeeklyLines(week);
+  invalidateSheetCache(SHEET_NAMES.LINE_SNAPSHOT);
+
+  // Board vs ESPN's frozen opening lines: a flipped favorite (Week 5 2026 went up with
+  // Navy favored when ESPN had Air Force -3.5) or a different spread must be confirmed.
+  // Only apps that can show the warning ask for it (checkLines) -- older cached apps
+  // post exactly as before.
+  if (payload.checkLines && !payload.confirmLineMismatches) {
+    const mismatches = boardLineMismatches_(week, games);
+    if (mismatches.length) return { ok: true, posted: false, needsConfirm: true, mismatches: mismatches };
+  }
+
   const postedAt = new Date().toISOString();
   updateRowsByMatchBatch_(SHEET_NAMES.GAMES, games.map(g => ({ match: r => r.gameId === g.gameId, updates: { locked: true, postedAt: postedAt } })));
   updateRowByMatch(SHEET_NAMES.ROTATION, r => Number(r.week) === week, { status: 'posted' });
-
-  // automatically snapshot every college football game ESPN has for this week --
-  // this freezes Monday's opening lines so upset special picks always use the opening line
-  // regardless of when the player makes their pick later in the week.
-  snapshotWeeklyLines(week);
 
   invalidateStateCache();
   // Send push notification to all players that the board is posted
@@ -4415,6 +4526,11 @@ function keepWarm() {
     }
     // Also warm career history (the leaderboard/trophy room/champion rings all use it)
     getCareerHistoryCached();
+    // ...and the picks cache, so players' app loads skip the spreadsheet entirely
+    try {
+      var sharedNow = null; var rawNow = cacheGetChunked_(cache, STATE_CACHE_KEY); if (rawNow) sharedNow = JSON.parse(rawNow);
+      getPicksBundle_(sharedNow ? currentWeekOf_(sharedNow) : Number(getSeasonConfig().currentWeek || 1));
+    } catch (e) { Logger.log('keepWarm picks warm: ' + e.message); }
     logPerf_('keepWarm', Date.now() - t0, { ok: true });
   } catch(e) {
     Logger.log('keepWarm error: ' + e.message);

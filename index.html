@@ -5816,7 +5816,15 @@ function renderAdminWeek(el) {
   if (games.length > 0 && !posted) {
     document.getElementById('post-week-btn').onclick = async () => {
       try {
-        await api('adminPostWeek', { adminId: State.player.id, week });
+        let res = await api('adminPostWeek', { adminId: State.player.id, week, checkLines: true });
+        if (res.needsConfirm) {
+          // The server compared the board with ESPN's frozen opening lines and found
+          // differences (e.g. a flipped favorite) -- make the admin confirm or fix first.
+          const list = res.mismatches.map(m => `• ${m.game}\n    Board: ${m.board}\n    ESPN opening line: ${m.espn}${m.kind === 'favorite' ? '   ← DIFFERENT FAVORITE' : ''}`).join('\n');
+          const go = confirm(`These board lines don't match ESPN's opening lines:\n\n${list}\n\nOK = post anyway.  Cancel = fix them first (Save the corrected line on each game, then Post Week again).`);
+          if (!go) { showToast('Not posted — fix the lines, then post again.', 'error'); return; }
+          res = await api('adminPostWeek', { adminId: State.player.id, week, checkLines: true, confirmLineMismatches: true });
+        }
         showToast('Week posted! Players can pick now.', 'success');
         await refreshState(); renderAdmin(document.getElementById('content'));
       } catch (e) {}

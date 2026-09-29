@@ -714,6 +714,62 @@ test('compact picks: server packing + the app\'s own unpackPicks() round-trip ex
   ok(JSON.stringify(packed.picksCompact).length < JSON.stringify(full.picks).length / 2, 'at least 2x smaller even on tiny data');
 });
 
+// ---------------------------------------------------------------- Post Week line check
+function seedUnpostedWeek2(env, flipFavoriteOn) {
+  const kickoff = new Date(Date.now() + 2 * DAY).toISOString();
+  const gs = env.ss.getSheetByName('Games'); const h = gs._data[0];
+  espnEvents = [];
+  for (let i = 1; i <= 3; i++) {
+    const fav = (flipFavoriteOn === i) ? 'W2Away' + i : 'W2Home' + i; // board favorite
+    gs.appendRow(h.map(k => ({ week: 2, gameId: 'w2g' + i, espnEventId: 'W2E' + i, awayTeam: 'W2Away' + i, homeTeam: 'W2Home' + i, favorite: fav, spread: 3, source: 'espn', kickoff, locked: false, isFinal: false })[k] ?? ''));
+    // ESPN: home team favored by 3 (odds code = home abbreviation)
+    espnEvents.push(mkEvent('W2E' + i, 'W2Away' + i, 'W2Home' + i, { date: kickoff, odds: 'W2H -3' }));
+  }
+  env.props.lastAutoScoreFetch = String(Date.now());
+  env.ctx.invalidateStateCache(); env.ctx._sheetDataCache = {};
+}
+const w2Locked = env => rowsOf(env, 'Games').filter(g => g.week === 2 && g.locked === true).length;
+
+test('Post Week: a favorite that differs from ESPN\'s opening line needs confirmation', () => {
+  const env = loadBackend(); seedLeague(env); seedUnpostedWeek2(env, 2);
+  let r = env.call('adminPostWeek', { adminId: 'p1', week: 2, checkLines: true });
+  ok(r.ok && r.needsConfirm && r.posted === false, JSON.stringify(r));
+  eq(r.mismatches.length, 1); eq(r.mismatches[0].kind, 'favorite');
+  ok(/W2Away2 by 3/.test(r.mismatches[0].board) && /W2Home2 by 3/.test(r.mismatches[0].espn), JSON.stringify(r.mismatches[0]));
+  eq(w2Locked(env), 0, 'nothing posted yet');
+  r = env.call('adminPostWeek', { adminId: 'p1', week: 2, checkLines: true, confirmLineMismatches: true });
+  ok(r.ok && !r.needsConfirm); eq(w2Locked(env), 3, 'posted after confirming');
+});
+
+test('Post Week: matching lines post straight away; older apps (no checkLines) post as before', () => {
+  let env = loadBackend(); seedLeague(env); seedUnpostedWeek2(env, null);
+  let r = env.call('adminPostWeek', { adminId: 'p1', week: 2, checkLines: true });
+  ok(r.ok && !r.needsConfirm, JSON.stringify(r)); eq(w2Locked(env), 3);
+  env = loadBackend(); seedLeague(env); seedUnpostedWeek2(env, 1);
+  r = env.call('adminPostWeek', { adminId: 'p1', week: 2 });
+  ok(r.ok && !r.needsConfirm); eq(w2Locked(env), 3, 'old app behavior unchanged');
+});
+
+// ---------------------------------------------------------------- picks cache
+test('picks cache: repeat app loads skip the sheet; submissions and ledger entries show up immediately', () => {
+  const env = loadBackend(); seedLeague(env);
+  const unpack = d => {
+    const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+    const ctx = {}; vm.createContext(ctx);
+    vm.runInContext(html.slice(html.indexOf('function unpackPicks('), html.indexOf('function seasonArrToObj(')), ctx);
+    return ctx.unpackPicks(d);
+  };
+  eq(unpack(env.call('getState', { compact: 1 })).length, 0);
+  ok(env.cache.get('picksBundle_v1_n'), 'picks bundle cached');
+  env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' }));
+  eq(unpack(env.call('getState', { compact: 1 })).filter(p => p.playerId === 'p2').length, 11, 'new picks visible on the next load');
+  env.call('adminLedgerEntry', { adminId: 'p1', playerId: 'p2', type: 'payout', amount: 100 });
+  eq(env.call('getState', { compact: 1 }).ledger.length, 1, 'ledger entry visible on the next load');
+  // a direct (non-app) write through the helpers busts it too
+  env.ctx.appendObjects_('Picks', [{ week: 1, playerId: 'p3', gameId: 'g2', pickedTeam: 'Home2', isUpset: false, isAutoDefault: true }]);
+  eq(unpack(env.call('getState', { compact: 1 })).filter(p => p.playerId === 'p3').length, 1);
+});
+
 test('requests no longer write a DebugLog row each', () => {
   const env = loadBackend(); seedLeague(env);
   for (let i = 0; i < 5; i++) env.call('getStandings');
