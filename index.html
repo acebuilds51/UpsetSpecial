@@ -151,6 +151,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, .team-pick:focu
 .bottomnav button.active svg{ transform: translateY(-1px); }
 .bottomnav button{ position:relative; }
 .bottomnav button .unsaved-badge{ position:absolute; top:6px; right:calc(50% - 16px); width:8px; height:8px; border-radius:50%; background:var(--loss); }
+/* Chat: unread dot on the other channel's tab; "New messages" pill when scrolled up */
+.chat-tab-dot{ display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--gold); margin-left:6px; vertical-align:middle; }
+.chat-tab-dot.comm{ background:var(--loss); }
+body.view-chat #global-help-btn{ bottom:150px !important; }
+.chat-new-pill{ position:absolute; left:50%; transform:translateX(-50%); bottom:72px; z-index:5; background:var(--gold); color:#1A1206; font-size:12px; font-weight:700; border-radius:16px; padding:6px 14px; box-shadow:0 4px 14px rgba(0,0,0,0.45); }
 /* Picks board: while the draft has unsaved changes, the save button floats above the nav */
 #submit-picks-btn.sticky-save{ position:sticky; bottom:var(--nav-h, 90px); z-index:40; box-shadow:0 6px 24px rgba(0,0,0,0.55); }
 body:has(#submit-picks-btn.sticky-save) #global-help-btn{ display:none !important; }
@@ -474,7 +479,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 // owner can see at a glance whether a phone is running the latest version.
 // v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
 // selections, update banner on resume, This Week fits on phones.
-const VERSION = 'v14.0';
+const VERSION = 'v14.1';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
@@ -762,13 +767,56 @@ async function unregisterPushNotifications(playerId) {
   }
 }
 
+// Push notifications carry a tab to open (?view=chat&chat=commissioner, ?view=slate, ...).
+// Read at start, and sent by the service worker when a tap lands on an app already open.
+const LINKABLE_VIEWS = ['home', 'slate', 'standings', 'bowl', 'scores', 'chat', 'profile', 'info', 'rules'];
+function applyViewParams_(params) {
+  const v = params.get('view');
+  if (!v || LINKABLE_VIEWS.indexOf(v) < 0) return false;
+  if (v === 'chat') { const c = params.get('chat'); if (c === 'general' || c === 'commissioner') _chatTab = c; }
+  State.view = v;
+  return true;
+}
+function openViewFromUrl_(url) {
+  try {
+    if (!State.player || !document.getElementById('bottomnav')) return;
+    if (applyViewParams_(new URL(url, location.href).searchParams)) { renderBottomNav(); renderContent(); }
+  } catch (e) {}
+}
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', event => {
+    const d = event.data || {};
+    if (d.type === 'OPEN_VIEW' && d.url) openViewFromUrl_(d.url);
+    // a chat / commissioner push while the app is open: refresh that channel now
+    if (d.type === 'FCM_FOREGROUND' && d.tag && (d.tag === 'chat' || d.tag.indexOf('commissioner-') === 0)) {
+      const type = d.tag === 'chat' ? 'general' : 'commissioner';
+      loadChatMessages(type).then(() => {
+        if (State.view === 'chat' && _chatTab === type) renderChatMessages();
+        else if (State.view === 'home') renderCommissionerStrip_();
+      });
+    }
+  });
+}
+
 async function boot() {
   checkAppVersion();
   document.addEventListener('visibilitychange', () => { if (!document.hidden) checkAppVersion(true); });
+  // pick up a new push service worker (notification tags / tap-to-open) without waiting a day
+  try { if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistration('/UpsetSpecial/').then(r => { if (r) r.update(); }).catch(() => {}); } catch (e) {}
 
   const saved = loadSession();
   if (saved) {
     State.player = saved;
+    // opened from a notification: start on its tab, then drop view/chat from the address
+    // so a later reload doesn't jump there again
+    try {
+      const lp = new URLSearchParams(location.search);
+      if (applyViewParams_(lp)) {
+        lp.delete('view'); lp.delete('chat');
+        const qs = lp.toString();
+        history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+      }
+    } catch (e) {}
     // Ensure per-player avatar store is populated from existing session
     if (saved.id && saved.avatar) {
       try { localStorage.setItem('usl_avatar_' + saved.id, saved.avatar); } catch(e) {}
@@ -1467,9 +1515,12 @@ function renderBottomNav() {
     items.push({ id: 'admin', label: 'Admin', icon: `<span style="position:relative; display:inline-block;">${iconAdmin()}${badge}</span>` });
   }
   const slateBadge = typeof slateNavBadge_ === 'function' ? slateNavBadge_() : '';
+  // Chat: gold dot = new General messages, red dot = an unread commissioner post
+  const chatBadge = State.view === 'chat' ? '' : chatNavBadge_();
   nav.innerHTML = items.map(it => `
-    <button data-view="${it.id}" data-badge="${it.id === 'slate' ? slateBadge : ''}" class="${State.view === it.id ? 'active' : ''}">
+    <button data-view="${it.id}" data-badge="${it.id === 'slate' ? slateBadge : it.id === 'chat' ? chatBadge : ''}" class="${State.view === it.id ? 'active' : ''}">
       ${it.id === 'slate' && slateBadge ? `<span class="unsaved-badge" style="${slateBadge === 'todo' ? 'background:var(--gold);' : ''}" title="${slateBadge === 'todo' ? 'You still have picks to make' : 'Picks not saved yet'}"></span>` : ''}
+      ${it.id === 'chat' && chatBadge ? `<span class="unsaved-badge" style="${chatBadge === 'general' ? 'background:var(--gold);' : ''}" title="${chatBadge === 'general' ? 'New messages' : 'New from the commissioner'}"></span>` : ''}
       ${it.icon}
       <span class="dot"></span>
       ${it.label}
@@ -1482,10 +1533,11 @@ function renderBottomNav() {
 
 async function renderContent() {
   const content = document.getElementById('content');
+  document.body.classList.toggle('view-chat', State.view === 'chat'); // lifts the ? button off the Send button
   if (typeof renderPicksDueBanner === 'function') renderPicksDueBanner();
   // render instantly from cached state -- no spinner, no waiting on every tab switch
   switch (State.view) {
-    case 'home': renderHome(content); break;
+    case 'home': renderHome(content); renderCommissionerStrip_(); break;
     case 'slate': renderSlate(content); break;
     case 'standings': renderStandings(content); break;
     case 'scores': renderLiveScores(content); break;
@@ -1524,7 +1576,7 @@ async function silentRefresh(force) {
       const searchedRecently = window._lastUpsetSearchActivity && (Date.now() - window._lastUpsetSearchActivity < 20000);
       if (State.view === 'slate' && searchedRecently) return;
       switch (State.view) {
-        case 'home': renderHome(content); break;
+        case 'home': renderHome(content); renderCommissionerStrip_(); break;
         case 'slate': renderSlate(content); break;
         case 'standings': renderStandings(content); break;
         case 'scores': renderLiveScores(content); break;
@@ -1533,6 +1585,7 @@ async function silentRefresh(force) {
         case 'rules': renderRules(content); break;
       }
     }
+    checkChatUnread_(); // at most every 5 min; answered by the front door's copy
   } catch(e) {
     // silent -- cached state stays on screen; the poll backs off (see startBackgroundPolling)
     State._pollFailures = (State._pollFailures || 0) + 1;
@@ -1792,6 +1845,7 @@ function renderHome(content) {
           ${season.year || ''} Season &middot; Week ${week}
         </div>
       </div>
+      <div id="home-comm-strip"></div>
 
       <div class="section-label">Quick Look</div>
       <div class="card" style="display:flex; gap:0; padding:0; overflow:hidden;">
@@ -3337,7 +3391,7 @@ async function renderHistoryTab(el) {
     ? Promise.resolve(State._leaderboardCache.data)
     : api('getAllTimeLeaderboard', {}, true).then(d => {
         const data = d.leaderboard || [];
-        State._leaderboardCache = { ts: Date.now(), data: data };
+        State._leaderboardCache = { ts: Date.now(), data: data, upsetHall: d.upsetHall || null };
         return data;
       });
   const chPromise = State._careerHistory
@@ -3363,6 +3417,43 @@ async function renderHistoryTab(el) {
     else if (view === 'az') d.sort((a,b) => (a.teamName||'').localeCompare(b.teamName||''));
     else d.sort((a,b) => total(b)-total(a) || (b.gold||[]).length-(a.gold||[]).length || score(b)-score(a));
     return d;
+  }
+
+  // Upset Hall of Fame: the biggest Upset Special hits ever + the best hit rates
+  function upsetHallHtml() {
+    const hall = State._leaderboardCache && State._leaderboardCache.upsetHall;
+    if (!hall || !(hall.biggest || []).length) {
+      return '<div class="card"><p class="helptext">The Upset Hall of Fame isn\'t available right now.</p></div>';
+    }
+    const fmt = n => (Number(n) % 1 === 0 ? String(Number(n)) : Number(n).toFixed(1));
+    const who = r => {
+      const isMe = r.playerId && State.player && r.playerId === State.player.id;
+      const style = isMe ? 'color:var(--upset-gold);font-weight:700;' : 'color:var(--text-soft);';
+      return r.playerId
+        ? '<span data-player-id="' + escapeHtml(r.playerId) + '" style="cursor:pointer;' + style + '">' + escapeHtml(r.teamName) + '</span>'
+        : '<span style="' + style + '">' + escapeHtml(r.teamName) + '</span>';
+    };
+    const medal = i => i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '<span style="font-size:12px;color:var(--text-muted);">' + (i + 1) + '</span>';
+    const biggest = hall.biggest.map((r, i) =>
+      '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:0.5px solid var(--hairline);">'
+      + '<span style="font-size:16px;width:24px;text-align:center;flex-shrink:0;">' + medal(i) + '</span>'
+      + '<div style="flex:1;min-width:0;">'
+      +   '<div style="font-size:14px;font-weight:700;color:var(--text);">' + escapeHtml(r.team) + ' +' + fmt(r.spread) + '</div>'
+      +   '<div style="font-size:11px;color:var(--text-faint);margin-top:1px;">Week ' + r.week + ', ' + r.year + ' · ' + who(r) + '</div>'
+      + '</div>'
+      + '<div class="mono" style="font-size:14px;font-weight:800;color:var(--gold);flex-shrink:0;">+' + fmt(r.pts) + '</div>'
+      + '</div>').join('');
+    const rates = (hall.hitRate || []).map((r, i) =>
+      '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:0.5px solid var(--hairline);">'
+      + '<span style="font-size:12px;width:24px;text-align:center;color:var(--text-muted);flex-shrink:0;">' + (i + 1) + '</span>'
+      + '<div style="flex:1;min-width:0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + who(r) + '</div>'
+      + '<div style="font-size:11px;color:var(--text-faint);flex-shrink:0;">' + r.hits + ' of ' + r.attempts + '</div>'
+      + '<div class="mono" style="font-size:13px;font-weight:700;color:var(--text);width:48px;text-align:right;flex-shrink:0;">' + fmt(r.pct) + '%</div>'
+      + '</div>').join('');
+    return '<div class="section-label">💥 Biggest Upset Specials ever</div>'
+      + '<div class="card" style="padding:0 12px;">' + biggest + '</div>'
+      + (rates ? '<div class="section-label" style="margin-top:16px;">🎯 Best hit rate <span style="font-weight:500;text-transform:none;letter-spacing:0;">(' + (hall.minAttempts || 20) + '+ tries)</span></div>'
+        + '<div class="card" style="padding:0 12px;">' + rates + '</div>' : '');
   }
 
   function renderView() {
@@ -3456,15 +3547,19 @@ async function renderHistoryTab(el) {
       + '<button class="btn btn-sm ' + (view==='stats'?'btn-primary':'btn-ghost') + '" id="hv-stats">Career Stats</button>'
       + '<button class="btn btn-sm ' + (view==='pw'?'btn-primary':'btn-ghost') + '" id="hv-pw">10/10 Weeks</button>'
       + '<button class="btn btn-sm ' + (view==='az'?'btn-primary':'btn-ghost') + '" id="hv-az">A – Z</button>'
+      + '<button class="btn btn-sm ' + (view==='upsets'?'btn-primary':'btn-ghost') + '" id="hv-upsets">💥 Upsets</button>'
       + '</div>'
-      + '<div style="display:grid;grid-template-columns:26px 1fr 36px 40px 40px 40px 36px;gap:4px;padding:4px 0 6px;border-bottom:1px solid var(--hairline);margin-bottom:2px;">' + hdrCols + '</div>'
-      + leaderboardHtml
-      + yearByYearHtml;
+      + (view === 'upsets'
+        ? upsetHallHtml()
+        : '<div style="display:grid;grid-template-columns:26px 1fr 36px 40px 40px 40px 36px;gap:4px;padding:4px 0 6px;border-bottom:1px solid var(--hairline);margin-bottom:2px;">' + hdrCols + '</div>'
+          + leaderboardHtml
+          + yearByYearHtml);
 
     el.querySelector('#hv-trophies').onclick = () => { view='trophies'; State._historyView='trophies'; renderView(); };
     el.querySelector('#hv-stats').onclick    = () => { view='stats';    State._historyView='stats';    renderView(); };
     el.querySelector('#hv-pw').onclick       = () => { view='pw';       State._historyView='pw';       renderView(); };
     el.querySelector('#hv-az').onclick       = () => { view='az';       State._historyView='az';       renderView(); };
+    el.querySelector('#hv-upsets').onclick   = () => { view='upsets';   State._historyView='upsets';   renderView(); };
     el.querySelectorAll('[data-year]').forEach(b => {
       b.onclick = () => { State._historyYear = Number(b.dataset.year); renderView(); };
     });
@@ -3848,8 +3943,12 @@ async function renderProfile(content) {
   const chatNotifBtn = document.getElementById('chat-notif-btn');
   if (chatNotifBtn) {
     chatNotifBtn.onclick = async () => {
-      const newVal = (State.player.chatNotif || 'off') === 'on' ? 'off' : 'on';
-      await api('updateProfile', { playerId: p.id, chatNotif: newVal });
+      // blank = on (same default as the button above and the server)
+      const newVal = (State.player.chatNotif || 'on') === 'on' ? 'off' : 'on';
+      chatNotifBtn.disabled = true;
+      try { await api('updateProfile', { playerId: p.id, chatNotif: newVal }); }
+      catch (e) { chatNotifBtn.disabled = false; showToast('Could not save: ' + e.message, 'error'); return; }
+      chatNotifBtn.disabled = false;
       State.player.chatNotif = newVal;
       chatNotifBtn.textContent = newVal === 'on' ? 'On' : 'Off';
       chatNotifBtn.className = `btn ${newVal === 'on' ? 'btn-primary' : 'btn-ghost'} btn-sm`;
@@ -5380,15 +5479,18 @@ async function renderChat(content) {
   const isAdmin = State.player && (State.player.isAdmin === true || State.player.isAdmin === 'TRUE');
   const p = State.player;
 
+  const unread = chatUnread_();
+  const tabDot = t => unread[t] && _chatTab !== t ? `<span class="chat-tab-dot${t === 'commissioner' ? ' comm' : ''}"></span>` : '';
   content.innerHTML = `
     <div style="display:flex; gap:0; border-bottom:1px solid var(--hairline); margin-bottom:0;">
-      <button class="tab-btn ${_chatTab === 'general' ? 'active' : ''}" data-chat="general">💬 General</button>
-      <button class="tab-btn ${_chatTab === 'commissioner' ? 'active' : ''}" data-chat="commissioner">📣 Commissioner</button>
+      <button class="tab-btn ${_chatTab === 'general' ? 'active' : ''}" data-chat="general">💬 General${tabDot('general')}</button>
+      <button class="tab-btn ${_chatTab === 'commissioner' ? 'active' : ''}" data-chat="commissioner">📣 Commissioner${tabDot('commissioner')}</button>
     </div>
-    <div id="chat-body" style="display:flex; flex-direction:column; height:calc(100vh - 220px);">
+    <div id="chat-body" style="display:flex; flex-direction:column; height:60vh; position:relative;">
       <div id="chat-messages" style="flex:1; overflow-y:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px;">
         <div class="empty-state"><span class="spinner"></span></div>
       </div>
+      <button id="chat-new-pill" class="chat-new-pill" style="display:none;">New messages ↓</button>
       ${_chatTab === 'commissioner' && !isAdmin ? '' : `
         <div style="padding:10px 14px; border-top:1px solid var(--hairline); background:var(--surface-1); display:flex; gap:8px; align-items:flex-end;">
           <textarea id="chat-input" placeholder="${_chatTab === 'commissioner' ? 'Commissioner message...' : 'Say something...'}"
@@ -5406,6 +5508,18 @@ async function renderChat(content) {
     btn.onclick = () => { _chatTab = btn.dataset.chat; renderChat(content); };
   });
 
+  // The panel fills exactly the space between its top and the bottom menu (it used to be a
+  // fixed 100vh - 220px, which pushed the text box under the menu whenever the picks
+  // banner showed). Measured again once the tab's rise animation has settled.
+  window.scrollTo(0, 0);
+  sizeChatPanel_();
+  setTimeout(sizeChatPanel_, 450);
+
+  const msgBox = document.getElementById('chat-messages');
+  const pill = document.getElementById('chat-new-pill');
+  if (msgBox) msgBox.addEventListener('scroll', () => { if (pill && chatNearBottom_(msgBox)) pill.style.display = 'none'; });
+  if (pill) pill.onclick = () => { if (msgBox) msgBox.scrollTop = msgBox.scrollHeight; pill.style.display = 'none'; };
+
   // auto-resize textarea
   const input = document.getElementById('chat-input');
   if (input) {
@@ -5421,9 +5535,11 @@ async function renderChat(content) {
   const sendBtn = document.getElementById('chat-send-btn');
   if (sendBtn) sendBtn.onclick = () => sendChatMessage(content);
 
-  // load messages
-  await loadChatMessages(_chatTab);
-  renderChatMessages();
+  // load messages (anything already in memory -- e.g. from the unread check -- shows at once)
+  const tabAtLoad = _chatTab;
+  if ((_chatMessages[tabAtLoad] || []).length) renderChatMessages({ toBottom: true });
+  await loadChatMessages(tabAtLoad);
+  if (_chatTab === tabAtLoad) renderChatMessages({ toBottom: true });
 
   // poll every 30 seconds while on chat tab
   clearInterval(_chatPollTimer);
@@ -5438,35 +5554,145 @@ async function renderChat(content) {
   }, 30000);
 }
 
+// Chat panel height = from its top to the bottom menu (or the keyboard, when the visual
+// viewport is shorter), never below 220px.
+function sizeChatPanel_() {
+  const body = document.getElementById('chat-body');
+  if (!body || State.view !== 'chat') return;
+  const nav = document.getElementById('bottomnav');
+  let bottom = nav ? nav.getBoundingClientRect().top : window.innerHeight;
+  if (window.visualViewport) bottom = Math.min(bottom, window.visualViewport.height + window.visualViewport.offsetTop);
+  const h = Math.max(220, Math.floor(bottom - body.getBoundingClientRect().top - 6));
+  body.style.height = h + 'px';
+}
+window.addEventListener('resize', () => { if (State.view === 'chat') sizeChatPanel_(); });
+if (window.visualViewport) window.visualViewport.addEventListener('resize', () => { if (State.view === 'chat') sizeChatPanel_(); });
+
+function chatNearBottom_(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 80; }
+
 async function loadChatMessages(type) {
   // Show cached messages instantly, then refresh in background
   const cacheKey = 'chat_' + type;
   try {
     const cached = localStorage.getItem(cacheKey);
-    if (cached) {
+    if (cached && !(_chatMessages[type] || []).length) {
       const parsed = JSON.parse(cached);
       if (Date.now() - (parsed._ts || 0) < 60000) { // 60s local cache
         _chatMessages[type] = parsed.messages || [];
-        renderChatMessages();
+        if (_chatTab === type) renderChatMessages({ toBottom: true });
       }
     }
   } catch(e) {}
   try {
     const data = await api('getMessages', { type });
-    _chatMessages[type] = data.messages || [];
-    try { localStorage.setItem(cacheKey, JSON.stringify({ messages: data.messages, _ts: Date.now() })); } catch(e) {}
+    const fresh = data.messages || [];
+    // keep a message this phone just sent if the reply it came in raced ahead of the list
+    const ids = new Set(fresh.map(m => m.messageId));
+    const justSent = (_chatMessages[type] || []).filter(m => m._local && !ids.has(m.messageId) && Date.now() - new Date(m.postedAt).getTime() < 120000);
+    _chatMessages[type] = fresh.concat(justSent);
+    _chatLastCheck[type] = Date.now();
+    try { localStorage.setItem(cacheKey, JSON.stringify({ messages: fresh, _ts: Date.now() })); } catch(e) {}
+    if (State.view === 'chat' && _chatTab === type && !document.hidden) markChatSeen_(type);
+    else if (document.getElementById('bottomnav')) renderBottomNav();
   } catch(e) {
     console.log('Chat load error:', e.message);
   }
 }
 
-function renderChatMessages() {
+// ---- Chat unread dots (Chat tab + Home strip for commissioner posts) ----
+// The newest postedAt this player has seen per channel, kept on this phone. The first time
+// there's no record, everything already posted counts as seen (no dot for old history).
+function chatSeenKey_() { return 'usl_chat_seen_' + (State.player ? State.player.id : ''); }
+function chatSeen_() { try { return JSON.parse(localStorage.getItem(chatSeenKey_()) || 'null'); } catch(e) { return null; } }
+function latestOthersMsg_(type) {
+  const me = State.player && State.player.id;
+  const list = (_chatMessages[type] || []).filter(m => m.playerId !== me && m.postedAt);
+  return list.length ? list[list.length - 1] : null;
+}
+function markChatSeen_(type) {
+  const nowIso = new Date().toISOString();
+  let seen = chatSeen_();
+  if (!seen) { // first time on this phone: what's already there counts as seen, in both channels
+    seen = {};
+    ['general', 'commissioner'].forEach(t => { const l = latestOthersMsg_(t); seen[t] = l ? l.postedAt : nowIso; });
+  }
+  const last = latestOthersMsg_(type);
+  if (last && (!seen[type] || new Date(last.postedAt) > new Date(seen[type]))) seen[type] = last.postedAt;
+  if (!seen[type]) seen[type] = nowIso;
+  try { localStorage.setItem(chatSeenKey_(), JSON.stringify(seen)); } catch(e) {}
+  if (document.getElementById('bottomnav')) renderBottomNav();
+}
+function chatUnread_() {
+  const seen = chatSeen_();
+  const out = { general: false, commissioner: false };
+  if (!seen) return out;
+  ['general', 'commissioner'].forEach(t => {
+    const last = latestOthersMsg_(t);
+    out[t] = !!(last && seen[t] && new Date(last.postedAt) > new Date(seen[t]));
+  });
+  return out;
+}
+// Fetches both channels at most every 5 minutes while the app is open (the Cloudflare
+// front door answers getMessages from its copy, so this doesn't touch Google). Skipped
+// while the Chat tab is open -- its own 30s poll covers that.
+let _chatLastCheck = { general: 0, commissioner: 0 };
+async function checkChatUnread_(force) {
+  if (!State.player || document.hidden || State.view === 'chat') return;
+  const due = t => force || Date.now() - (_chatLastCheck[t] || 0) > 5 * 60 * 1000;
+  const types = ['commissioner', 'general'].filter(due);
+  if (!types.length) return;
+  types.forEach(t => { _chatLastCheck[t] = Date.now(); });
+  await Promise.all(types.map(t => loadChatMessages(t)));
+  if (!chatSeen_()) markChatSeen_('general'); // sets both channels
+  renderBottomNav();
+  if (State.view === 'home') renderCommissionerStrip_();
+}
+function chatNavBadge_() {
+  const u = chatUnread_();
+  return u.commissioner ? 'commissioner' : u.general ? 'general' : '';
+}
+// Home: one line for an unread commissioner post; tap opens it.
+function renderCommissionerStrip_() {
+  const el = document.getElementById('home-comm-strip');
+  if (!el) return;
+  const last = chatUnread_().commissioner ? latestOthersMsg_('commissioner') : null;
+  if (!last) { el.innerHTML = ''; return; }
+  el.innerHTML = `<div class="card comm-strip" style="cursor:pointer; display:flex; gap:10px; align-items:center; border-color:rgba(242,182,50,0.45);">
+      <span style="font-size:20px;">📣</span>
+      <div style="flex:1; min-width:0;">
+        <div style="font-size:12px; font-weight:700; color:var(--gold);">New from the commissioner</div>
+        <div style="font-size:13px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(last.message)}</div>
+      </div>
+      <span style="color:var(--text-faint); font-size:13px;">Read →</span>
+    </div>`;
+  el.firstElementChild.onclick = () => { _chatTab = 'commissioner'; State.view = 'chat'; renderBottomNav(); renderContent(); };
+}
+
+let _chatPending = []; // messages being sent (or that failed) -- shown at once, greyed out
+let _chatRenderSig = '';
+
+function renderChatMessages(opts) {
+  opts = opts || {};
   const container = document.getElementById('chat-messages');
   if (!container) return;
   const messages = _chatMessages[_chatTab] || [];
+  const pending = _chatPending.filter(p => p.type === _chatTab);
   const isAdmin = State.player && (State.player.isAdmin === true || State.player.isAdmin === 'TRUE');
 
-  if (messages.length === 0) {
+  // Nothing new since the last draw: leave the list (and where the reader is) alone
+  const last = messages[messages.length - 1];
+  const sig = _chatTab + '|' + messages.length + '|' + (last ? last.messageId : '') + '|' + pending.map(p => p.tempId + p.status).join(',');
+  const sameTab = container.dataset.tab === _chatTab;
+  if (sameTab && sig === _chatRenderSig && !opts.toBottom) return;
+  const prevCount = sameTab ? Number(container.dataset.count || 0) : 0;
+  const wasNearBottom = !sameTab || chatNearBottom_(container);
+  const prevTop = container.scrollTop;
+  _chatRenderSig = sig;
+  container.dataset.tab = _chatTab;
+  container.dataset.count = String(messages.length);
+  if (State.view === 'chat' && !document.hidden) markChatSeen_(_chatTab);
+
+  if (messages.length === 0 && pending.length === 0) {
     container.innerHTML = '<div class="empty-state"><p class="helptext">No messages yet. ' + (_chatTab === 'general' ? 'Say hello!' : 'No commissioner messages yet.') + '</p></div>';
     return;
   }
@@ -5498,7 +5724,20 @@ function renderChatMessages() {
         </div>
       </div>
     `;
-  }).join('');
+  }).join('') + pending.map(p => `
+      <div style="display:flex; gap:8px; align-items:flex-start; flex-direction:row-reverse;">
+        <div style="width:32px; flex-shrink:0;"></div>
+        <div style="max-width:75%; align-items:flex-end; display:flex; flex-direction:column; gap:3px;">
+          <div style="font-size:11px; color:${p.status === 'failed' ? 'var(--loss)' : 'var(--text-faint)'}; text-align:right;">
+            ${p.status === 'failed'
+              ? `Not sent · <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px;" data-retry-msg="${p.tempId}">Retry</button> <button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px;" data-drop-msg="${p.tempId}">✕</button>`
+              : 'Sending…'}
+          </div>
+          <div style="background:var(--gold); color:#1A1206; opacity:${p.status === 'failed' ? '0.45' : '0.6'}; padding:9px 12px; border-radius:16px 4px 16px 16px; font-size:14px; line-height:1.5; word-break:break-word;">
+            ${escapeHtml(p.message)}
+          </div>
+        </div>
+      </div>`).join('');
 
   // wire delete buttons for admins
   container.querySelectorAll('[data-delete-msg]').forEach(btn => {
@@ -5509,10 +5748,24 @@ function renderChatMessages() {
       renderChatMessages();
     };
   });
+  container.querySelectorAll('[data-retry-msg]').forEach(btn => {
+    btn.onclick = () => { const p = _chatPending.find(x => x.tempId === btn.dataset.retryMsg); if (p) postChatMessage_(p); };
+  });
+  container.querySelectorAll('[data-drop-msg]').forEach(btn => {
+    btn.onclick = () => { _chatPending = _chatPending.filter(x => x.tempId !== btn.dataset.dropMsg); renderChatMessages(); };
+  });
 
   wirePlayerNameTaps(container);
-  // scroll to bottom
-  container.scrollTop = container.scrollHeight;
+  // Stay at the bottom only if the reader was there already (or just sent / opened the
+  // channel); someone scrolled up to read keeps their place and gets a "New messages" pill.
+  const pill = document.getElementById('chat-new-pill');
+  if (opts.toBottom || wasNearBottom) {
+    container.scrollTop = container.scrollHeight;
+    if (pill) pill.style.display = 'none';
+  } else {
+    container.scrollTop = prevTop;
+    if (pill && messages.length > prevCount) pill.style.display = '';
+  }
 }
 
 async function sendChatMessage(content) {
@@ -5520,23 +5773,32 @@ async function sendChatMessage(content) {
   if (!input) return;
   const message = input.value.trim();
   if (!message) return;
+  // Shown straight away (greyed, "Sending…"); the box is free for the next message
+  const p = { tempId: 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), type: _chatTab, message, status: 'sending' };
+  _chatPending.push(p);
+  input.value = '';
+  input.style.height = 'auto';
+  input.focus();
+  postChatMessage_(p);
+}
 
-  const sendBtn = document.getElementById('chat-send-btn');
-  if (sendBtn) sendBtn.disabled = true;
-  input.disabled = true;
-
+async function postChatMessage_(p) {
+  p.status = 'sending';
+  if (_chatTab === p.type) renderChatMessages({ toBottom: true });
   try {
-    await api('postMessage', { playerId: State.player.id, type: _chatTab, message });
-    input.value = '';
-    input.style.height = 'auto';
-    await loadChatMessages(_chatTab);
-    renderChatMessages();
+    const r = await api('postMessage', { playerId: State.player.id, type: p.type, message: p.message });
+    _chatPending = _chatPending.filter(x => x !== p);
+    (_chatMessages[p.type] = _chatMessages[p.type] || []).push({
+      messageId: r.messageId || p.tempId, type: p.type, playerId: State.player.id, teamName: State.player.teamName,
+      message: p.message, postedAt: r.postedAt || new Date().toISOString(), _local: true
+    });
+    if (_chatTab === p.type) renderChatMessages({ toBottom: true });
+    // pick up anything others posted meanwhile (not waited on)
+    loadChatMessages(p.type).then(() => { if (State.view === 'chat' && _chatTab === p.type) renderChatMessages(); });
   } catch(e) {
+    p.status = 'failed';
+    if (_chatTab === p.type) renderChatMessages({ toBottom: true });
     showToast(e.message || 'Could not send message', 'error');
-  } finally {
-    if (sendBtn) sendBtn.disabled = false;
-    input.disabled = false;
-    input.focus();
   }
 }
 
@@ -5601,6 +5863,10 @@ function renderRules(content) {
         You can change your picks on individual games right up until they kick off.
         Once a game kicks off, your pick for that game is locked and visible to the rest of the league.
         If you miss submitting before a game kicks off, the favorite is automatically assigned as your pick.
+      </p>
+      <p class="helptext" style="line-height:1.7; margin-top:8px;">
+        Your <strong style="color:var(--gold);">Upset Special</strong> locks <strong style="color:var(--text);">5 minutes before the week's first kickoff</strong>,
+        even if your underdog plays later — after that it can't be set or changed. No Upset Special by then means no upset bonus that week.
       </p>
     </div>
 

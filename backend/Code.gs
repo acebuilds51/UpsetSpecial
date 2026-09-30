@@ -1,4 +1,4 @@
-// v17-lean-triggers-sep29  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v18-community-sep29  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -86,7 +86,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v17-lean-triggers-sep29';
+var CODE_VERSION = 'v18-community-sep29';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -2174,14 +2174,10 @@ function sendApprovalPush_(player) {
   if (!player.fcmToken || String(player.fcmToken).trim() === '') return;
   var tokens = String(player.fcmToken).split(',').map(function(t) { return t.trim(); }).filter(Boolean);
   if (tokens.length === 0) return;
-  tokens.forEach(function (token) {
-    sendFcmV1_(
-      token,
-      "You're approved!",
-      'Your Upset Special account is active — log in and make your first pick.',
-      { type: 'approval' }
-    );
-  });
+  var data = pushData_('approval', 'approval', 'slate');
+  sendFcmBatch_(tokens.map(function (token) {
+    return { token: token, title: "You're approved!", body: 'Your Upset Special account is active — log in and make your first pick.', data: data };
+  }));
 }
 
 function apiAdminUpdatePlayer(payload) {
@@ -3376,7 +3372,8 @@ function apiPostMessage(payload) {
   // silently failed to notify before this fix.
   try {
     if (type === 'commissioner') {
-      sendPushToAllPlayers('📢 ' + player.teamName + ' (Commissioner)', message.slice(0, 120));
+      sendPushToAllPlayers('📢 ' + player.teamName + ' (Commissioner)', message.slice(0, 120),
+        pushData_('commissioner', 'commissioner-' + messageId, 'chat', 'chat=commissioner'));
     } else {
       var optedIn = players.filter(function(p) {
         return p.active && p.id !== player.id && p.fcmToken && String(p.fcmToken).trim() !== '' && p.chatNotif !== 'off';
@@ -3384,7 +3381,7 @@ function apiPostMessage(payload) {
       var chatMsgs = [];
       optedIn.forEach(function(p) {
         String(p.fcmToken).split(',').map(function(t) { return t.trim(); }).filter(Boolean).forEach(function(token) {
-          chatMsgs.push({ token: token, title: '💬 ' + player.teamName, body: message.slice(0, 120), data: { type: 'chat' } });
+          chatMsgs.push({ token: token, title: '💬 ' + player.teamName, body: message.slice(0, 120), data: pushData_('chat', 'chat', 'chat', 'chat=general') });
         });
       });
       sendFcmBatch_(chatMsgs);
@@ -3471,7 +3468,11 @@ function apiAdminRecordBowlWinners(payload) {
 //   { NORM: { a: attempts, h: hits, p: upsetPts, b: biggest hit {team, spread, year,
 //     week, pts, i: row order}, w: { year: [weeks with a row] } } }
 // Busted by invalidateSheetCache('UpsetHistory') (the week wrap-up) and onSheetChange.
-var UPSET_INDEX_KEY = 'upsetIndex_v1';
+// Plus idx.__top = the league's biggest hits ever (Upset Hall of Fame, getAllTimeLeaderboard):
+//   [{ tn: teamName as recorded, team, spread, year, week, pts }] -- '__top' can never be
+//   a trophyNorm_ key (those are A-Z0-9 only).
+var UPSET_INDEX_KEY = 'upsetIndex_v2';
+var UPSET_TOP_N = 15;
 function trophyNorm_(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g,'').trim(); }
 
 function getUpsetHistoryIndex_() {
@@ -3482,9 +3483,10 @@ function getUpsetHistoryIndex_() {
   } catch (e) {}
   var genBefore = cache.get('upsetIndexGen') || '0';
   var idx = {};
+  var hits = [];
   sheetToObjects(SHEET_NAMES.UPSET_HISTORY).forEach(function(r, i) {
     var n = trophyNorm_(r.teamName);
-    var e = idx[n] || (idx[n] = { a: 0, h: 0, p: 0, b: null, w: {} });
+    var e = idx[n] || (idx[n] = { a: 0, h: 0, p: 0, b: null, w: {}, tn: String(r.teamName || '') });
     var yr = Number(r.year);
     (e.w[yr] = e.w[yr] || []).push(Number(r.week));
     if (r.attempted === true || r.attempted === 'TRUE') e.a++;
@@ -3493,8 +3495,12 @@ function getUpsetHistoryIndex_() {
       e.h++;
       var pts = Number(r.upsetPts);
       if (!e.b || pts > e.b.pts) e.b = { team: r.upsetPick, spread: Number(r.spread), year: yr, week: Number(r.week), pts: pts, i: i };
+      if (pts > 0) hits.push({ tn: String(r.teamName || ''), team: r.upsetPick, spread: Number(r.spread), year: yr, week: Number(r.week), pts: pts, i: i });
     }
   });
+  // biggest first; on a tie the earlier one (it got there first)
+  hits.sort(function(a, b) { return b.pts - a.pts || a.year - b.year || a.week - b.week || a.i - b.i; });
+  idx.__top = hits.slice(0, UPSET_TOP_N).map(function(h) { return { tn: h.tn, team: h.team, spread: h.spread, year: h.year, week: h.week, pts: h.pts }; });
   try {
     if ((cache.get('upsetIndexGen') || '0') === genBefore) {
       cachePutChunked_(cache, UPSET_INDEX_KEY, JSON.stringify(idx), sheetChangeWatched_() ? 21600 : 360);
@@ -3894,20 +3900,91 @@ function sendFcmBatch_(messages) {
     };
   });
 
-  var sent = 0;
+  var sent = 0, failed = 0, dead = [];
   for (var i = 0; i < requests.length; i += 50) {
     var chunk = requests.slice(i, i + 50);
     var responses;
-    try { responses = UrlFetchApp.fetchAll(chunk); } catch (e) { Logger.log('FCM fetchAll error: ' + e.message); continue; }
+    try { responses = UrlFetchApp.fetchAll(chunk); } catch (e) { Logger.log('FCM fetchAll error: ' + e.message); failed += chunk.length; continue; }
     responses.forEach(function(resp, j) {
-      if (resp.getResponseCode() === 200) { sent++; return; }
-      Logger.log('FCM v1 send failed (token ' + String(messages[i + j].token).slice(0, 12) + '...): ' + resp.getContentText());
+      var code = resp.getResponseCode();
+      if (code === 200) { sent++; return; }
+      failed++;
+      var text = String(resp.getContentText() || '');
+      // Only Google's explicit "this registration no longer exists" answer marks a token
+      // dead (app deleted, phone replaced, notifications reset). Never on 5xx/quota/other.
+      if (code === 404 || text.indexOf('UNREGISTERED') >= 0) dead.push(String(messages[i + j].token));
+      Logger.log('FCM v1 send failed (token ' + String(messages[i + j].token).slice(0, 12) + '...): ' + text);
     });
   }
+  var removed = dead.length ? removeDeadFcmTokens_(dead) : 0;
+  recordPushStats_(sent, failed, removed);
   return sent;
 }
 
-function sendPushToAllPlayers(title, body) {
+// Removes tokens FCM reported as unregistered from every player's fcmToken list. Reads
+// ONLY the id + fcmToken columns fresh (never the cached state, which could be missing a
+// just-registered phone) and writes the fcmToken column back in one call.
+function removeDeadFcmTokens_(deadTokens) {
+  try {
+    var deadSet = {};
+    deadTokens.forEach(function(t) { deadSet[t] = true; });
+    var sheet = getSheet(SHEET_NAMES.PLAYERS);
+    var last = sheet.getLastRow();
+    if (last < 2) return 0;
+    var hdr = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(function(h) { return String(h).trim(); });
+    var col = hdr.indexOf('fcmToken') + 1;
+    if (col < 1) return 0;
+    var vals = sheet.getRange(2, col, last - 1, 1).getValues();
+    var removed = 0;
+    var out = vals.map(function(r) {
+      var toks = String(r[0] || '').split(',').map(function(t) { return t.trim(); }).filter(Boolean);
+      var kept = toks.filter(function(t) { return !deadSet[t]; });
+      removed += toks.length - kept.length;
+      return [kept.length === toks.length ? r[0] : kept.join(',')];
+    });
+    if (!removed) return 0;
+    sheet.getRange(2, col, last - 1, 1).setValues(out);
+    invalidateSheetCache(SHEET_NAMES.PLAYERS);
+    invalidateStateCache();
+    return removed;
+  } catch (e) {
+    Logger.log('removeDeadFcmTokens_ error: ' + e.message);
+    return 0;
+  }
+}
+
+// Per-day push counts for the nightly diagnostics (last 8 days, Script Properties).
+function recordPushStats_(sent, failed, removed) {
+  if (!sent && !failed) return;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var stats = {};
+    try { stats = JSON.parse(props.getProperty('PUSH_STATS') || '{}') || {}; } catch (e) {}
+    var day = new Date().toISOString().slice(0, 10);
+    var d = stats[day] || (stats[day] = { sent: 0, failed: 0, removed: 0 });
+    d.sent += sent; d.failed += failed; d.removed += removed;
+    Object.keys(stats).sort().slice(0, -8).forEach(function(k) { delete stats[k]; });
+    props.setProperty('PUSH_STATS', JSON.stringify(stats));
+  } catch (e) {}
+}
+
+// Totals of PUSH_STATS over the last `days` days: { sent, failed, removed }.
+function pushStatsTotals_(days) {
+  var t = { sent: 0, failed: 0, removed: 0 };
+  try {
+    var stats = JSON.parse(PropertiesService.getScriptProperties().getProperty('PUSH_STATS') || '{}') || {};
+    var since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+    Object.keys(stats).forEach(function(k) {
+      if (k < since) return;
+      t.sent += stats[k].sent || 0; t.failed += stats[k].failed || 0; t.removed += stats[k].removed || 0;
+    });
+  } catch (e) {}
+  return t;
+}
+
+// data (optional): { tag, url } -- see pushData_. Without it the push gets its own tag, so
+// it never replaces (or is replaced by) another notification on the phone.
+function sendPushToAllPlayers(title, body, data) {
   try {
     var players = playersLite_().filter(function(p) {
       return p.active && p.fcmToken && String(p.fcmToken).trim() !== '';
@@ -3924,8 +4001,9 @@ function sendPushToAllPlayers(title, body) {
     });
     if (allTokens.length === 0) return;
 
+    var d = data || pushData_('general', 'general-' + Date.now(), 'home');
     var sent = sendFcmBatch_(allTokens.map(function(token) {
-      return { token: token, title: title, body: body, data: { type: 'general' } };
+      return { token: token, title: title, body: body, data: d };
     }));
     Logger.log('FCM v1: sent to ' + sent + '/' + allTokens.length + ' tokens');
   } catch(e) {
@@ -3933,11 +4011,22 @@ function sendPushToAllPlayers(title, body) {
   }
 }
 
+// Push data for the service worker (firebase-messaging-sw.js):
+//   tag  -- a notification replaces an earlier one ONLY if it has the same tag, so each kind
+//           gets its own (chat pushes share 'chat' on purpose; a commissioner post never
+//           replaces anything; the final pick reminder replaces the 3-hour one).
+//   url  -- tapping opens the app on that tab (?view=..., read at boot and by the open app).
+function pushData_(type, tag, view, extra) {
+  var url = APP_URL + '/?view=' + encodeURIComponent(view || 'home') + (extra ? '&' + extra : '');
+  return { type: type, tag: tag, url: url };
+}
+
 function sendPickReminder(week) {
   try {
     sendPushToAllPlayers(
       '🏈 Pick Reminder — Week ' + week,
-      'The board is posted! Lock in your picks before kickoff.'
+      'The board is posted! Lock in your picks before kickoff.',
+      pushData_('board_posted', 'board-w' + week, 'slate')
     );
   } catch(e) { Logger.log('sendPickReminder error: ' + e.message); }
 }
@@ -3946,7 +4035,8 @@ function sendResultsNotification(week) {
   try {
     sendPushToAllPlayers(
       '🏆 Week ' + week + ' Results',
-      'Results are in! Check the standings.'
+      'Results are in! Check the standings.',
+      pushData_('results', 'results-w' + week, 'standings')
     );
   } catch(e) { Logger.log('sendResultsNotification error: ' + e.message); }
 }
@@ -4975,7 +5065,60 @@ function apiGetAllTimeLeaderboard() {
     return sb - sa || b.gold.length - a.gold.length;
   });
 
-  return { ok: true, leaderboard: list };
+  var upsetHall = null;
+  try { upsetHall = buildUpsetHall_(players); } catch (e) { Logger.log('Upset Hall of Fame error: ' + e.message); }
+  return { ok: true, leaderboard: list, upsetHall: upsetHall };
+}
+
+// Upset Hall of Fame (History tab): the biggest Upset Special hits ever and the best hit
+// rates, from the cached UpsetHistory index (no extra read of UpsetHistory). Historical team
+// names are linked to a player by their current team name or an approved name claim.
+var UPSET_HALL_MIN_ATTEMPTS = 20;
+function buildUpsetHall_(players) {
+  var idx = getUpsetHistoryIndex_();
+  var owner = {}, nameOf = {};
+  players.forEach(function(p) {
+    if (!p.id) return;
+    nameOf[String(p.id)] = p.teamName || p.name;
+    var n = trophyNorm_(p.teamName);
+    if (n) owner[n] = String(p.id);
+  });
+  try {
+    sheetToObjects(SHEET_NAMES.NAME_CLAIMS).forEach(function(r) {
+      if (r.status !== 'approved' || !r.playerId) return;
+      var n = trophyNorm_(r.claimedTeamName);
+      if (n && !owner[n]) owner[n] = String(r.playerId);
+    });
+  } catch (e) {}
+  var who = function(tn) {
+    var pid = owner[trophyNorm_(tn)] || '';
+    return { playerId: pid, teamName: pid ? (nameOf[pid] || tn) : tn };
+  };
+
+  var biggest = (idx.__top || []).slice(0, 10).map(function(h) {
+    var w = who(h.tn);
+    return { playerId: w.playerId, teamName: w.teamName, team: h.team, spread: h.spread, pts: h.pts, year: h.year, week: h.week };
+  });
+
+  // hit rate per player (all of a player's old team names together)
+  var agg = {};
+  Object.keys(idx).forEach(function(n) {
+    if (n === '__top') return;
+    var e = idx[n];
+    if (!e || !e.a) return;
+    var pid = owner[n] || '';
+    var key = pid ? 'PID:' + pid : n;
+    var g = agg[key] || (agg[key] = { playerId: pid, teamName: pid ? (nameOf[pid] || e.tn || n) : (e.tn || n), a: 0, h: 0, p: 0 });
+    g.a += e.a; g.h += e.h; g.p += e.p;
+  });
+  var hitRate = Object.keys(agg).map(function(k) { return agg[k]; })
+    .filter(function(g) { return g.a >= UPSET_HALL_MIN_ATTEMPTS; })
+    .map(function(g) {
+      return { playerId: g.playerId, teamName: g.teamName, attempts: g.a, hits: g.h, pct: Math.round(g.h / g.a * 1000) / 10, pts: Math.round(g.p * 10) / 10 };
+    })
+    .sort(function(a, b) { return b.pct - a.pct || b.hits - a.hits; })
+    .slice(0, 10);
+  return { biggest: biggest, hitRate: hitRate, minAttempts: UPSET_HALL_MIN_ATTEMPTS };
 }
 
 function apiGetCareerHistory() {
@@ -5115,7 +5258,7 @@ function sendPickReminders_(isFinal) {
     var pushBody = pushBodyFor(todo[p.id]);
     if (p.fcmToken && String(p.fcmToken).trim() !== '') {
       String(p.fcmToken).split(',').map(function(t) { return t.trim(); }).filter(Boolean).forEach(function(token) {
-        reminderMsgs.push({ token: token, title: pushTitle, body: pushBody, data: { type: 'pick_reminder' } });
+        reminderMsgs.push({ token: token, title: pushTitle, body: pushBody, data: pushData_('pick_reminder', 'reminder-w' + week, 'slate') });
       });
     }
   });
@@ -5292,6 +5435,14 @@ function isGameLockedServer(game, now) {
   return now >= lockTime;
 }
 
+// The Upset Special locks 5 minutes before the earliest kickoff among the week's board
+// games (same rule as isUpsetSpecialLocked() in index.html).
+function isUpsetSpecialLockedServer_(boardGames, now) {
+  const kickoffs = (boardGames || []).filter(g => g.kickoff).map(g => new Date(g.kickoff).getTime()).filter(t => !isNaN(t));
+  if (!kickoffs.length) return false;
+  return now.getTime() >= Math.min.apply(null, kickoffs) - 5 * 60 * 1000;
+}
+
 // ---------- REGULAR SEASON: PLAYER PICKS ----------
 
 function apiSubmitPicks(payload) {
@@ -5380,7 +5531,21 @@ function apiSubmitPicks_(payload, week, playerId, picks) {
 
   let upsetGameId = null;
   let createdGame = null;
-  if (upsetPicks.length === 1) {
+  if (upsetPicks.length === 1 && isUpsetSpecialLockedServer_(boardGames, now)) {
+    // League rule: the Upset Special locks 5 minutes before the week's FIRST board kickoff
+    // (the app enforces the same). After that only an unchanged re-send of the saved one
+    // is accepted -- no new Upset Special, no switching game or team.
+    const up = upsetPicks[0];
+    const prev = existingPicksForPlayer.find(ep => ep.isUpset === true || ep.isUpset === 'TRUE');
+    const prevGame = prev ? weekGames.find(g => g.gameId === prev.gameId) : null;
+    const sameGame = prev && (up.gameId
+      ? String(up.gameId) === String(prev.gameId)
+      : !!(up.espnEventId && prevGame && String(prevGame.espnEventId) === String(up.espnEventId)));
+    if (!sameGame || String(prev.pickedTeam) !== String(up.pickedTeam)) {
+      return { ok: false, error: 'The Upset Special locked 5 minutes before the week\'s first kickoff -- it can no longer be set or changed.' };
+    }
+    upsetGameId = prev.gameId;
+  } else if (upsetPicks.length === 1) {
     const res = resolveUpsetPick_(upsetPicks[0], week, now, existingPicksForPlayer);
     if (res.ok === false) return res;
     upsetGameId = res.upsetGameId;
@@ -7743,6 +7908,15 @@ function diagIntegrity_(report, warn, info) {
   });
   report.integrity.push({ check: 'Week ' + week + ' games >12h past kickoff but not final', count: stale.length });
   if (stale.length) warn(stale.length + ' week ' + week + ' game(s) kicked off 12+ hours ago but have no final score -- run Fetch Results.');
+
+  // push delivery (sendFcmBatch_ counts; dead registrations are removed as they're found)
+  var push = pushStatsTotals_(7);
+  report.integrity.push({ check: 'Push messages sent (7 days)', count: push.sent });
+  report.integrity.push({ check: 'Push messages failed (7 days)', count: push.failed });
+  report.integrity.push({ check: 'Dead push registrations removed (7 days)', count: push.removed });
+  if (push.sent + push.failed >= 50 && push.failed - push.removed > push.sent) {
+    warn('Push notifications: ' + (push.failed - push.removed) + ' of ' + (push.sent + push.failed) + ' failed in the last 7 days for reasons other than a dead phone -- check the FCM service account.');
+  }
 }
 
 function diagPerfLog_(report, warn, info) {

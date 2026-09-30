@@ -34,7 +34,7 @@ Verify a backend deploy took effect: every API response carries `_version` (= `C
 ## Checks (run before every deploy; CI runs them on push)
 - `node tools/check-syntax.js` — parses every inline script in index.html + Code.gs, and fails on any `<button id=…>` / button `data-*` attribute that no code looks up (a dead button)
 - `node tools/backend-tests.js` — runs Code.gs under Node against in-memory fakes of SpreadsheetApp/Cache/Lock/ESPN (never touches the real sheet). Add a test for every bug fix.
-- `node tools/make-frontend-harness.js` then `node tools/serve-harness.js` → http://localhost:8765/?session=1 — the real frontend against a fake backend (`window.__apiCalls` counts requests; `&fail=1` simulates outages, `&delay=ms` slowness, `&final=1` a finished week with a tie + perfect weeks, `&unposted=1` an unposted board with missing fields).
+- `node tools/make-frontend-harness.js` then `node tools/serve-harness.js` → http://localhost:8765/?session=1 — the real frontend against a fake backend (`window.__apiCalls` counts requests; `&fail=1` simulates outages, `&delay=ms` slowness, `&final=1` a finished week with a tie + perfect weeks, `&unposted=1` an unposted board with missing fields, `&msgs=N` N chat messages + a commissioner post, `&postfail=1` failing chat sends, `&view=chat` a notification-style deep link).
 
 ## Performance rules (the Apps Script backend is the bottleneck)
 - Never call `appendObject` / `updateRowByMatch` / `deleteRow` in a loop — use `appendObjects_`, `updateRowsByMatchBatch_`, `deleteRowsByMatch` (grouped) / `deleteRowsByMatchFast_`.
@@ -49,7 +49,13 @@ Verify a backend deploy took effect: every API response carries `_version` (= `C
 - New time-trigger entry points that write: wrap the body in `runWithOneStaleSignal_(fn)` (as keepWarm / checkGameFinalNotifications do) so the Worker gets one stale signal per run, not one per cache bust.
 - Frontend: all callers share one in-flight `getState` (`refreshState`); background callers pass `{shared:true}`, post-write callers use the default. Don't add new `getState` calls per render.
 
+## Push notifications
+- Every push's `data` comes from `pushData_(type, tag, view, extra)`. A phone replaces a notification only when the tag matches, so each kind gets its own tag: chat = `'chat'`, commissioner = `'commissioner-<messageId>'`, reminders = `'reminder-w<week>'`, finals = `'final-<gameId>'`. The `url` (`?view=<tab>`) is where a tap opens the app (read at boot, and by `openViewFromUrl_` when the service worker posts `OPEN_VIEW`).
+- `sendFcmBatch_` removes tokens that FCM reports as 404 / `UNREGISTERED` (`removeDeadFcmTokens_`, which reads only the fcmToken column fresh). Per-day counts are kept in the Script Property `PUSH_STATS` and shown in the nightly diagnostics integrity rows.
+- `firebase-messaging-sw.js` changes reach phones on the next service-worker update check (the app calls `reg.update()` at boot).
+
 ## League rules the code must keep
+- The Upset Special locks 5 minutes before the week's FIRST board kickoff (app: `isUpsetSpecialLocked`, server: `isUpsetSpecialLockedServer_`). After that, only an unchanged re-send is accepted.
 - Frozen snapshot lines are NEVER overwritten — snapshot jobs (`snapshotWeeklyLines`, `autoBackfillMissingLines`, Refresh Snapshot) only add missing games.
 - Games without a frozen line are never listed or accepted as an Upset Special.
 - `autoBackfillMissingLines` re-checks ESPN every 6 hours for games that gained a line.

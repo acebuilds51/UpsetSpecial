@@ -9,6 +9,8 @@
 //               ?unposted=1 (week 1 board not posted yet; two games are missing a kickoff / spread)
 //               ?picker=1 (you are week 1's picker, no slate yet; every getState changes
 //                          another player's picks, like a busy week in the background)
+//               ?msgs=N (N General chat messages + a commissioner post; window.__chat holds them)
+//               ?postfail=1 (chat sends fail)
 // Admin writes that matter for the Pot tab (adminTogglePaid, adminLedgerEntry, adminLedgerBatch)
 // update the fake state, so the next getState shows them.
 const fs = require('fs');
@@ -52,6 +54,16 @@ const mock = `<script>
     for (var s = 1; s <= 14; s++) slate.push({ espnEventId: 'S' + s, awayTeam: 'Road ' + s, homeTeam: 'Host ' + s, favorite: 'Host ' + s, spread: 2.5 + s, kickoff: sat.toISOString(), homeLogo: '', awayLogo: '', source: 'snapshot', hasSnapshot: true, started: false, statusDetail: '' });
   }
   var draft = null;
+  // chat: ?msgs=N seeds N General messages from other players + one commissioner post;
+  // postMessage appends (and fails with ?postfail=1)
+  var chat = { general: [], commissioner: [] };
+  var nMsgs = Number(qs.get('msgs') || 0);
+  for (var m = 0; m < nMsgs; m++) chat.general.push({ messageId: 'm' + m, type: 'general', playerId: m % 2 ? 'p2' : 'p3', teamName: m % 2 ? 'PATS' : 'SAMS', message: 'Message ' + m + ' about Saturday and that upset pick', postedAt: new Date(Date.now() - (nMsgs - m) * 60000).toISOString() });
+  if (nMsgs) chat.commissioner.push({ messageId: 'c1', type: 'commissioner', playerId: 'p2', teamName: 'PATS', message: 'Payments are due before Week 6 kicks off', postedAt: new Date(Date.now() - 30000).toISOString() });
+  window.__chat = chat;
+  var hall = { minAttempts: 20,
+    biggest: [{ playerId: 'p2', teamName: 'PATS', team: 'Huge Dog', spread: 24.5, pts: 24.5, year: 2019, week: 7 }, { playerId: '', teamName: 'Old Timers', team: 'Middle Dog', spread: 21, pts: 21, year: 2016, week: 3 }, { playerId: 'p1', teamName: 'TESTERS', team: 'Road Dog', spread: 17.5, pts: 17.5, year: 2024, week: 11 }],
+    hitRate: [{ playerId: 'p3', teamName: 'SAMS', attempts: 40, hits: 9, pct: 22.5, pts: 101 }, { playerId: 'p1', teamName: 'TESTERS', attempts: 22, hits: 3, pct: 13.6, pts: 41.5 }] };
   var realFetch = window.fetch.bind(window);
   window.fetch = function(url, opts) {
     if (String(url).indexOf('script.google.com') < 0 && String(url).indexOf('workers.dev') < 0) return realFetch(url, opts);
@@ -68,8 +80,16 @@ const mock = `<script>
         else if (body.action === 'getPickerSlateFromSnapshot') data = { ok: true, games: slate };
         else if (body.action === 'getCareerHistory') data = { ok: true, history: [] };
         else if (body.action === 'getAvatars') data = { ok: true, avatars: {} };
-        else if (body.action === 'getMessages') data = { ok: true, messages: [] };
-        else if (body.action === 'getAllTimeLeaderboard') data = { ok: true, leaderboard: [] };
+        else if (body.action === 'getMessages') data = { ok: true, messages: (chat[body.type || 'general'] || []).slice() };
+        else if (body.action === 'postMessage') {
+          if (qs.get('postfail') === '1') data = { ok: false, error: 'Fake send failure' };
+          else {
+            var msg = { messageId: 'msg_' + Date.now(), type: body.type, playerId: body.playerId, teamName: 'TESTERS', message: body.message, postedAt: new Date().toISOString() };
+            (chat[body.type] = chat[body.type] || []).push(msg);
+            data = { ok: true, messageId: msg.messageId, postedAt: msg.postedAt };
+          }
+        }
+        else if (body.action === 'getAllTimeLeaderboard') data = { ok: true, leaderboard: [], upsetHall: hall };
         else if (body.action === 'getAllEspnScores') data = { ok: true, games: [] };
         else if (body.action === 'getTrophyRoom') data = { ok: true };
         else if (body.action === 'adminTogglePaid') state.players.forEach(function(p) { if (p.id === body.playerId) p.isPaid = body.isPaid; });

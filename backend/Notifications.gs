@@ -1,4 +1,4 @@
-// v17-lean-triggers-sep29  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
+// v18-community-sep29  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
 // ============================================================
 //  UPSET SPECIAL — Notifications & week/season finalization (v2, Sep 2026)
 //
@@ -112,7 +112,7 @@ function checkGameFinalNotifications_() {
           (isUpset ? ' 🚨 UPSET!' : '') +
           (gamePicks.length ? ' ' + covering + ' covered — ' + correct + '/' + gamePicks.length + ' players correct.' : '');
         targets.forEach(function(t) {
-          if (t.scorePref === 'each') messages.push({ token: t.token, title: title, body: body, data: { tag: 'final-' + g.gameId, url: APP_URL } });
+          if (t.scorePref === 'each') messages.push({ token: t.token, title: title, body: body, data: pushData_('final', 'final-' + g.gameId, 'scores') });
         });
         notified[g.gameId] = true;
       });
@@ -127,7 +127,7 @@ function checkGameFinalNotifications_() {
           (w !== 'TIE' && w === underdogOf_(g) ? ' 🚨' : '');
       });
       sendFcmBatch_(targets.filter(function(t) { return t.scorePref === 'summary'; }).map(function(t) {
-        return { token: t.token, title: '📊 Week ' + week + ' — Final Scores', body: lines.join('\n'), data: { tag: 'summary-' + week, url: APP_URL } };
+        return { token: t.token, title: '📊 Week ' + week + ' — Final Scores', body: lines.join('\n'), data: pushData_('summary', 'summary-' + week, 'standings') };
       }));
       props.setProperty(summaryKey, 'true');
 

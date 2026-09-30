@@ -1388,6 +1388,117 @@ test('diagnostics: PerfLog rows carry the code version; the report splits THIS v
   ok(s.perfCurrent.length >= 3 && s.perfCurrentSince, 'in the summary');
 });
 
+// ---------------------------------------------------------------- v18: community pass
+function setKickoff(env, gameId, iso) {
+  const gs = env.ss.getSheetByName('Games'); const h = gs._data[0];
+  gs._data.forEach((row, i) => { if (i && row[h.indexOf('gameId')] === gameId) row[h.indexOf('kickoff')] = iso; });
+  env.ctx._sheetDataCache = {};
+  env.ctx.invalidateStateCache();
+}
+
+test('Upset Special locks at the week\'s FIRST kickoff: no new one, no switching; an unchanged re-send still saves straight picks', () => {
+  const env = loadBackend(); seedLeague(env);
+  // p2 set g9's underdog before the week started; p3 never set one
+  ok(env.call('submitPicks', picksPayload('p2', { gameId: 'g9', pickedTeam: 'Away9' })).ok);
+  ok(env.call('submitPicks', straightOnly('p3', [1, 2, 3])).ok);
+  setKickoff(env, 'g1', new Date(Date.now() - 3600000).toISOString()); // first game kicked off, g9 still days away
+  let r = env.call('submitPicks', { week: 1, playerId: 'p3', picks: [{ gameId: 'g9', pickedTeam: 'Away9', isUpset: true }] });
+  eq(r.ok, false, 'no new Upset Special after the first kickoff'); ok(/first kickoff/.test(r.error), r.error);
+  r = env.call('submitPicks', { week: 1, playerId: 'p2', picks: [{ gameId: 'g8', pickedTeam: 'Away8', isUpset: true }] });
+  eq(r.ok, false, 'no switching game');
+  r = env.call('submitPicks', { week: 1, playerId: 'p2', picks: [{ gameId: 'g9', pickedTeam: 'Home9', isUpset: true }] });
+  eq(r.ok, false, 'no switching team');
+  r = env.call('submitPicks', { week: 1, playerId: 'p3', picks: [{ espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U', isUpset: true }] });
+  eq(r.ok, false, 'no new external Upset Special either');
+  eq(rowsOf(env, 'Games').filter(g => g.source === 'external').length, 0, 'and no game row was created for it');
+  // what the app sends after the lock: the saved Upset Special unchanged + a changed open game
+  r = env.call('submitPicks', { week: 1, playerId: 'p2', picks: [{ gameId: 'g5', pickedTeam: 'Away5', isUpset: false }, { gameId: 'g9', pickedTeam: 'Away9', isUpset: true }] });
+  ok(r.ok, r.error);
+  const mine = rowsOf(env, 'Picks').filter(p => p.playerId === 'p2');
+  eq(mine.find(p => p.gameId === 'g5' && p.isUpset !== true).pickedTeam, 'Away5');
+  eq(mine.filter(p => p.isUpset === true).map(p => p.gameId + ':' + p.pickedTeam), ['g9:Away9']);
+  // straight picks alone (no Upset Special in the request) keep the saved one
+  ok(env.call('submitPicks', straightOnly('p2', [6])).ok);
+  eq(rowsOf(env, 'Picks').filter(p => p.playerId === 'p2' && p.isUpset === true).length, 1);
+});
+
+test('Upset Special: an unchanged EXTERNAL upset re-sent by espnEventId after the lock is accepted', () => {
+  const env = loadBackend(); seedLeague(env);
+  ok(env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U' })).ok);
+  setKickoff(env, 'g1', new Date(Date.now() - 3600000).toISOString());
+  const r = env.call('submitPicks', { week: 1, playerId: 'p2', picks: [{ espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U', isUpset: true }] });
+  ok(r.ok, r.error);
+  eq(rowsOf(env, 'Games').filter(g => g.source === 'external').length, 1);
+});
+
+test('push notifications carry their own tag + a tab to open (chat / commissioner / reminders / finals)', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env); enablePush(env); setupPins(env);
+  let b = pushes().length;
+  ok(env.call('postMessage', { playerId: 'p1', type: 'general', message: 'hi' }).ok);
+  const chat = pushes().slice(b);
+  ok(chat.length && chat.every(m => m.data.tag === 'chat' && /\?view=chat&chat=general$/.test(m.data.url)), JSON.stringify(chat[0].data));
+  b = pushes().length;
+  ok(env.call('postMessage', { playerId: 'p1', type: 'commissioner', message: 'news' }).ok);
+  const comm = pushes().slice(b);
+  ok(comm.length && comm.every(m => /^commissioner-msg_/.test(m.data.tag) && /view=chat&chat=commissioner/.test(m.data.url)), JSON.stringify(comm[0].data));
+  b = pushes().length;
+  env.ctx._sheetDataCache = {};
+  env.ctx.sendPickReminders();
+  const rem = pushes().slice(b);
+  ok(rem.length && rem.every(m => m.data.tag === 'reminder-w1' && /view=slate/.test(m.data.url)), JSON.stringify(rem[0] && rem[0].data));
+  b = pushes().length;
+  finishWeek(env, kickoff, 10);
+  env.ctx._sheetDataCache = {};
+  env.ctx.checkGameFinalNotifications();
+  const fin = pushes().slice(b).filter(m => /^final-/.test(m.data.tag));
+  ok(fin.length && fin.every(m => /view=scores/.test(m.data.url)), 'finals open the Scores tab');
+});
+
+test('dead push registrations (404 / UNREGISTERED) are removed from the player; other failures never are', () => {
+  const env = loadBackend(); seedLeague(env); enablePush(env);
+  env.ctx.UrlFetchApp.fetchAll = reqs => {
+    counters.fetchAll++; sentRequests.push(...reqs);
+    return reqs.map(r => {
+      const tok = JSON.parse(r.payload).message.token;
+      if (tok === 'tok1a') return { getResponseCode: () => 404, getContentText: () => '{"error":{"status":"NOT_FOUND","details":[{"errorCode":"UNREGISTERED"}]}}' };
+      if (tok === 'tok2a') return { getResponseCode: () => 503, getContentText: () => '{"error":{"status":"UNAVAILABLE"}}' };
+      return { getResponseCode: () => 200, getContentText: () => '{}' };
+    });
+  };
+  env.call('getState');
+  ok(env.call('postMessage', { playerId: 'p1', type: 'general', message: 'hi' }).ok);
+  const tokens = () => { const o = {}; rowsOf(env, 'Players').forEach(p => { o[p.id] = String(p.fcmToken); }); return o; };
+  const t = tokens();
+  eq([t.p1, t.p2, t.p3], ['tok0a,tok0b', 'tok1b', 'tok2a,tok2b'], 'only the dead one goes; a 503 is kept');
+  eq(env.call('getState').players.find(p => p.id === 'p2').fcmToken, 'tok1b', 'the cached player list is refreshed');
+  const stats = JSON.parse(env.props.PUSH_STATS)[new Date().toISOString().slice(0, 10)];
+  eq(stats, { sent: 2, failed: 2, removed: 1 });
+  const rep = env.ctx.runDiagnostics();
+  const chk = {}; rep.integrity.forEach(r => { chk[r.check] = r.count; });
+  eq([chk['Push messages sent (7 days)'], chk['Push messages failed (7 days)'], chk['Dead push registrations removed (7 days)']], [2, 2, 1]);
+});
+
+test('Upset Hall of Fame: biggest hits ever + best hit rates, linked by team name / approved claim', () => {
+  const env = loadBackend(); seedLeague(env);
+  const uh = env.ss.getSheetByName('UpsetHistory'); const uhh = uh._data[0];
+  const add = o => uh.appendRow(uhh.map(h => o[h] ?? ''));
+  add({ year: 2019, week: 3, teamName: 'TEAM2', upsetPick: 'Old Dog', spread: 20, attempted: true, hit: true, upsetPts: 20 });
+  for (let w = 1; w <= 19; w++) add({ year: 2018, week: w, teamName: 'TEAM2', upsetPick: 'Miss', spread: 5, attempted: true, hit: false, upsetPts: 0 });
+  add({ year: 2017, week: 5, teamName: 'TEAM3', upsetPick: 'Huge', spread: 40, attempted: true, hit: true, upsetPts: 40 });
+  add({ year: 2016, week: 8, teamName: 'Old Name', upsetPick: 'Middle', spread: 30, attempted: true, hit: true, upsetPts: 30 });
+  add({ year: 2016, week: 9, teamName: 'Ghost Team', upsetPick: 'Spooky', spread: 25, attempted: true, hit: true, upsetPts: 25 });
+  const nc = env.ss.getSheetByName('NameClaims'); const nch = nc._data[0];
+  nc.appendRow(nch.map(h => ({ claimId: 'c1', playerId: 'p3', claimedTeamName: 'OLD NAME', status: 'approved' })[h] ?? ''));
+  env.ctx.invalidateSheetCache('UpsetHistory');
+  const r = env.call('getAllTimeLeaderboard');
+  ok(r.ok, r.error); ok(r.upsetHall, 'upsetHall returned');
+  eq(r.upsetHall.biggest.map(x => [x.pts, x.team, x.teamName, x.playerId]), [
+    [40, 'Huge', 'TEAM3', 'p3'], [30, 'Middle', 'TEAM3', 'p3'], [25, 'Spooky', 'Ghost Team', ''], [20, 'Old Dog', 'TEAM2', 'p2']
+  ]);
+  eq(r.upsetHall.hitRate.map(x => [x.playerId, x.attempts, x.hits, x.pct]), [['p2', 20, 1, 5]], 'min 20 attempts');
+  ok(Array.isArray(r.leaderboard), 'leaderboard unchanged');
+});
+
 // ---------------------------------------------------------------- report
 let failed = 0;
 results.forEach(([pass, name, err]) => {

@@ -19,8 +19,11 @@ self.addEventListener('push', function(event) {
   var data = payload.data || {};
   var title = notification.title || data.title || 'Upset Special 🏈';
   var body  = notification.body  || data.body  || '';
-  var tag   = data.tag || notification.tag || 'upset-special';
-  var url   = data.url || 'https://acebuilds51.github.io/UpsetSpecial';
+  // A notification only replaces an earlier one with the SAME tag. The backend gives each
+  // kind its own (chat pushes share 'chat'); a push without one gets a unique tag, so a
+  // commissioner post or pick reminder is never wiped by the next message.
+  var tag   = data.tag || notification.tag || ('upset-special-' + Date.now());
+  var url   = data.url || 'https://acebuilds51.github.io/UpsetSpecial/';
 
   // Check if app is open and focused — skip system notification if so
   event.waitUntil(
@@ -33,7 +36,7 @@ self.addEventListener('push', function(event) {
         // post message to app instead so it can show a toast
         clients.forEach(function(c) {
           if (c.url.includes('UpsetSpecial')) {
-            c.postMessage({ type: 'FCM_FOREGROUND', title: title, body: body });
+            c.postMessage({ type: 'FCM_FOREGROUND', title: title, body: body, tag: tag, url: url });
           }
         });
         return;
@@ -56,17 +59,22 @@ self.addEventListener('push', function(event) {
   );
 });
 
-// Handle notification click
+// Handle notification click: open the app on the notification's tab (url carries ?view=...).
+// An app already open is focused and told which tab to show (no reload, so nothing typed
+// is lost); otherwise a new window opens at the url.
 self.addEventListener('notificationclick', function(event) {
   event.notification.close();
   var url = (event.notification.data && event.notification.data.url)
     ? event.notification.data.url
-    : 'https://acebuilds51.github.io/UpsetSpecial';
+    : 'https://acebuilds51.github.io/UpsetSpecial/';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clients) {
       for (var i = 0; i < clients.length; i++) {
-        if (clients[i].url.includes('UpsetSpecial') && 'focus' in clients[i]) {
-          return clients[i].focus();
+        var c = clients[i];
+        if (c.url.includes('UpsetSpecial') && 'focus' in c) {
+          return c.focus().then(function(focused) {
+            (focused || c).postMessage({ type: 'OPEN_VIEW', url: url });
+          });
         }
       }
       if (self.clients.openWindow) return self.clients.openWindow(url);
