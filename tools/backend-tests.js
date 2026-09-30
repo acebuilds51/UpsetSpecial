@@ -1478,8 +1478,12 @@ test('dead push registrations (404 / UNREGISTERED) are removed from the player; 
   eq([chk['Push messages sent (7 days)'], chk['Push messages failed (7 days)'], chk['Dead push registrations removed (7 days)']], [2, 2, 1]);
 });
 
-test('Upset Hall of Fame: biggest hits ever + best hit rates, linked by team name / approved claim', () => {
+test('Upset Hall of Fame: players who played in 2026+ (any year\'s hits, kept after they leave); others only once claimed', () => {
   const env = loadBackend(); seedLeague(env);
+  // two former players: GONE left before 2026; LEFTER played in 2026, then left
+  const pl = env.ss.getSheetByName('Players'); const ph = pl._data[0];
+  pl.appendRow(ph.map(h => ({ id: 'p4', name: 'Gone', teamName: 'GONE', active: false })[h] ?? ''));
+  pl.appendRow(ph.map(h => ({ id: 'p5', name: 'Lefter', teamName: 'LEFTER', active: false })[h] ?? ''));
   const uh = env.ss.getSheetByName('UpsetHistory'); const uhh = uh._data[0];
   const add = o => uh.appendRow(uhh.map(h => o[h] ?? ''));
   add({ year: 2019, week: 3, teamName: 'TEAM2', upsetPick: 'Old Dog', spread: 20, attempted: true, hit: true, upsetPts: 20 });
@@ -1487,16 +1491,31 @@ test('Upset Hall of Fame: biggest hits ever + best hit rates, linked by team nam
   add({ year: 2017, week: 5, teamName: 'TEAM3', upsetPick: 'Huge', spread: 40, attempted: true, hit: true, upsetPts: 40 });
   add({ year: 2016, week: 8, teamName: 'Old Name', upsetPick: 'Middle', spread: 30, attempted: true, hit: true, upsetPts: 30 });
   add({ year: 2016, week: 9, teamName: 'Ghost Team', upsetPick: 'Spooky', spread: 25, attempted: true, hit: true, upsetPts: 25 });
+  add({ year: 2019, week: 4, teamName: 'GONE', upsetPick: 'Long Gone', spread: 35, attempted: true, hit: true, upsetPts: 35 });
+  for (let w = 1; w <= 24; w++) add({ year: 2020, week: w % 14 + 1, teamName: 'GONE', upsetPick: 'Hit', spread: 5, attempted: true, hit: true, upsetPts: 5 });
+  add({ year: 2018, week: 6, teamName: 'LEFTER', upsetPick: 'Kept', spread: 33, attempted: true, hit: true, upsetPts: 33 });
+  add({ year: 2026, week: 1, teamName: 'LEFTER', upsetPick: '', spread: 0, attempted: false, hit: false, upsetPts: 0 });
+  add({ year: 2026, week: 2, teamName: 'Renamed Crew', upsetPick: 'New Dog', spread: 22, attempted: true, hit: true, upsetPts: 22 });
   const nc = env.ss.getSheetByName('NameClaims'); const nch = nc._data[0];
   nc.appendRow(nch.map(h => ({ claimId: 'c1', playerId: 'p3', claimedTeamName: 'OLD NAME', status: 'approved' })[h] ?? ''));
   env.ctx.invalidateSheetCache('UpsetHistory');
-  const r = env.call('getAllTimeLeaderboard');
+  let r = env.call('getAllTimeLeaderboard');
   ok(r.ok, r.error); ok(r.upsetHall, 'upsetHall returned');
   eq(r.upsetHall.biggest.map(x => [x.pts, x.team, x.teamName, x.playerId]), [
-    [40, 'Huge', 'TEAM3', 'p3'], [30, 'Middle', 'TEAM3', 'p3'], [25, 'Spooky', 'Ghost Team', ''], [20, 'Old Dog', 'TEAM2', 'p2']
-  ]);
-  eq(r.upsetHall.hitRate.map(x => [x.playerId, x.attempts, x.hits, x.pct]), [['p2', 20, 1, 5]], 'min 20 attempts');
+    [40, 'Huge', 'TEAM3', 'p3'],          // active player, 2017 hit
+    [33, 'Kept', 'LEFTER', 'p5'],         // played in 2026 then left: stays, even a 2018 hit
+    [30, 'Middle', 'TEAM3', 'p3'],        // old name claimed by an active player
+    [22, 'New Dog', 'Renamed Crew', ''],  // a 2026 team name no longer on anyone: stays
+    [20, 'Old Dog', 'TEAM2', 'p2']
+  ], 'GONE (left before 2026) and the unclaimed Ghost Team are left out');
+  eq(r.upsetHall.hitRate.map(x => [x.playerId, x.attempts, x.hits, x.pct]), [['p2', 20, 1, 5]], 'min 20 attempts; GONE excluded');
   ok(Array.isArray(r.leaderboard), 'leaderboard unchanged');
+  // a current player claims the old Ghost Team name -> it comes back, under their name
+  nc.appendRow(nch.map(h => ({ claimId: 'c2', playerId: 'p2', claimedTeamName: 'GHOST TEAM', status: 'approved' })[h] ?? ''));
+  env.ctx._sheetDataCache = {};
+  r = env.call('getAllTimeLeaderboard');
+  ok(r.upsetHall.biggest.some(x => x.team === 'Spooky' && x.teamName === 'TEAM2' && x.playerId === 'p2'), 'restored by the claim');
+  ok(!r.upsetHall.biggest.some(x => x.team === 'Long Gone'), 'GONE still out');
 });
 
 // ---------------------------------------------------------------- report

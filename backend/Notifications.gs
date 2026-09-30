@@ -1,4 +1,4 @@
-// v18-community-sep29  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
+// v19-hall-rules-sep30  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
 // ============================================================
 //  UPSET SPECIAL — Notifications & week/season finalization (v2, Sep 2026)
 //

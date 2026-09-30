@@ -1,4 +1,4 @@
-// v18-community-sep29  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v19-hall-rules-sep30  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -86,7 +86,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v18-community-sep29';
+var CODE_VERSION = 'v19-hall-rules-sep30';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -3471,8 +3471,8 @@ function apiAdminRecordBowlWinners(payload) {
 // Plus idx.__top = the league's biggest hits ever (Upset Hall of Fame, getAllTimeLeaderboard):
 //   [{ tn: teamName as recorded, team, spread, year, week, pts }] -- '__top' can never be
 //   a trophyNorm_ key (those are A-Z0-9 only).
-var UPSET_INDEX_KEY = 'upsetIndex_v2';
-var UPSET_TOP_N = 15;
+var UPSET_INDEX_KEY = 'upsetIndex_v3';
+var UPSET_TOP_N = 80; // candidates -- the Hall of Fame drops hits from past players, then shows 10
 function trophyNorm_(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g,'').trim(); }
 
 function getUpsetHistoryIndex_() {
@@ -5073,13 +5073,22 @@ function apiGetAllTimeLeaderboard() {
 // Upset Hall of Fame (History tab): the biggest Upset Special hits ever and the best hit
 // rates, from the cached UpsetHistory index (no extra read of UpsetHistory). Historical team
 // names are linked to a player by their current team name or an approved name claim.
+// Owner's rule: the Hall of Fame shows players who have played in UPSET_HALL_KEEP_FROM_YEAR
+// (2026) or later -- ALL their hits, from any year -- and they stay for good (even after they
+// stop playing) until pushed out of the top 10. "Played" = active now, or any of their team
+// names (current name + approved claims) has an UpsetHistory week in 2026+. A team name that
+// itself has 2026+ weeks counts too, so a player who renames or is removed still stays.
+// Anyone else (only played before 2026, name never claimed) is left out; a later name claim
+// by a current/future player brings their hits back. The hit-rate list follows the same rule.
 var UPSET_HALL_MIN_ATTEMPTS = 20;
+var UPSET_HALL_KEEP_FROM_YEAR = 2026;
 function buildUpsetHall_(players) {
   var idx = getUpsetHistoryIndex_();
-  var owner = {}, nameOf = {};
+  var owner = {}, nameOf = {}, active = {};
   players.forEach(function(p) {
     if (!p.id) return;
     nameOf[String(p.id)] = p.teamName || p.name;
+    if (p.active === true || p.active === 'TRUE') active[String(p.id)] = true;
     var n = trophyNorm_(p.teamName);
     if (n) owner[n] = String(p.id);
   });
@@ -5095,18 +5104,34 @@ function buildUpsetHall_(players) {
     return { playerId: pid, teamName: pid ? (nameOf[pid] || tn) : tn };
   };
 
-  var biggest = (idx.__top || []).slice(0, 10).map(function(h) {
+  // who counts: a team name with weeks in 2026+, and every player who is active or owns one
+  var normPlayedRecently = function(n) {
+    var e = idx[n];
+    return !!(e && e.w && Object.keys(e.w).some(function(y) { return Number(y) >= UPSET_HALL_KEEP_FROM_YEAR; }));
+  };
+  var qualifies = {};
+  Object.keys(active).forEach(function(pid) { qualifies[pid] = true; });
+  Object.keys(idx).forEach(function(n) {
+    if (n !== '__top' && owner[n] && normPlayedRecently(n)) qualifies[owner[n]] = true;
+  });
+  var shown = function(tn) {
+    var n = trophyNorm_(tn), pid = owner[n];
+    return pid ? !!qualifies[pid] : normPlayedRecently(n);
+  };
+
+  var biggest = (idx.__top || []).filter(function(h) { return shown(h.tn); }).slice(0, 10).map(function(h) {
     var w = who(h.tn);
     return { playerId: w.playerId, teamName: w.teamName, team: h.team, spread: h.spread, pts: h.pts, year: h.year, week: h.week };
   });
 
-  // hit rate per player (all of a player's old team names together)
+  // hit rate per player (all of a player's team names together), same rule
   var agg = {};
   Object.keys(idx).forEach(function(n) {
     if (n === '__top') return;
     var e = idx[n];
     if (!e || !e.a) return;
     var pid = owner[n] || '';
+    if (pid ? !qualifies[pid] : !normPlayedRecently(n)) return;
     var key = pid ? 'PID:' + pid : n;
     var g = agg[key] || (agg[key] = { playerId: pid, teamName: pid ? (nameOf[pid] || e.tn || n) : (e.tn || n), a: 0, h: 0, p: 0 });
     g.a += e.a; g.h += e.h; g.p += e.p;
