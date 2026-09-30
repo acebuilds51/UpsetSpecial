@@ -440,6 +440,15 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 }
 .version-banner button{ background:#1A1206; color:#fff; border:none; border-radius:7px; padding:6px 14px; font-weight:700; font-size:12px; cursor:pointer; }
 
+/* "Showing saved data from 2:14 PM" -- the server couldn't be reached (updateStaleStrip_) */
+.stale-strip{
+  display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;
+  background:rgba(242,182,50,0.10); border-bottom:1px solid rgba(242,182,50,0.30);
+  color:var(--text-soft); font-size:12.5px; line-height:1.35; padding:7px 16px; text-align:center;
+}
+.stale-strip strong{ color:var(--gold); font-weight:700; }
+.stale-strip button{ background:none; border:1px solid rgba(242,182,50,0.55); color:var(--gold); border-radius:7px; padding:3px 10px; font-weight:700; font-size:12px; cursor:pointer; }
+
 /* ---- Picker game browser rows ---- */
 .picker-game-row{
   display:flex; align-items:center; gap:10px; padding:12px 14px;
@@ -479,7 +488,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 // owner can see at a glance whether a phone is running the latest version.
 // v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
 // selections, update banner on resume, This Week fits on phones.
-const VERSION = 'v14.4';
+const VERSION = 'v14.5';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
@@ -529,13 +538,20 @@ function newRequestId() {
 // Fire-and-forget report of a problem the backend can't see on its own (see
 // apiLogClientError in Code.gs). Throttled to one report per 20s, delayed a few
 // seconds so it doesn't compete with a retry, and never shows anything to the player.
+// Each report also says which app version, which route (the Cloudflare front door or Google
+// directly), how many tries, whether the phone thought it was online, and the front door's
+// last answer (copy / stale) -- so the nightly diagnostics can tell Google, the Worker, old
+// apps and bad phone signal apart.
 let _lastClientReport = 0;
-function reportClientIssue(failedAction, message, detail) {
+let _lastFrontDoor = ''; // x-front-door of the last answer: 'copy', 'stale' or '' (Google answered)
+function reportClientIssue(failedAction, message, detail, tries) {
   if (failedAction === 'logClientError' || Date.now() - _lastClientReport < 20000) return;
   _lastClientReport = Date.now();
   const payload = {
     failedAction, message: String(message || ''), detail: detail || '',
-    playerId: State.player ? State.player.id : '', view: State.view || '', at: new Date().toISOString()
+    playerId: State.player ? State.player.id : '', view: State.view || '', at: new Date().toISOString(),
+    appVersion: VERSION, via: CONFIG.API_URL === CONFIG.APPS_SCRIPT_URL ? 'google' : 'worker',
+    tries: tries || 1, online: navigator.onLine, frontDoor: _lastFrontDoor
   };
   setTimeout(() => { api('logClientError', payload, true).catch(() => {}); }, 3000);
 }
@@ -548,13 +564,18 @@ async function api(action, payload, silent) {
   const ms = timeouts[action] || 25000;
   const retryable = RETRYABLE_ACTIONS[action] || (IDEMPOTENT_ACTIONS[action] && payload.requestId);
   const maxAttempts = retryable ? RETRY_DELAYS_MS.length + 1 : 1;
-  let lastErr;
+  // anything that may change what getState shows: the next refreshes must not accept an
+  // older copy from the front door (see _doRefreshState's afterWrite)
+  if (!RETRYABLE_ACTIONS[action] && action !== 'logClientError') window._lastWriteAt = Date.now();
+  let lastErr, tries = 0;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     if (attempt > 0) await new Promise(r => setTimeout(r, RETRY_DELAYS_MS[attempt - 1]));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
+    tries++;
     try {
       const resp = await fetch(CONFIG.API_URL, { method: 'POST', body: JSON.stringify(payload), signal: controller.signal });
+      _lastFrontDoor = resp.headers.get('x-front-door') || '';
       let data;
       try {
         // timer stays armed until the body is fully read — a stalled body must still time out
@@ -591,7 +612,7 @@ async function api(action, payload, silent) {
   // report it so it shows up in the PerfLog tab. Real "ok:false" answers are
   // already logged server-side, so they aren't re-reported.
   if (err.transient || err.name === 'AbortError' || err.name === 'TypeError') {
-    reportClientIssue(action, err.name === 'AbortError' ? 'timed out after ' + (ms / 1000) + 's' : err.message);
+    reportClientIssue(action, err.name === 'AbortError' ? 'timed out after ' + (ms / 1000) + 's' : err.message, '', tries);
   }
   if (err.lostReply && !RETRYABLE_ACTIONS[action]) {
     err.message = 'The server was too busy to confirm this. Refresh to check whether it went through before trying again.';
@@ -861,10 +882,16 @@ async function boot() {
           State.bowlChampion = c.bowlChampion || [];
           State.bowlLedger   = c.bowlLedger   || [];
           State.snapshotCount = c.snapshotCount || 0;
+          State._dataAsOf = Number(c._ts) || null; // how old the saved board is (stale strip)
           hasCachedState = true;
         }
       } catch(e) {}
     }
+    // past seasons (champion rings) from the phone's saved copy; refreshed once per session
+    try {
+      const ch = JSON.parse(localStorage.getItem('usl_careerHistory') || 'null');
+      if (Array.isArray(ch)) State._careerHistory = ch;
+    } catch(e) {}
 
     // render() -> renderContent() draws from cache immediately AND kicks off the single
     // background getState via silentRefresh(), which re-renders only if data changed.
@@ -1008,12 +1035,27 @@ async function _doRefreshState() {
   // Always fetch fresh data from server — silent:true so background failures don't toast.
   // (Cached state is loaded once in boot(); it is intentionally NOT re-applied here, since
   // doing so before a failed fetch used to wipe out just-submitted local changes.)
-  // compact:1 = picks arrive packed ~10x smaller (Google was dropping the full-size reply)
-  const data = await api('getState', { compact: 1 }, true);
+  // compact:1 = picks arrive packed ~10x smaller (Google was dropping the full-size reply).
+  // afterWrite:1 = within 2 min of a save: the front door must not answer with an older copy
+  // if Google fails -- the player would see their save undone.
+  const afterWrite = window._lastWriteAt && Date.now() - window._lastWriteAt < 120000;
+  let data;
+  try {
+    data = await api('getState', afterWrite ? { compact: 1, afterWrite: 1 } : { compact: 1 }, true);
+    // Google failed and the front door answered with its last copy (_asOf = when it was
+    // taken). Only worth showing if it is newer than what is already on screen.
+    if (data._asOf && State._dataAsOf && Number(data._asOf) <= State._dataAsOf) throw new Error('Only older data was available');
+  } catch (e) {
+    State._refreshProblem = true;
+    updateStaleStrip_();
+    throw e;
+  }
   State._lastRefreshTs = Date.now();
+  State._refreshProblem = !!data._asOf;         // an older copy is still "not current"
+  State._dataAsOf = data._asOf ? Number(data._asOf) : Date.now();
   // One stringify serves both change detection (covers EVERY field, including
   // players/ledger/bowl data the old games+picks-only check missed) and the cache write.
-  delete data._version;
+  delete data._version; delete data._asOf; delete data._stale;
   const stateStr = JSON.stringify(data);
   const changed = stateStr !== State._stateSig;
   State._stateSig = stateStr;
@@ -1030,17 +1072,25 @@ async function _doRefreshState() {
   State.bowlLedger = data.bowlLedger || [];
   State.snapshotCount = data.snapshotCount || 0;
 
-  // Cache to localStorage for next boot
+  // Cache to localStorage for next boot. _ts = how old the data is (shown as "saved data
+  // from 2:14 PM" when the next boot can't reach the server).
   try {
-    localStorage.setItem('cachedState', stateStr.slice(0, -1) + ',"_ts":' + Date.now() + '}');
+    localStorage.setItem('cachedState', stateStr.slice(0, -1) + ',"_ts":' + State._dataAsOf + '}');
   } catch(e) {}
+  updateStaleStrip_();
 
-  // pre-load career history in the background so champion rings work everywhere.
-  // The pending flag stops overlapping refreshes from each firing their own request.
-  if (!State._careerHistory && !State._careerHistoryPending) {
+  // pre-load career history in the background so champion rings work everywhere. Boot
+  // already drew them from the phone's saved copy (past seasons rarely change); this
+  // refreshes it once per session. The pending flag stops overlapping refreshes from each
+  // firing their own request.
+  if (!State._careerHistoryFetched && !State._careerHistoryPending) {
     State._careerHistoryPending = true;
     api('getCareerHistory', {}, true)
-      .then(d => { State._careerHistory = d.history || []; })
+      .then(d => {
+        State._careerHistory = d.history || [];
+        State._careerHistoryFetched = true;
+        try { localStorage.setItem('usl_careerHistory', JSON.stringify(State._careerHistory)); } catch(e) {}
+      })
       .catch(()=>{})
       .finally(() => { State._careerHistoryPending = false; });
   }
@@ -1508,6 +1558,7 @@ function render() {
     <div style="background:rgba(242,182,50,0.14); border-bottom:1px solid rgba(242,182,50,0.35); color:var(--gold); font-size:13px; font-weight:600; text-align:center; padding:8px 16px; line-height:1.4;">
       Your entry is pending confirmation from Jeff — look around and make your picks, but you won't appear in standings until you're approved.
     </div>` : ''}
+    <div id="stale-strip"></div>
     <div id="picks-due-banner"></div>
     <div class="content" id="content"></div>
     <div class="bottomnav" id="bottomnav"></div>
@@ -1518,7 +1569,38 @@ function render() {
   document.getElementById('logout-btn').onclick = logout;
   renderBottomNav();
   renderContent();
+  updateStaleStrip_();
 }
+
+// ---- "Showing saved data" strip -------------------------------------------------------
+// When the last refresh failed (or only an older copy came back), or the data on screen is
+// over 10 minutes old with no refresh on its way, say so -- scores, standings and picks may
+// be out of date. Hidden again by the next successful refresh.
+const STALE_STRIP_AGE_MS = 10 * 60 * 1000;
+function fmtDataTime_(ms) {
+  const d = new Date(ms), now = new Date();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return time;
+  return d.toLocaleDateString([], { weekday: 'short' }) + ' ' + time;
+}
+function updateStaleStrip_() {
+  const el = document.getElementById('stale-strip');
+  if (el) {
+    const asOf = State._dataAsOf;
+    const old = asOf && Date.now() - asOf > STALE_STRIP_AGE_MS && !_refreshPromise;
+    // no saved data at all = the boot retry card already says so
+    if (!asOf || !(State._refreshProblem || old)) el.innerHTML = '';
+    else el.innerHTML = `<div class="stale-strip"><span>Data from <strong>${fmtDataTime_(asOf)}</strong> · ${State._refreshProblem ? 'can\'t reach the server' : 'not updated since'}</span>`
+      + `<button type="button" onclick="retryStaleRefresh_(this)">Retry</button></div>`;
+  }
+  const scoresAsOf = document.getElementById('scores-asof');
+  if (scoresAsOf) scoresAsOf.textContent = State._dataAsOf ? 'Board scores as of ' + fmtDataTime_(State._dataAsOf) : '';
+}
+function retryStaleRefresh_(btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Retrying…'; }
+  silentRefresh(true).finally(updateStaleStrip_);
+}
+setInterval(updateStaleStrip_, 30000);
 
 function renderBottomNav() {
   const nav = document.getElementById('bottomnav');
@@ -4264,6 +4346,7 @@ async function renderLiveScores(content) {
       <span>Week ${week} Board ${boardGames.length > 0 ? `<span style="color:var(--text-faint); font-weight:400; text-transform:none; letter-spacing:normal;">(${finalCount}/${boardGames.length} final)</span>` : ''}</span>
       <button class="btn btn-ghost btn-sm" id="scores-refresh-btn">↻ Refresh</button>
     </div>
+    <div id="scores-asof" style="font-size:11px; color:var(--text-faint); margin:-4px 0 8px;"></div>
 
     <div id="my-live-week-wrap">${renderMyLiveWeekCard(week)}</div>
 
@@ -4287,6 +4370,7 @@ async function renderLiveScores(content) {
   };
 
   reExpandGameDetails();
+  updateStaleStrip_(); // fills "Board scores as of …"
   loadAllEspnScores(week);
 }
 
@@ -4526,12 +4610,22 @@ async function loadAllEspnScores(week) {
 
   try {
     const data = await api('getAllEspnScores', { week });
-    _liveScoresCache = { week: week, ts: Date.now(), games: data.games || [] };
+    // _asOf: Google failed and the front door answered with its last copy
+    _liveScoresCache = { week: week, ts: data._asOf ? Number(data._asOf) : Date.now(), games: data.games || [] };
     const c2 = document.getElementById('all-scores-container');
     if (c2) renderAllScores(c2, _liveScoresCache.games);
+    if (c2 && data._asOf) c2.insertAdjacentHTML('afterbegin', `<p class="helptext" style="margin:0 0 8px;">Couldn't update ESPN scores — showing the list from ${fmtDataTime_(_liveScoresCache.ts)}.</p>`);
     refreshBoardLiveScores_(week);
   } catch(e) {
-    if (container) container.innerHTML = `<div class="empty-state"><p>Could not load ESPN scores. ${e.message}</p></div>`;
+    const c2 = document.getElementById('all-scores-container');
+    if (!c2) return;
+    // keep the last list on screen (with its time) rather than replacing it with an error
+    if (_liveScoresCache && _liveScoresCache.week === week) {
+      renderAllScores(c2, _liveScoresCache.games);
+      c2.insertAdjacentHTML('afterbegin', `<p class="helptext" style="margin:0 0 8px;">Couldn't update ESPN scores — showing the list from ${fmtDataTime_(_liveScoresCache.ts)}.</p>`);
+    } else {
+      c2.innerHTML = `<div class="empty-state"><p>Could not load ESPN scores. ${escapeHtml(e.message)}</p></div>`;
+    }
   }
 }
 

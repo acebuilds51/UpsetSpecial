@@ -1,4 +1,4 @@
-// v20-hall-games-sep30  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v21-front-door-sep30  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -90,7 +90,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v20-hall-games-sep30';
+var CODE_VERSION = 'v21-front-door-sep30';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -1807,23 +1807,30 @@ function invalidatePicksBundle_() {
 // shared secret from Script Properties FRONT_DOOR_URL / FRONT_DOOR_SECRET; nothing is sent
 // until both are set). In a web request that's sent ONCE, at the end of handle() after the
 // writes are flushed; from triggers / the editor / onSheetChange it's sent right away.
+// scope 'history' (set by invalidateCareerHistoryCache): past seasons changed too. The Worker
+// keeps its career-history copy through ordinary signals (pick saves, live scores) and drops
+// it only on this one.
 var _inWebRequest = false;
 var _frontDoorDirty = false;
+var _frontDoorHistoryDirty = false;
 function markFrontDoorStale_() {
   if (_inWebRequest) { _frontDoorDirty = true; return; }
   sendFrontDoorStale_();
 }
 
 function sendFrontDoorStale_() {
-  _frontDoorDirty = false;
+  var history = _frontDoorHistoryDirty;
+  _frontDoorDirty = false; _frontDoorHistoryDirty = false;
   try {
     var props = PropertiesService.getScriptProperties();
     var url = props.getProperty('FRONT_DOOR_URL'), secret = props.getProperty('FRONT_DOOR_SECRET');
     if (!url || !secret) return;
     // A read the Worker sends after this must see the new data: land buffered writes first.
     try { SpreadsheetApp.flush(); } catch (e) {}
+    var signal = { action: 'frontDoorStale', secret: secret };
+    if (history) signal.scope = 'history';
     UrlFetchApp.fetch(url, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true,
-      payload: JSON.stringify({ action: 'frontDoorStale', secret: secret }) });
+      payload: JSON.stringify(signal) });
   } catch (e) { Logger.log('front door stale signal failed: ' + e.message); }
 }
 
@@ -4713,13 +4720,18 @@ function getCareerHistoryCached() {
 // carries memberSince (derived from CareerHistory), so it is busted too.
 function invalidateCareerHistoryCache() {
   try { CacheService.getScriptCache().remove(CAREER_CACHE_KEY + '_n'); } catch(e) {}
+  // the Worker's career-history copy only drops on a 'history' signal; the state bust just
+  // below sends it (one signal, not two, outside a web request)
+  _frontDoorHistoryDirty = true;
   invalidateStateCache();
 }
 
 // Run this manually from Apps Script editor if trophy room shows stale data
 function clearCareerCache() {
-  invalidateCareerHistoryCache();
-  invalidateUpsetHistoryIndex_();
+  runWithOneStaleSignal_(function() {
+    invalidateCareerHistoryCache();
+    invalidateUpsetHistoryIndex_();
+  });
   Logger.log('CareerHistory cache cleared.');
 }
 
@@ -4903,8 +4915,10 @@ function installKeepWarmTrigger() {
 // Apps Script editor; after that manual fixes show up in the app immediately and
 // keepWarm can skip rebuilding the state when nothing changed.
 function onSheetChange(e) {
-  invalidateCareerHistoryCache(); // also busts the state cache (memberSince comes from it)
-  invalidateUpsetHistoryIndex_();
+  runWithOneStaleSignal_(function() { // one Worker signal (scope 'history') for both busts
+    invalidateCareerHistoryCache(); // also busts the state cache (memberSince comes from it)
+    invalidateUpsetHistoryIndex_();
+  });
 }
 
 function installSheetChangeTrigger() {
@@ -7791,7 +7805,12 @@ function apiLogClientError(payload) {
       false,
       String(payload.message || '').slice(0, 200),
       'client',
-      JSON.stringify({ team: player ? player.teamName : '', at: String(payload.at || '').slice(0, 30), view: String(payload.view || '').slice(0, 20), detail: String(payload.detail || '').slice(0, 150) })
+      JSON.stringify({ team: player ? player.teamName : '', at: String(payload.at || '').slice(0, 30), view: String(payload.view || '').slice(0, 20), detail: String(payload.detail || '').slice(0, 150),
+        // app v14.5+: which app version, which route (worker / google), how many tries, whether
+        // the phone thought it was online, and the last x-front-door answer (copy / stale)
+        app: String(payload.appVersion || '').slice(0, 12), via: String(payload.via || '').slice(0, 10),
+        tries: Number(payload.tries) || '', online: payload.online === false ? 'no' : payload.online === true ? 'yes' : '',
+        fd: String(payload.frontDoor || '').slice(0, 10) })
     ]);
   } catch (e) {}
   return { ok: true };
@@ -7807,7 +7826,7 @@ function installDiagnosticsTrigger() {
 
 function runDiagnostics() {
   var started = Date.now();
-  var report = { generatedAt: new Date().toISOString(), codeVersion: CODE_VERSION, warnings: [], publicWarnings: [], info: [], timings: [], perf: [], perfCurrent: [], perfCurrentSince: '', sheets: [], integrity: [] };
+  var report = { generatedAt: new Date().toISOString(), codeVersion: CODE_VERSION, warnings: [], publicWarnings: [], info: [], timings: [], perf: [], perfCurrent: [], perfCurrentSince: '', sheets: [], integrity: [], clientFailures: [], frontDoor: null };
   // publicMsg: version of the warning without player names, for getDiagnosticsSummary
   var warn = function(msg, publicMsg) { report.warnings.push(msg); report.publicWarnings.push(publicMsg || msg); };
   var info = function(msg) { report.info.push(msg); };
@@ -7821,6 +7840,7 @@ function runDiagnostics() {
   section('Cache', function() { diagCache_(report, warn, info); });
   section('Data integrity', function() { diagIntegrity_(report, warn, info); });
   section('Request log', function() { diagPerfLog_(report, warn, info); });
+  section('Front door', function() { diagFrontDoor_(report, warn, info); });
 
   report.durationMs = Date.now() - started;
   writeDiagnosticsReport_(report);
@@ -8022,6 +8042,7 @@ function diagPerfLog_(report, warn, info) {
     clientFails.slice(0, 5).map(function(r) { var n = {}; try { n = JSON.parse(r[6] || '{}'); } catch (e) {} return (n.team || '?') + ' ' + r[1] + ' "' + r[4] + '"'; }).join('; '),
     clientFails.length + ' failure(s) reported from players\' phones in the last 24h: ' +
     clientFails.slice(0, 5).map(function(r) { return r[1] + ' "' + r[4] + '"'; }).join('; '));
+  diagClientFailureGroups_(report, clientFails);
   var since = Date.now() - 7 * 86400000;
   var byAction = {};
   rows.forEach(function(r) {
@@ -8045,6 +8066,55 @@ function diagPerfLog_(report, warn, info) {
     if (p.max >= 25000 && p.action !== 'keepWarm') warn(p.action + ': at least one request took ' + Math.round(p.max / 1000) + 's in the last 7 days (the app gives up at 25s).');
     if (p.errors >= 5 && p.topError !== 'Admin access required.' ) warn(p.action + ': ' + p.errors + ' errors in the last 7 days (most common: "' + p.topError + '").');
   });
+}
+
+// Phone failures of the last 24h grouped by what failed, app version, route (worker/google),
+// whether the phone was offline, and the front door's last answer -- so a bad Saturday can be
+// told apart: Google slow, the Worker, players on an old app, or bad phone signal. Reports
+// from apps older than v14.5 carry none of these and group as "?". No player names.
+function diagClientFailureGroups_(report, clientFails) {
+  var groups = {};
+  clientFails.forEach(function(r) {
+    var n = {}; try { n = JSON.parse(r[6] || '{}'); } catch (e) {}
+    var g = {
+      action: String(r[1]).replace(/^client:/, ''), message: String(r[4] || '').slice(0, 40),
+      app: n.app || '?', via: n.via || '?', online: n.online || '?', fd: n.fd || '-'
+    };
+    var key = [g.action, g.message, g.app, g.via, g.online, g.fd].join('|');
+    if (!groups[key]) { g.count = 0; groups[key] = g; }
+    groups[key].count++;
+  });
+  report.clientFailures = Object.keys(groups).map(function(k) { return groups[k]; })
+    .sort(function(a, b) { return b.count - a.count; }).slice(0, 12);
+}
+
+// The Worker's own per-day counts (its /health page: counts only, no player data). Yesterday
+// is a complete UTC day: how many reads were answered from copies, how many went to Google,
+// how many got a stale copy because Google failed, and how many failed outright.
+function diagFrontDoor_(report, warn, info) {
+  var url = PropertiesService.getScriptProperties().getProperty('FRONT_DOOR_URL');
+  if (!url) { info('Front door: FRONT_DOOR_URL not set -- no Worker counts.'); return; }
+  var resp = UrlFetchApp.fetch(String(url).replace(/\/+$/, '') + '/health', { muteHttpExceptions: true });
+  if (resp.getResponseCode() !== 200) { warn('Front door /health answered ' + resp.getResponseCode() + ' -- is the Worker up?'); return; }
+  var h = JSON.parse(resp.getContentText());
+  var days = h.daily || [];
+  var y = days[1] || days[0];
+  if (!y) { info('Front door ' + (h.version || '?') + ': no per-day counts yet (Worker us4+ with the daily table).'); return; }
+  var t = y.totals || {};
+  var reads = (t.copy || 0) + (t.google || 0) + (t.stale || 0) + (t.failed || 0);
+  var pctOf = function(n) { return reads ? Math.round(100 * n / reads) : 0; };
+  report.frontDoor = {
+    version: h.version || '', day: y.day, reads: reads,
+    copy: t.copy || 0, google: t.google || 0, stale: t.stale || 0, failed: t.failed || 0,
+    writes: t.write || 0, writesFailed: t.writeFailed || 0, copyPct: pctOf(t.copy || 0),
+    busiest: Object.keys(y.actions || {}).map(function(a) {
+      var c = y.actions[a]; return { action: a, copy: c.copy || 0, google: c.google || 0, stale: c.stale || 0, failed: c.failed || 0 };
+    }).filter(function(a) { return a.copy + a.google + a.stale + a.failed > 0; })
+      .sort(function(a, b) { return (b.copy + b.google + b.stale + b.failed) - (a.copy + a.google + a.stale + a.failed); }).slice(0, 8)
+  };
+  info('Front door ' + y.day + ': ' + reads + ' reads -- ' + pctOf(t.copy || 0) + '% from copies, ' + (t.google || 0) + ' to Google, ' +
+    (t.stale || 0) + ' answered from an older copy while Google failed, ' + (t.failed || 0) + ' failed; ' + (t.write || 0) + ' writes (' + (t.writeFailed || 0) + ' failed).');
+  if (reads >= 50 && (t.failed || 0) >= 0.05 * reads) warn('Front door: ' + t.failed + ' of ' + reads + ' reads failed on ' + y.day + ' (Google errors with no copy to fall back on).');
 }
 
 // The 7-day numbers mix every deploy of the week, so a fix can't be judged from them.
@@ -8099,6 +8169,21 @@ function renderDiagnosticsText_(r) {
     out.push('  ' + pad_('action', 44) + pad_('logged', 8) + pad_('p50', 8) + pad_('p95', 8) + pad_('max', 8) + pad_('slow', 6) + 'errors');
     r.perfCurrent.forEach(function(p) { out.push('  ' + pad_(p.action, 44) + pad_(p.logged, 8) + pad_(p.p50, 8) + pad_(p.p95, 8) + pad_(p.max, 8) + pad_(p.slow, 6) + p.errors); });
   }
+  if (r.clientFailures && r.clientFailures.length) {
+    out.push('');
+    out.push('PHONE FAILURES, LAST 24H (by app version / route; "?" = app older than v14.5):');
+    out.push('  ' + pad_('count', 6) + pad_('action', 22) + pad_('app', 8) + pad_('via', 8) + pad_('online', 7) + pad_('front door', 11) + 'message');
+    r.clientFailures.forEach(function(g) { out.push('  ' + pad_(g.count, 6) + pad_(g.action, 22) + pad_(g.app, 8) + pad_(g.via, 8) + pad_(g.online, 7) + pad_(g.fd, 11) + g.message); });
+  }
+  if (r.frontDoor) {
+    var fd = r.frontDoor;
+    out.push('');
+    out.push('FRONT DOOR (Cloudflare Worker ' + fd.version + '), ' + fd.day + ' UTC:');
+    out.push('  ' + fd.reads + ' reads: ' + fd.copyPct + '% from copies (' + fd.copy + '), ' + fd.google + ' to Google, ' + fd.stale + ' older copy while Google failed, ' + fd.failed + ' failed');
+    out.push('  ' + fd.writes + ' writes, ' + fd.writesFailed + ' failed');
+    out.push('  ' + pad_('action', 26) + pad_('copy', 7) + pad_('google', 8) + pad_('stale', 7) + 'failed');
+    fd.busiest.forEach(function(a) { out.push('  ' + pad_(a.action, 26) + pad_(a.copy, 7) + pad_(a.google, 8) + pad_(a.stale, 7) + a.failed); });
+  }
   out.push('');
   out.push('DATA INTEGRITY:');
   r.integrity.forEach(function(c) { out.push('  ' + pad_(c.count, 6) + c.check); });
@@ -8140,6 +8225,7 @@ function saveDiagnosticsSummary_(r) {
       warnings: r.publicWarnings, timings: r.timings, perf: r.perf.slice(0, 25),
       perfCurrent: (r.perfCurrent || []).slice(0, 15), perfCurrentSince: r.perfCurrentSince || '',
       integrity: r.integrity,
+      clientFailures: (r.clientFailures || []).slice(0, 12), frontDoor: r.frontDoor || null,
       sheets: r.sheets.slice(0, 10).map(function(s) { return { name: /^Week \d+$|^[A-Z][A-Za-z]+$/.test(s.name) ? s.name : '(other)', rows: s.rows, allocatedCells: s.allocatedCells }; })
     };
     // Script Properties hold ~9KB per value. Cutting the JSON string at 8500 chars (as
@@ -8152,6 +8238,8 @@ function saveDiagnosticsSummary_(r) {
     if (!fit()) summary.warnings = summary.warnings.map(function(w) { return clip(w, 200); });
     if (!fit()) summary.timings.forEach(function(t) { t.error = clip(t.error, 60); });
     if (!fit()) summary.sheets = summary.sheets.slice(0, 5);
+    while (!fit() && summary.clientFailures.length > 4) summary.clientFailures.pop();
+    if (!fit() && summary.frontDoor) summary.frontDoor.busiest = summary.frontDoor.busiest.slice(0, 3);
     while (!fit() && summary.perfCurrent.length > 6) summary.perfCurrent.pop();
     while (!fit() && summary.perf.length > 5) summary.perf.pop();
     while (!fit() && summary.warnings.length > 3) summary.warnings.pop();

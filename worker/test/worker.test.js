@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import worker, { PURE_READS, PATIENT_READS, COPY_RULES, hedgedRead } from '../src/index.js';
+import worker, { PURE_READS, PATIENT_READS, COPY_RULES, NO_BUMP_WRITES, hedgedRead } from '../src/index.js';
 
 const GS = 'https://script.example/exec';
 const ERROR_PAGE = { status: 404, body: '<html>Sorry, unable to open the file at this time.</html>' };
@@ -298,6 +298,112 @@ test('copies: /health shows ages and counts only (no player data)', async () => 
   assert.deepEqual(h.copies.map(c => c.key), ['getState|compact']);
   assert.equal(h.trophyRoomCopies, 1);
   assert.ok(!JSON.stringify(h).includes('p_secret'));
+});
+
+// ── us4: copies survive harmless writes, stale-if-error, history generation, daily counts ──
+const LOST = () => ({ ok: false, error: 'No action.' }); // Google lost the reply (a failure for reads)
+
+test('us4: a phone\'s failure report / help chat / recap draft leave the copies alone; a pick save still drops them', async () => {
+  const w = setup2();
+  await w.stale();
+  await w.post({ action: 'getState', compact: 1 });
+  for (const action of ['logClientError', 'helpChat', 'adminGenerateResultsEmail']) {
+    await w.post({ action, failedAction: 'getState', message: 'timed out after 25s' });
+    const r = await w.post({ action: 'getState', compact: 1 });
+    assert.equal(r.headers.get('x-front-door'), 'copy', action + ' must not drop the copies');
+  }
+  assert.equal(w.hits.getState, 1);
+  assert.equal(w.hits.logClientError, 1, 'the report itself still reaches Apps Script, once');
+  await w.post({ action: 'submitPicks', week: 1, picks: [] });
+  await w.post({ action: 'getState', compact: 1 });
+  assert.equal(w.hits.getState, 2);
+});
+
+test('us4: when Google fails a copied read, the last copy is answered, marked with its time', async () => {
+  const w = setup2();
+  await w.stale();
+  await w.post({ action: 'getState', compact: 1 });            // copy stored
+  await w.stale();                                           // ...then the Sheet changed
+  w.answers.getState = LOST;                                 // ...and Google is struggling
+  const r = await w.post({ action: 'getState', compact: 1 });
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('x-front-door'), 'stale');
+  assert.equal(r.headers.get('access-control-expose-headers'), 'x-front-door', 'the app can read the header');
+  const b = await r.json();
+  assert.equal(b.ok, true); assert.equal(b._stale, 1);
+  assert.ok(Math.abs(b._asOf - Date.now()) < 5000, '_asOf = when the copy was stored');
+  assert.equal(w.hits.getState, 4, 'Google was really asked (3 tries) first');
+  // the stale answer is not kept as a new "current" copy
+  w.answers.getState = () => ({ ok: true, v: 'NEW' });
+  assert.deepEqual(await (await w.post({ action: 'getState', compact: 1 })).json(), { ok: true, v: 'NEW' });
+});
+
+test('us4: no stale answer right after the player\'s own save, for too-old copies, or before Apps Script is wired up', async () => {
+  let w = setup2();
+  await w.stale();
+  await w.post({ action: 'getState', compact: 1 });
+  await w.post({ action: 'submitPicks', week: 1, picks: [] });
+  w.answers.getState = LOST;
+  let r = await w.post({ action: 'getState', compact: 1, afterWrite: 1 });
+  assert.equal(r.status, 502, 'afterWrite: the failure is passed on, never an older board');
+  r = await w.post({ action: 'getState', compact: 1 });
+  assert.equal(r.headers.get('x-front-door'), 'stale', 'a background refresh does get it');
+  w.env.DB.raw.prepare("UPDATE copies SET stored_at = stored_at - 31 * 60000 WHERE key = 'getState|compact'").run();
+  r = await w.post({ action: 'getState', compact: 1 });
+  assert.equal(r.status, 502, 'over 30 min old -> the failure');
+  w = setup2();                                              // no stale signal ever seen
+  await w.post({ action: 'getState', compact: 1 });
+  w.answers.getState = LOST;
+  assert.equal((await w.post({ action: 'getState', compact: 1 })).status, 502);
+});
+
+test('us4: career history has its own generation -- only Apps Script\'s "history" signal drops it', async () => {
+  const w = setup2({ answers: { getCareerHistory: () => ({ ok: true, history: [1] }) } });
+  await w.stale();
+  await w.post({ action: 'getCareerHistory' });
+  await w.post({ action: 'submitPicks', week: 1, picks: [] });   // a pick save
+  await w.stale();                                                // live scores / any other bust
+  let r = await w.post({ action: 'getCareerHistory' });
+  assert.equal(r.headers.get('x-front-door'), 'copy');
+  assert.equal(w.hits.getCareerHistory, 1);
+  await w.post({ action: 'frontDoorStale', secret: SECRET, scope: 'history' });
+  r = await w.post({ action: 'getCareerHistory' });
+  assert.equal(r.headers.get('x-front-door'), null);
+  assert.equal(w.hits.getCareerHistory, 2);
+  const h = await (await worker.fetch(new Request('https://api.example/health'), w.env)).json();
+  assert.equal(h.copies.find(c => c.key === 'getCareerHistory').current, true, '/health judges it by the history generation');
+  await w.post({ action: 'getState', compact: 1 });
+  await w.post({ action: 'frontDoorStale', secret: SECRET, scope: 'history' });
+  await w.post({ action: 'getState', compact: 1 });
+  assert.equal(w.hits.getState, 2, 'the history signal also drops the ordinary copies');
+});
+
+test('us4: /health keeps per-day counts by action and outcome (no player data)', async () => {
+  const w = setup2();
+  await w.stale();
+  await w.post({ action: 'getState', compact: 1 });            // google
+  await w.post({ action: 'getState', compact: 1 });            // copy
+  await w.post({ action: 'submitPicks', week: 1, picks: [], playerId: 'p_secret' }); // write
+  w.answers.getStandings = LOST;
+  await w.post({ action: 'getStandings' });                    // failed (no copy yet)
+  const h = await (await worker.fetch(new Request('https://api.example/health'), w.env)).json();
+  const today = h.daily[0];
+  assert.equal(today.day, new Date().toISOString().slice(0, 10));
+  assert.deepEqual(today.actions.getState, { google: 1, copy: 1 });
+  assert.deepEqual(today.actions.submitPicks, { write: 1 });
+  assert.deepEqual(today.actions.getStandings, { failed: 1 });
+  assert.equal(today.totals.copy, 1);
+  assert.ok(!JSON.stringify(h).includes('p_secret'));
+});
+
+test('us4: every NO_BUMP write is in Code.gs READ_ONLY_ACTIONS and is not a pure read', () => {
+  const code = fs.readFileSync(new URL('../../backend/Code.gs', import.meta.url), 'utf8');
+  const block = code.match(/var READ_ONLY_ACTIONS = \{([\s\S]*?)\};/)[1];
+  const readOnly = new Set([...block.matchAll(/([A-Za-z]+)\s*:\s*1/g)].map(m => m[1]));
+  for (const a of NO_BUMP_WRITES) {
+    assert.ok(readOnly.has(a), a + ' busts the state cache in Code.gs, so it must drop the copies');
+    assert.ok(!PURE_READS.has(a), a);
+  }
 });
 
 test('every copied read is a pure read', () => {

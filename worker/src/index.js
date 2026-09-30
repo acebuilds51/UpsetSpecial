@@ -15,8 +15,15 @@
 // Apps Script directly. Plus a max age per read as a safety net. Copies are served only when
 // SERVE_COPIES = "1" and Apps Script's signal has been seen at least once.
 // Apps Script stays the back office. Pointing CONFIG.API_URL back at Apps Script undoes this.
+//
+// us4: (1) writes that change nothing a copy shows (a phone's failure report, the help chat,
+// the recap draft) no longer drop every copy; (2) when Google fails a copied read, the last
+// copy (up to STALE_IF_ERROR_MS old) is answered instead, marked `_asOf` + x-front-door:
+// stale -- never to a refresh right after the player's own save (`afterWrite`); (3) career
+// history has its own "history" generation, bumped only by Apps Script's scoped signal, so
+// pick saves and live scores stop throwing it away; (4) per-day counts kept in D1 for /health.
 
-export const VERSION = 'us3';
+export const VERSION = 'us4';
 
 // Actions whose answer never changes anything, so sending one twice is harmless. This is
 // NOT Code.gs's READ_ONLY_ACTIONS (that list means "doesn't bust the state cache" and
@@ -44,6 +51,13 @@ export const PATIENT_READS = new Set([
 // Code.gs). Resent ONLY after an error page / lost reply -- never just because it's slow.
 export const RETRYABLE_WRITES = new Set(['submitPicks']);
 
+// Writes that change nothing any copy shows, so they don't make the copies out of date. Each
+// must be in Code.gs's READ_ONLY_ACTIONS (doesn't bust the state cache; a test checks) and
+// write nowhere a copied read looks: logClientError -> PerfLog, helpChat -> nothing,
+// adminGenerateResultsEmail -> the recap draft. Before this, every failure report from a
+// phone dropped every copy, sending the next players to Google just as it was struggling.
+export const NO_BUMP_WRITES = new Set(['logClientError', 'helpChat', 'adminGenerateResultsEmail']);
+
 export const HEDGE_MS = 7000;     // start another copy of a read after this long without an answer (probe: typical 4.8 s)
 export const MAX_READ_TRIES = 3;  // at most this many copies of one read
 export const READ_DEADLINE_MS = 23000;    // the app gives up at 25 s; answer (or fail) before that
@@ -51,26 +65,33 @@ export const PATIENT_DEADLINE_MS = 50000; // getTrophyRoom waits 55 s in the app
 
 const MIN = 60 * 1000;
 // Which reads are answered from copies. key(p) = the parameters that change the answer (null =
-// never copy this request); maxAge = safety net; ignoreGen = not tied to the Sheet at all.
+// never copy this request); maxAge = safety net; ignoreGen = not tied to the Sheet at all;
+// genKey 'hgen' = tied only to the "history" generation (past seasons change only when Apps
+// Script says so: invalidateCareerHistoryCache sends frontDoorStale with scope 'history').
 export const COPY_RULES = {
   getState:              { key: p => (p.compact ? 'getState|compact' : null), maxAge: 15 * MIN }, // same for every player
   getStandings:          { key: () => 'getStandings', maxAge: 15 * MIN },
   getBowlStandings:      { key: () => 'getBowlStandings', maxAge: 15 * MIN },
   getAllTimeLeaderboard: { key: () => 'getAllTimeLeaderboard', maxAge: 15 * MIN },
-  getCareerHistory:      { key: () => 'getCareerHistory', maxAge: 15 * MIN },
+  getCareerHistory:      { key: () => 'getCareerHistory', maxAge: 6 * 60 * MIN, genKey: 'hgen' }, // = Apps Script's own cache
   getMessages:           { key: p => 'getMessages|' + (p.type || 'general'), maxAge: 30 * 1000 },   // as Apps Script's chat cache
   getTrophyRoom:         { key: p => (p.playerId ? 'getTrophyRoom|' + p.playerId : null), maxAge: 5 * MIN },
   getAllEspnScores:      { key: () => 'getAllEspnScores', maxAge: 45 * 1000, ignoreGen: true }       // ESPN, not the Sheet
 };
 const MAX_COPY_CHARS = 1500 * 1000; // D1 rows hold 2 MB; anything bigger just isn't copied
+// When Google fails a copied read, a copy up to this old (or the read's max age, if longer)
+// is answered instead, marked with its time so the app can say "showing data from 2:14 PM".
+export const STALE_IF_ERROR_MS = 30 * MIN;
+const DAILY_KEEP_DAYS = 14;
 
-const CORS = { 'access-control-allow-origin': '*' };
+// expose-headers: lets the app read x-front-door (copy / stale) for its failure reports
+const CORS = { 'access-control-allow-origin': '*', 'access-control-expose-headers': 'x-front-door' };
 const MAX_BODY = 1024 * 1024;     // avatars are the largest thing the app sends (~200 KB)
 
 // Counters since this Worker instance started (for /health; no player data). `started` is
 // set on the first request: Cloudflare's clock reads 0 while the Worker is loading.
 const stats = { started: 0, reads: 0, readsHedged: 0, readsSavedByRetry: 0, readsFailed: 0, writes: 0, writesFailed: 0,
-  servedFromCopy: 0, copiesStored: 0, staleSignals: 0 };
+  servedFromCopy: 0, servedStale: 0, copiesStored: 0, staleSignals: 0 };
 
 export default {
   async fetch(req, env, ctx) {
@@ -102,7 +123,8 @@ export async function handle(req, env, ctx) {
   // Apps Script: "the Sheet changed" (never passed on).
   if (action === 'frontDoorStale' && req.method === 'POST') {
     if (!env.SYNC_SECRET || !sameSecret(body.secret, env.SYNC_SECRET)) return json({ ok: false, error: 'Not allowed' }, 403);
-    if (env.DB) { await bumpGen(env); await setKv(env, 'lastStale', String(Date.now())); }
+    // scope 'history' = past seasons changed too (invalidateCareerHistoryCache in Code.gs)
+    if (env.DB) { await bumpGen(env); if (body.scope === 'history') await bumpGen(env, 'hgen'); await setKv(env, 'lastStale', String(Date.now())); }
     stats.staleSignals++;
     return json({ ok: true });
   }
@@ -111,16 +133,18 @@ export async function handle(req, env, ctx) {
   const send = signal => fetch(target, req.method === 'GET'
     ? { redirect: 'follow', signal }
     : { method: 'POST', body: bodyText, headers: { 'content-type': 'text/plain' }, redirect: 'follow', signal });
+  const tally = outcome => { if (env.DB && action) later(ctx, countDaily(env, action, outcome)); };
 
   if (PURE_READS.has(action)) {
     const rule = COPY_RULES[action], key = rule && env.DB ? rule.key(body) : null;
-    let genAtStart = null;
+    let genAtStart = null, c = null;
     if (key) {
-      const c = await readCopy(env, key);
+      c = await readCopy(env, key, rule.genKey);
       genAtStart = c.gen;
       const fresh = c.json != null && Date.now() - c.storedAt < rule.maxAge && (rule.ignoreGen || c.copyGen === c.gen);
       if (fresh && env.SERVE_COPIES === '1' && c.lastStale) {
         stats.servedFromCopy++;
+        tally('copy');
         return new Response(c.json, { status: 200, headers: { ...CORS, 'content-type': 'application/json', 'x-front-door': 'copy' } });
       }
     }
@@ -129,10 +153,18 @@ export async function handle(req, env, ctx) {
       const text = await resp.clone().text();
       let okAnswer = false; try { okAnswer = JSON.parse(text).ok === true; } catch (e) {}
       if (okAnswer && text.length <= MAX_COPY_CHARS) {
-        const store = storeCopy(env, key, text, genAtStart).then(() => { stats.copiesStored++; }).catch(() => {});
-        if (ctx && ctx.waitUntil) ctx.waitUntil(store); else await store;
+        await later(ctx, storeCopy(env, key, text, genAtStart).then(() => { stats.copiesStored++; }).catch(() => {}));
       }
     }
+    // Google failed (error pages / lost replies / the deadline): the last copy, marked with
+    // its time, beats an error -- unless this refresh must show the player's own save.
+    if (resp.status !== 200 && c && c.json != null && env.SERVE_COPIES === '1' && c.lastStale && !body.afterWrite &&
+        Date.now() - c.storedAt < Math.max(STALE_IF_ERROR_MS, rule.maxAge)) {
+      stats.servedStale++;
+      tally('stale');
+      return new Response(markAsOf(c.json, c.storedAt), { status: 200, headers: { ...CORS, 'content-type': 'application/json', 'x-front-door': 'stale' } });
+    }
+    tally(resp.status === 200 ? 'google' : 'failed');
     return resp;
   }
 
@@ -141,12 +173,15 @@ export async function handle(req, env, ctx) {
   // Afterwards every copy is out of date -- even after a failure, since a write Google lost
   // the answer to may still have run. The bump happens BEFORE answering, so the player's
   // own next read (e.g. getState right after saving picks) goes to Apps Script.
+  // NO_BUMP_WRITES change nothing a copy shows, so they leave the copies alone.
   stats.writes++;
+  const bump = env.DB && action && !NO_BUMP_WRITES.has(action);
   let out;
   if (RETRYABLE_WRITES.has(action) && typeof body.requestId === 'string' && body.requestId) {
     out = await hedgedRead(send, 0, READ_DEADLINE_MS);
     if (out.status !== 200) stats.writesFailed++;
-    if (env.DB) { try { await bumpGen(env); } catch (e) {} }
+    if (bump) { try { await bumpGen(env); } catch (e) {} }
+    tally(out.status === 200 ? 'write' : 'writeFailed');
     return out;
   }
   try {
@@ -158,15 +193,27 @@ export async function handle(req, env, ctx) {
     stats.writesFailed++;
     out = new Response('', { status: 502, headers: CORS });
   }
-  if (env.DB && action) { try { await bumpGen(env); } catch (e) {} }
+  if (bump) { try { await bumpGen(env); } catch (e) {} }
+  tally(out.status === 200 ? 'write' : 'writeFailed');
   return out;
 }
 
+// Off the reply path when Cloudflare allows it (ctx.waitUntil), else awaited.
+function later(ctx, p) {
+  if (ctx && ctx.waitUntil) ctx.waitUntil(p); else return p;
+}
+
+// '{"ok":true,...}' -> '{"_asOf":1790000000000,"_stale":1,"ok":true,...}'
+export function markAsOf(jsonText, storedAt) {
+  return '{"_asOf":' + Number(storedAt) + ',"_stale":1' + (jsonText.trim() === '{}' ? '}' : ',' + jsonText.trim().slice(1));
+}
+
 // ── Copies (D1) ──────────────────────────────────────────────────────────────
-export async function readCopy(env, key) {
+// genKey: which generation this copy is tied to ('gen' = anything changed, 'hgen' = history)
+export async function readCopy(env, key, genKey) {
   const r = await env.DB.prepare(
-    "SELECT (SELECT value FROM kv WHERE key = 'gen') AS gen, (SELECT value FROM kv WHERE key = 'lastStale') AS lastStale, " +
-    'c.json AS json, c.gen AS copyGen, c.stored_at AS storedAt FROM (SELECT 1) LEFT JOIN copies c ON c.key = ?').bind(key).first();
+    "SELECT (SELECT value FROM kv WHERE key = ?) AS gen, (SELECT value FROM kv WHERE key = 'lastStale') AS lastStale, " +
+    'c.json AS json, c.gen AS copyGen, c.stored_at AS storedAt FROM (SELECT 1) LEFT JOIN copies c ON c.key = ?').bind(genKey || 'gen', key).first();
   return { gen: Number(r && r.gen) || 0, lastStale: r && r.lastStale ? Number(r.lastStale) : 0,
     json: r ? r.json : null, copyGen: r && r.copyGen != null ? Number(r.copyGen) : -1, storedAt: r && r.storedAt ? Number(r.storedAt) : 0 };
 }
@@ -177,9 +224,18 @@ async function storeCopy(env, key, text, gen) {
     'ON CONFLICT(key) DO UPDATE SET json = excluded.json, gen = excluded.gen, stored_at = excluded.stored_at')
     .bind(key, text, gen, Date.now()).run();
 }
-export async function bumpGen(env) {
-  await env.DB.prepare("INSERT INTO kv (key, value) VALUES ('gen', '2') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1").run();
+export async function bumpGen(env, genKey) {
+  await env.DB.prepare("INSERT INTO kv (key, value) VALUES (?, '2') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1").bind(genKey || 'gen').run();
 }
+// One row per day + action + outcome (copy / google / stale / failed / write / writeFailed).
+// Counts only -- no player data. Never allowed to break a request.
+async function countDaily(env, action, outcome) {
+  try {
+    await env.DB.prepare('INSERT INTO daily (day, action, outcome, n) VALUES (?, ?, ?, 1) ' +
+      'ON CONFLICT(day, action, outcome) DO UPDATE SET n = n + 1').bind(dayKey(Date.now()), String(action).slice(0, 40), outcome).run();
+  } catch (e) {}
+}
+function dayKey(ms) { return new Date(ms).toISOString().slice(0, 10); } // UTC day
 async function setKv(env, key, value) {
   await env.DB.prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(key, value).run();
 }
@@ -189,16 +245,35 @@ async function health(env) {
   const out = { ok: true, version: VERSION, serveCopies: env.SERVE_COPIES === '1', ...stats };
   if (env.DB) {
     try {
-      const k = await env.DB.prepare("SELECT (SELECT value FROM kv WHERE key = 'gen') AS gen, (SELECT value FROM kv WHERE key = 'lastStale') AS lastStale").first();
+      const k = await env.DB.prepare("SELECT (SELECT value FROM kv WHERE key = 'gen') AS gen, (SELECT value FROM kv WHERE key = 'hgen') AS hgen, " +
+        "(SELECT value FROM kv WHERE key = 'lastStale') AS lastStale").first();
       const { results } = await env.DB.prepare('SELECT key, gen, stored_at FROM copies').all();
       out.gen = Number(k.gen) || 0;
+      out.hgen = Number(k.hgen) || 0;
       out.lastStaleSignal = k.lastStale ? Math.round((Date.now() - Number(k.lastStale)) / 60000) + ' min ago' : 'never';
-      out.copies = (results || []).filter(r => !r.key.startsWith('getTrophyRoom|')).map(r => ({ key: r.key, current: Number(r.gen) === out.gen,
+      const genFor = key => { const rule = COPY_RULES[key.split('|')[0]]; return rule && rule.genKey === 'hgen' ? out.hgen : out.gen; };
+      out.copies = (results || []).filter(r => !r.key.startsWith('getTrophyRoom|')).map(r => ({ key: r.key, current: Number(r.gen) === genFor(r.key),
         age: Math.round((Date.now() - r.stored_at) / 1000) + ' s' }));
       out.trophyRoomCopies = (results || []).filter(r => r.key.startsWith('getTrophyRoom|')).length;
     } catch (e) { out.dbError = e.message; }
+    try { out.daily = await dailySummary(env); } catch (e) { out.dailyError = e.message; }
   }
   return out;
+}
+
+// Today and yesterday (UTC): totals per outcome, and per action. Old days are pruned here.
+async function dailySummary(env) {
+  const today = dayKey(Date.now()), yesterday = dayKey(Date.now() - 86400000);
+  await env.DB.prepare('DELETE FROM daily WHERE day < ?').bind(dayKey(Date.now() - DAILY_KEEP_DAYS * 86400000)).run();
+  const { results } = await env.DB.prepare('SELECT day, action, outcome, n FROM daily WHERE day >= ?').bind(yesterday).all();
+  return [today, yesterday].map(day => {
+    const totals = {}, actions = {};
+    (results || []).filter(r => r.day === day).forEach(r => {
+      totals[r.outcome] = (totals[r.outcome] || 0) + Number(r.n);
+      (actions[r.action] = actions[r.action] || {})[r.outcome] = Number(r.n);
+    });
+    return { day, totals, actions };
+  });
 }
 
 // Sends the read, then another copy every hedgeMs (0 = never on time alone) or at once

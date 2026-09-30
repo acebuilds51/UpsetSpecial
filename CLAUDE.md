@@ -22,6 +22,10 @@ Verify a backend deploy took effect: every API response carries `_version` (= `C
 - The busy reads (`COPY_RULES`: getState compact, standings, bowl standings, leaderboard, career history, chat, Trophy Room) are answered from D1 copies.
   - **Stale when:** any write passes through the Worker, or Apps Script sends `frontDoorStale` (`sendFrontDoorStale_`, hooked into `invalidatePicksBundle_`, the chat/Trophy/UpsetHistory cache busts; Script Properties `FRONT_DOOR_URL` / `FRONT_DOOR_SECRET` = Worker secret `SYNC_SECRET`).
   - **Consequence:** any NEW cache or state in Code.gs that the app reads through a copied action must also call `markFrontDoorStale_()` when it changes.
+  - Writes in `NO_BUMP_WRITES` (failure reports, help chat, recap draft) don't mark copies stale; each must be in `READ_ONLY_ACTIONS` (a test checks).
+  - The career-history copy uses its own "history" generation. Only a signal with `scope: 'history'` drops it; `invalidateCareerHistoryCache` sets that. Any new CareerHistory write must call `invalidateCareerHistoryCache`.
+  - When Google fails a copied read, the Worker answers with the last copy (≤30 min), marked `_asOf`. Refreshes within 2 min of a save send `afterWrite: 1` and never get one. The app shows "Data from 2:14 PM" when a refresh fails or only an older copy came back (`updateStaleStrip_`).
+  - Worker per-day counts live in the D1 `daily` table; `/health` shows them and `runDiagnostics` reads them (`diagFrontDoor_`). Schema changes: `npx wrangler d1 execute upset-special --remote --file=worker/schema.sql` (safe to re-run).
 - A new read-only action → add it to `PURE_READS` in `worker/src/index.js`. Never add a write; a test checks the list against Code.gs.
 - Deploy the Worker: `npx wrangler deploy --config worker/wrangler.toml`. Kill switch: `SERVE_COPIES = "0"`. Full rollback: set `API_URL` back to `APPS_SCRIPT_URL`.
 - Worker tests: `node --test worker/test/worker.test.js`. `tools/diag.js` reads `_version` from Apps Script directly, not through the Worker.

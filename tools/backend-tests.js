@@ -1228,6 +1228,84 @@ test('front door: a failing Worker never breaks the request', () => {
   ok(r.ok, r.error);
 });
 
+// v21: past seasons get their own signal scope, so the Worker keeps its career-history copy
+// through pick saves and live scores (S-018).
+test('front door: career-history changes send ONE signal with scope "history"; pick saves and triggers send none', () => {
+  const env = loadBackend(); seedLeague(env); enableFrontDoor(env);
+  const payloads = () => staleSignals().map(s => JSON.parse(s.opts.payload));
+  ok(env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' })).ok);
+  eq(payloads().map(p => p.scope), [undefined], 'a pick save: ordinary signal');
+  env.ctx.onSheetChange({});                                  // a hand edit (could be CareerHistory)
+  eq(payloads().slice(1).map(p => p.scope), ['history'], 'hand edit: one signal, history scope');
+  env.ctx.clearCareerCache();
+  eq(payloads().slice(2).map(p => p.scope), ['history'], 'editor clearCareerCache: history scope');
+  env.ctx.invalidateStateCache();
+  eq(payloads().slice(3).map(p => p.scope), [undefined], 'the flag does not leak into later signals');
+});
+
+test('front door: approving a name claim (a CareerHistory write) signals with scope "history", once', () => {
+  const env = loadBackend(); seedLeague(env); enableFrontDoor(env);
+  env.ss.insertSheet('CareerHistory').appendRow(['playerId', 'name', 'teamName', 'year', 'points', 'matched']);
+  env.ss.getSheetByName('CareerHistory').appendRow(['', 'Old', 'OLDTEAM', 2019, 50, 'NO']);
+  env.ss.insertSheet('NameClaims').appendRow(['claimId', 'playerId', 'teamName', 'status', 'submittedAt', 'reviewedAt', 'reviewedBy']);
+  env.ss.getSheetByName('NameClaims').appendRow(['c1', 'p2', 'OLDTEAM', 'pending', '2026-09-01', '', '']);
+  const before = staleSignals().length;
+  const r = env.call('adminReviewNameClaim', { adminId: 'p1', claimId: 'c1', decision: 'approved' });
+  ok(r.ok, r.error);
+  const sigs = staleSignals().slice(before).map(s => JSON.parse(s.opts.payload));
+  eq(sigs.map(p => p.scope), ['history']);
+});
+
+test('phone failure reports keep app version / route / tries / online / front door, and diagnostics group them', () => {
+  const env = loadBackend(); seedLeague(env);
+  if (!env.ss.getSheetByName('PerfLog')) env.ss.insertSheet('PerfLog').appendRow(['timestamp', 'action', 'ms', 'ok', 'error', 'reason', 'notes']);
+  const rep1 = { failedAction: 'getState', message: 'timed out after 25s', playerId: 'p2', appVersion: 'v14.5', via: 'worker', tries: 1, online: true, frontDoor: 'copy' };
+  ok(env.call('logClientError', rep1).ok);
+  ok(env.call('logClientError', Object.assign({}, rep1, { playerId: 'p3' })).ok);
+  ok(env.call('logClientError', { failedAction: 'getState', message: 'timed out after 25s', playerId: 'p2' }).ok); // old app
+  const notes = JSON.parse(env.ss.getSheetByName('PerfLog')._data.find(x => x[1] === 'client:getState')[6]);
+  eq([notes.app, notes.via, notes.tries, notes.online, notes.fd], ['v14.5', 'worker', 1, 'yes', 'copy']);
+  const rep = env.ctx.runDiagnostics();
+  eq(rep.clientFailures.map(g => [g.count, g.action, g.app, g.via, g.online, g.fd]),
+    [[2, 'getState', 'v14.5', 'worker', 'yes', 'copy'], [1, 'getState', '?', '?', '?', '-']]);
+  ok(/PHONE FAILURES/.test(env.ss.getSheetByName('DiagnosticsReport')._data.map(r => r[0]).join('\n')));
+  const s = env.call('getDiagnosticsSummary').summary;
+  eq(s.clientFailures.length, 2);
+  ok(!/TEAM2|TEAM3/.test(JSON.stringify(s.clientFailures)), 'no team names in the grouped failures');
+});
+
+test('diagnostics read the Worker\'s per-day counts from its /health page', () => {
+  const env = loadBackend(); seedLeague(env); enableFrontDoor(env);
+  const orig = env.ctx.UrlFetchApp.fetch;
+  let asked = '';
+  env.ctx.UrlFetchApp.fetch = (url, opts) => {
+    if (String(url).indexOf('/health') >= 0) {
+      asked = String(url);
+      return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ ok: true, version: 'us4', daily: [
+        { day: '2026-09-30', totals: { copy: 1 }, actions: {} },
+        { day: '2026-09-29', totals: { copy: 80, google: 15, stale: 3, failed: 2, write: 40 }, actions: { getState: { copy: 70, google: 10, stale: 3, failed: 2 } } }] }) };
+    }
+    return orig(url, opts);
+  };
+  const rep = env.ctx.runDiagnostics();
+  eq(asked, 'https://frontdoor.example/health', 'no double slash');
+  eq([rep.frontDoor.day, rep.frontDoor.reads, rep.frontDoor.copyPct, rep.frontDoor.stale, rep.frontDoor.failed], ['2026-09-29', 100, 80, 3, 2]);
+  eq(rep.frontDoor.busiest[0], { action: 'getState', copy: 70, google: 10, stale: 3, failed: 2 });
+  ok(rep.info.some(i => /80% from copies/.test(i)), JSON.stringify(rep.info));
+  eq(env.call('getDiagnosticsSummary').summary.frontDoor.reads, 100);
+});
+
+test('diagnostics survive a Worker that is down or older (no daily counts)', () => {
+  const env = loadBackend(); seedLeague(env); enableFrontDoor(env);
+  let rep = env.ctx.runDiagnostics();                       // fake answers {"ok":true}: an older Worker
+  eq(rep.frontDoor, null);
+  ok(rep.info.some(i => /no per-day counts yet/.test(i)), JSON.stringify(rep.info));
+  const orig = env.ctx.UrlFetchApp.fetch;
+  env.ctx.UrlFetchApp.fetch = (url, opts) => String(url).indexOf('/health') >= 0 ? { getResponseCode: () => 502, getContentText: () => '' } : orig(url, opts);
+  rep = env.ctx.runDiagnostics();
+  ok(rep.warnings.some(w => /Front door \/health answered 502/.test(w)), JSON.stringify(rep.warnings));
+});
+
 // The owner checks what's pasted in the Apps Script editor by its first line.
 test('line 1 of every backend .gs file shows the current CODE_VERSION', () => {
   const dir = path.join(__dirname, '..', 'backend');
