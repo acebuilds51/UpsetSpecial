@@ -1,4 +1,4 @@
-// v19-hall-rules-sep30  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
+// v20-hall-games-sep30  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
 // ============================================================
 //  UPSET SPECIAL — Notifications & week/season finalization (v2, Sep 2026)
 //
@@ -210,32 +210,37 @@ function updateUpsetHistoryForWeek(week) {
       if (hit) upsetPts = Number(upsetGame.spread) || 0;
     }
     var totalGames = boardFinals.length;
+    // who the Upset Special played and the final score (Upset Hall of Fame)
+    var dogIsHome = upsetGame && String(upsetPick.pickedTeam) === String(upsetGame.homeTeam);
+    var opponent = upsetGame ? (dogIsHome ? upsetGame.awayTeam : upsetGame.homeTeam) : '';
+    var dogScore = upsetGame ? Number(dogIsHome ? upsetGame.finalHomeScore : upsetGame.finalAwayScore) || 0 : '';
+    var oppScore = upsetGame ? Number(dogIsHome ? upsetGame.finalAwayScore : upsetGame.finalHomeScore) || 0 : '';
     return [
       year, week, norm(player.teamName || player.name),
       upsetPick ? String(upsetPick.pickedTeam || '') : '',
       upsetGame ? (Number(upsetGame.spread) || 0) : 0,
       correctCount + upsetPts,
       !!upsetPick, hit, upsetPts,
-      correctCount, totalGames, correctCount === totalGames && week > 0
+      correctCount, totalGames, correctCount === totalGames && week > 0,
+      opponent, dogScore, oppScore
     ];
   });
 
   var uh = ss.getSheetByName('UpsetHistory');
   if (!uh) {
     uh = ss.insertSheet('UpsetHistory');
-    uh.appendRow(['year','week','teamName','upsetPick','spread','weekPts','attempted','hit','upsetPts','correctCount','totalGames','isPerfect']);
+    uh.appendRow(UPSET_HISTORY_COLUMNS);
   }
   // one read + one write: keep every row except this year+week, then append the new ones
   var data = uh.getDataRange().getValues();
   var headers = data[0];
-  // Code.gs's HEADERS creates this tab with only the first 9 columns, but rows are
-  // always written with 12 -- label any unnamed trailing columns so correctCount /
-  // totalGames / isPerfect are readable by name.
-  var FULL = ['year','week','teamName','upsetPick','spread','weekPts','attempted','hit','upsetPts','correctCount','totalGames','isPerfect'];
+  // Rows are always written in UPSET_HISTORY_COLUMNS order -- label any unnamed trailing
+  // columns so correctCount / ... / oppScore are readable by name.
+  var FULL = UPSET_HISTORY_COLUMNS;
   for (var hi = 0; hi < FULL.length; hi++) { if (!headers[hi]) headers[hi] = FULL[hi]; }
   var yI = headers.indexOf('year'), wI = headers.indexOf('week');
   var keep = data.filter(function(r, i) { return i === 0 || !(Number(r[yI]) === year && Number(r[wI]) === week); });
-  var width = Math.max(headers.length, 12);
+  var width = Math.max(headers.length, FULL.length);
   var out = keep.concat(batchRows).map(function(r) { r = r.slice(0, width); while (r.length < width) r.push(''); return r; });
   uh.getRange(1, 1, Math.max(data.length, out.length), width).clearContent();
   uh.getRange(1, 1, out.length, width).setValues(out);

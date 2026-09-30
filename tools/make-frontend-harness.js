@@ -62,7 +62,13 @@ const mock = `<script>
   if (nMsgs) chat.commissioner.push({ messageId: 'c1', type: 'commissioner', playerId: 'p2', teamName: 'PATS', message: 'Payments are due before Week 6 kicks off', postedAt: new Date(Date.now() - 30000).toISOString() });
   window.__chat = chat;
   var hall = { minAttempts: 20,
-    biggest: [{ playerId: 'p2', teamName: 'PATS', team: 'Huge Dog', spread: 24.5, pts: 24.5, year: 2019, week: 7 }, { playerId: '', teamName: 'Old Timers', team: 'Middle Dog', spread: 21, pts: 21, year: 2016, week: 3 }, { playerId: 'p1', teamName: 'TESTERS', team: 'Road Dog', spread: 17.5, pts: 17.5, year: 2024, week: 11 }],
+    biggest: [{ playerId: 'p2', teamName: 'PATS', team: 'Huge Dog', spread: 29.5, pts: 29.5, year: 2021, week: 11, opponent: 'Big Favorite', dogScore: 57, oppScore: 56 },
+      { playerId: 'p1', teamName: 'TESTERS', team: 'Middle Dog', spread: 24.5, pts: 24.5, year: 2023, week: 12, opponent: 'Home Fav', dogScore: 25, oppScore: 17 },
+      { playerId: 'p2', teamName: 'PATS', team: 'Road Dog', spread: 24, pts: 24, year: 2016, week: 13, opponent: 'Rival', dogScore: 41, oppScore: 38 },
+      { playerId: 'p3', teamName: 'SAMS', team: 'Road Dog', spread: 24, pts: 24, year: 2016, week: 13, opponent: 'Rival', dogScore: 41, oppScore: 38 },
+      { playerId: 'p3', teamName: 'SAMS', team: 'Late Dog', spread: 23.5, pts: 23.5, year: 2023, week: 8, opponent: '', dogScore: null, oppScore: null },
+      { playerId: 'p1', teamName: 'TESTERS', team: 'Tie Dog', spread: 21.5, pts: 21.5, year: 2022, week: 12, opponent: 'Vols', dogScore: 63, oppScore: 38 },
+      { playerId: 'p2', teamName: 'PATS', team: 'Other Dog', spread: 21.5, pts: 21.5, year: 2023, week: 12, opponent: 'Tigers', dogScore: 31, oppScore: 10 }],
     hitRate: [{ playerId: 'p3', teamName: 'SAMS', attempts: 40, hits: 9, pct: 22.5, pts: 101 }, { playerId: 'p1', teamName: 'TESTERS', attempts: 22, hits: 3, pct: 13.6, pts: 41.5 }] };
   var realFetch = window.fetch.bind(window);
   window.fetch = function(url, opts) {

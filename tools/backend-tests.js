@@ -1518,6 +1518,40 @@ test('Upset Hall of Fame: players who played in 2026+ (any year\'s hits, kept af
   ok(!r.upsetHall.biggest.some(x => x.team === 'Long Gone'), 'GONE still out');
 });
 
+test('Upset Hall of Fame: opponent + final score (one-time fill, shared by everyone who hit the game) and ties at 10th', () => {
+  const env = loadBackend(); seedLeague(env);
+  const uh = env.ss.getSheetByName('UpsetHistory');
+  env.ctx.reconcileHeaders(uh, env.ctx.UPSET_HISTORY_COLUMNS);
+  const uhh = uh._data[0];
+  const add = o => uh.appendRow(uhh.map(h => o[h] ?? ''));
+  add({ year: 2021, week: 11, teamName: 'TEAM2', upsetPick: 'Kansas', spread: 29.5, attempted: true, hit: true, upsetPts: 29.5 });
+  add({ year: 2020, week: 14, teamName: 'TEAM2', upsetPick: 'LSU', spread: 24, attempted: true, hit: true, upsetPts: 24 });
+  add({ year: 2020, week: 14, teamName: 'TEAM3', upsetPick: 'LSU', spread: 24, attempted: true, hit: true, upsetPts: 24 });
+  for (let w = 1; w <= 9; w++) add({ year: 2019, week: w, teamName: w % 2 ? 'TEAM2' : 'TEAM3', upsetPick: 'Dog ' + w, spread: 10, attempted: true, hit: true, upsetPts: 10 });
+  const msg = env.ctx.fillUpsetHallGames();
+  eq(msg, 'Filled opponent + score on 3 UpsetHistory row(s).', 'Kansas 2021 + both LSU 2020 rows');
+  const r = env.call('getAllTimeLeaderboard');
+  const b = r.upsetHall.biggest;
+  eq([b[0].team, b[0].opponent, b[0].dogScore, b[0].oppScore], ['Kansas', 'Texas', 57, 56]);
+  ok(b.filter(x => x.team === 'LSU').every(x => x.opponent === 'Florida' && x.dogScore === 37 && x.oppScore === 34), 'both LSU hitters get the game');
+  eq(b.length, 12, 'the 9 hits tied at +10 for 10th all stay (3 + 9)');
+  ok(b.filter(x => x.team.indexOf('Dog') === 0).every(x => x.opponent === '' && x.dogScore === null), 'unknown games show no opponent');
+  eq(env.ctx.fillUpsetHallGames(), 'Filled opponent + score on 0 UpsetHistory row(s).', 'a second run changes nothing');
+});
+
+test('week wrap-up records who each Upset Special played and the final score', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U' }));
+  finishWeek(env, kickoff, 2); // Dog U (away) 24, Fav U 10
+  env.ctx._sheetDataCache = {};
+  env.ctx.checkGameFinalNotifications();
+  const row = rowsOf(env, 'UpsetHistory').find(x => x.teamName === 'TEAM2');
+  eq([row.upsetPick, row.opponent, row.dogScore, row.oppScore], ['Dog U', 'Fav U', 24, 10]);
+  eq(rowsOf(env, 'UpsetHistory').find(x => x.teamName === 'TEAM3').opponent, '', 'no Upset Special, no opponent');
+  const hall = env.call('getAllTimeLeaderboard').upsetHall.biggest;
+  eq([hall[0].team, hall[0].opponent, hall[0].dogScore, hall[0].oppScore], ['Dog U', 'Fav U', 24, 10]);
+});
+
 // ---------------------------------------------------------------- report
 let failed = 0;
 results.forEach(([pass, name, err]) => {

@@ -1,4 +1,4 @@
-// v19-hall-rules-sep30  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v20-hall-games-sep30  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -56,7 +56,9 @@ const SHEET_NAMES = {
 
 const HEADERS = {
   Messages: ['messageId', 'type', 'playerId', 'playerName', 'teamName', 'message', 'postedAt', 'season'],
-  UpsetHistory: ['year', 'week', 'teamName', 'upsetPick', 'spread', 'weekPts', 'attempted', 'hit', 'upsetPts'],
+  // every column updateUpsetHistoryForWeek writes, in order (opponent/dogScore/oppScore:
+  // who the Upset Special played and the final score, for the Upset Hall of Fame)
+  UpsetHistory: ['year', 'week', 'teamName', 'upsetPick', 'spread', 'weekPts', 'attempted', 'hit', 'upsetPts', 'correctCount', 'totalGames', 'isPerfect', 'opponent', 'dogScore', 'oppScore'],
   Bios: ['playerId', 'teamName', 'hometown', 'college', 'favTeam', 'firstGame', 'favGame', 'favPlayer', 'favUpset', 'strategy', 'occupation', 'funFact', 'email', 'bioText', 'photoUrl', 'updatedAt'],
   Season: ['key', 'value'],
   Rotation: ['week', 'playerId', 'status', 'assignedAt'],
@@ -79,6 +81,8 @@ const HEADERS = {
   // reconcileHeaders appends that column automatically once schemaVersion bumps below.
   Players: ['id', 'name', 'teamName', 'pin', 'isAdmin', 'active', 'joinedSeason', 'careerPoints', 'email', 'venmo', 'paypal', 'avatar', 'paymentPref', 'fcmToken', 'scoreNotif', 'isPaid', 'chatNotif', 'referredBy', 'installedAt', 'deactivatedAt']
 };
+// the order updateUpsetHistoryForWeek (Notifications.gs) writes each row in
+var UPSET_HISTORY_COLUMNS = HEADERS.UpsetHistory;
 
 const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 
@@ -86,7 +90,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v19-hall-rules-sep30';
+var CODE_VERSION = 'v20-hall-games-sep30';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -285,7 +289,7 @@ function clearEnsureSheetsFlag() {
   CacheService.getScriptCache().remove('ensureSheetsOk_' + ENSURE_SHEETS_SCHEMA_VERSION);
 }
 
-var ENSURE_SHEETS_SCHEMA_VERSION = '7'; // bump this string whenever HEADERS schema changes
+var ENSURE_SHEETS_SCHEMA_VERSION = '8'; // bump this string whenever HEADERS schema changes
 
 function ensureSheetsUncached_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -3471,7 +3475,7 @@ function apiAdminRecordBowlWinners(payload) {
 // Plus idx.__top = the league's biggest hits ever (Upset Hall of Fame, getAllTimeLeaderboard):
 //   [{ tn: teamName as recorded, team, spread, year, week, pts }] -- '__top' can never be
 //   a trophyNorm_ key (those are A-Z0-9 only).
-var UPSET_INDEX_KEY = 'upsetIndex_v3';
+var UPSET_INDEX_KEY = 'upsetIndex_v4';
 var UPSET_TOP_N = 80; // candidates -- the Hall of Fame drops hits from past players, then shows 10
 function trophyNorm_(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g,'').trim(); }
 
@@ -3483,7 +3487,7 @@ function getUpsetHistoryIndex_() {
   } catch (e) {}
   var genBefore = cache.get('upsetIndexGen') || '0';
   var idx = {};
-  var hits = [];
+  var hits = [], games = {};
   sheetToObjects(SHEET_NAMES.UPSET_HISTORY).forEach(function(r, i) {
     var n = trophyNorm_(r.teamName);
     var e = idx[n] || (idx[n] = { a: 0, h: 0, p: 0, b: null, w: {}, tn: String(r.teamName || '') });
@@ -3497,10 +3501,19 @@ function getUpsetHistoryIndex_() {
       if (!e.b || pts > e.b.pts) e.b = { team: r.upsetPick, spread: Number(r.spread), year: yr, week: Number(r.week), pts: pts, i: i };
       if (pts > 0) hits.push({ tn: String(r.teamName || ''), team: r.upsetPick, spread: Number(r.spread), year: yr, week: Number(r.week), pts: pts, i: i });
     }
+    // opponent + final score, entered once per game: every row with the same year, week and
+    // underdog shares it (the wrap-up fills it in from 2026 on; fillUpsetHallGames for older)
+    if (String(r.opponent || '').trim() !== '') {
+      games[yr + '|' + Number(r.week) + '|' + trophyNorm_(r.upsetPick)] = { opp: String(r.opponent).trim(), ds: r.dogScore, os: r.oppScore };
+    }
   });
   // biggest first; on a tie the earlier one (it got there first)
   hits.sort(function(a, b) { return b.pts - a.pts || a.year - b.year || a.week - b.week || a.i - b.i; });
-  idx.__top = hits.slice(0, UPSET_TOP_N).map(function(h) { return { tn: h.tn, team: h.team, spread: h.spread, year: h.year, week: h.week, pts: h.pts }; });
+  idx.__top = hits.slice(0, UPSET_TOP_N).map(function(h) {
+    var g = games[h.year + '|' + h.week + '|' + trophyNorm_(h.team)] || {};
+    return { tn: h.tn, team: h.team, spread: h.spread, year: h.year, week: h.week, pts: h.pts,
+      opp: g.opp || '', ds: g.ds === '' || g.ds == null ? null : Number(g.ds), os: g.os === '' || g.os == null ? null : Number(g.os) };
+  });
   try {
     if ((cache.get('upsetIndexGen') || '0') === genBefore) {
       cachePutChunked_(cache, UPSET_INDEX_KEY, JSON.stringify(idx), sheetChangeWatched_() ? 21600 : 360);
@@ -5119,9 +5132,10 @@ function buildUpsetHall_(players) {
     return pid ? !!qualifies[pid] : normPlayedRecently(n);
   };
 
-  var biggest = (idx.__top || []).filter(function(h) { return shown(h.tn); }).slice(0, 10).map(function(h) {
+  var biggest = topWithTies_((idx.__top || []).filter(function(h) { return shown(h.tn); }), 10, function(h) { return h.pts; }).map(function(h) {
     var w = who(h.tn);
-    return { playerId: w.playerId, teamName: w.teamName, team: h.team, spread: h.spread, pts: h.pts, year: h.year, week: h.week };
+    return { playerId: w.playerId, teamName: w.teamName, team: h.team, spread: h.spread, pts: h.pts, year: h.year, week: h.week,
+      opponent: h.opp || '', dogScore: h.ds == null ? null : h.ds, oppScore: h.os == null ? null : h.os };
   });
 
   // hit rate per player (all of a player's team names together), same rule
@@ -5136,14 +5150,68 @@ function buildUpsetHall_(players) {
     var g = agg[key] || (agg[key] = { playerId: pid, teamName: pid ? (nameOf[pid] || e.tn || n) : (e.tn || n), a: 0, h: 0, p: 0 });
     g.a += e.a; g.h += e.h; g.p += e.p;
   });
-  var hitRate = Object.keys(agg).map(function(k) { return agg[k]; })
+  var hitRate = topWithTies_(Object.keys(agg).map(function(k) { return agg[k]; })
     .filter(function(g) { return g.a >= UPSET_HALL_MIN_ATTEMPTS; })
     .map(function(g) {
       return { playerId: g.playerId, teamName: g.teamName, attempts: g.a, hits: g.h, pct: Math.round(g.h / g.a * 1000) / 10, pts: Math.round(g.p * 10) / 10 };
     })
-    .sort(function(a, b) { return b.pct - a.pct || b.hits - a.hits; })
-    .slice(0, 10);
+    .sort(function(a, b) { return b.pct - a.pct || b.hits - a.hits; }), 10, function(g) { return g.pct; });
   return { biggest: biggest, hitRate: hitRate, minAttempts: UPSET_HALL_MIN_ATTEMPTS };
+}
+
+// The first n of a list already sorted best-first, plus anything tied with the n-th
+// (a tie for 10th keeps everyone on it). Capped at 2n so a huge tie can't flood the list.
+function topWithTies_(sorted, n, valueOf) {
+  if (sorted.length <= n) return sorted;
+  var cut = valueOf(sorted[n - 1]);
+  var out = sorted.slice(0, n);
+  for (var i = n; i < sorted.length && out.length < 2 * n && valueOf(sorted[i]) === cut; i++) out.push(sorted[i]);
+  return out;
+}
+
+// ONE-TIME (run from the Apps Script editor): fills in who each big Upset Special beat and
+// the final score for the Hall of Fame games looked up on ESPN (2016-2024). The weekly
+// wrap-up does this by itself from 2026 on. Only fills empty cells, one pass, then busts
+// the Hall of Fame cache. Safe to run again. Add a line here for any other game.
+var UPSET_HALL_GAMES = [
+  // [year, week, underdog, opponent, underdog score, opponent score]
+  [2016, 12, 'Kansas', 'Texas', 24, 21],
+  [2016, 13, 'Kentucky', 'Louisville', 41, 38],
+  [2020, 14, 'LSU', 'Florida', 37, 34],
+  [2021, 11, 'Kansas', 'Texas', 57, 56],
+  [2022, 12, 'South Carolina', 'Tennessee', 63, 38],
+  [2022, 13, 'New Mexico State', 'Liberty', 49, 14],
+  [2023, 8, 'Virginia', 'North Carolina', 31, 27],
+  [2023, 12, 'New Mexico', 'Fresno State', 25, 17],
+  [2023, 12, 'New Mexico State', 'Auburn', 31, 10],
+  [2024, 2, 'Northern Illinois', 'Notre Dame', 16, 14]
+];
+function fillUpsetHallGames() {
+  var sheet = getSheet(SHEET_NAMES.UPSET_HISTORY);
+  if (!sheet || sheet.getLastRow() < 2) return 'UpsetHistory is empty';
+  reconcileHeaders(sheet, UPSET_HISTORY_COLUMNS); // make sure opponent/dogScore/oppScore exist
+  var data = sheet.getDataRange().getValues();
+  var h = data[0].map(function(x) { return String(x).trim(); });
+  var yI = h.indexOf('year'), wI = h.indexOf('week'), pI = h.indexOf('upsetPick');
+  var oI = h.indexOf('opponent'), dI = h.indexOf('dogScore'), sI = h.indexOf('oppScore');
+  var byKey = {};
+  UPSET_HALL_GAMES.forEach(function(g) { byKey[g[0] + '|' + g[1] + '|' + trophyNorm_(g[2])] = g; });
+  var filled = 0;
+  var cols = [oI, dI, sI].map(function(c) { return data.slice(1).map(function(r) { return [r[c]]; }); });
+  data.slice(1).forEach(function(r, k) {
+    var g = byKey[Number(r[yI]) + '|' + Number(r[wI]) + '|' + trophyNorm_(r[pI])];
+    if (!g || String(r[oI] || '').trim() !== '') return;
+    cols[0][k] = [g[3]]; cols[1][k] = [g[4]]; cols[2][k] = [g[5]];
+    filled++;
+  });
+  if (filled) {
+    [oI, dI, sI].forEach(function(c, j) { sheet.getRange(2, c + 1, data.length - 1, 1).setValues(cols[j]); });
+    SpreadsheetApp.flush();
+    invalidateSheetCache(SHEET_NAMES.UPSET_HISTORY);
+  }
+  var msg = 'Filled opponent + score on ' + filled + ' UpsetHistory row(s).';
+  Logger.log(msg);
+  return msg;
 }
 
 function apiGetCareerHistory() {
