@@ -479,7 +479,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 // owner can see at a glance whether a phone is running the latest version.
 // v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
 // selections, update banner on resume, This Week fits on phones.
-const VERSION = 'v14.2';
+const VERSION = 'v14.3';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
@@ -3434,26 +3434,21 @@ async function renderHistoryTab(el) {
         : '<span style="' + style + '">' + escapeHtml(r.teamName) + '</span>';
     };
     // Places share on a tie (1, 2, T3, T3, T3, ..., 8, T9, T9): a place is 1 + how many
-    // rows score higher. Medals go to places 1-3, tied or not.
+    // rows score higher. No medals -- the Hall of Fame is a ranking, not a podium.
     const places = (rows, valueOf) => rows.map((r, i) => {
       let p = i; while (p > 0 && valueOf(rows[p - 1]) === valueOf(r)) p--;
       const tied = rows.some((o, j) => j !== i && valueOf(o) === valueOf(r));
       return { place: p + 1, tied };
     });
-    const placeCell = (pl, withMedals) => {
-      const label = (pl.tied ? 'T' : '') + pl.place;
-      const medal = withMedals ? ['🥇', '🥈', '🥉'][pl.place - 1] : '';
-      return medal
-        ? '<span style="display:flex;flex-direction:column;align-items:center;line-height:1.1;"><span style="font-size:16px;">' + medal + '</span>' + (pl.tied ? '<span style="font-size:9px;font-weight:700;color:var(--text-muted);">' + label + '</span>' : '') + '</span>'
-        : '<span style="font-size:12px;font-weight:' + (pl.tied ? '700' : '400') + ';color:var(--text-muted);">' + label + '</span>';
-    };
+    const placeCell = pl =>
+      '<span style="font-size:13px;font-weight:700;color:var(--text-soft);">' + (pl.tied ? 'T' : '') + pl.place + '</span>';
     const score = r => r.opponent
       ? 'beat ' + escapeHtml(r.opponent) + (r.dogScore != null && r.oppScore != null ? ' ' + r.dogScore + '–' + r.oppScore : '') + ' · '
       : '';
     const bigPlaces = places(hall.biggest, r => Number(r.pts));
     const biggest = hall.biggest.map((r, i) =>
       '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:0.5px solid var(--hairline);">'
-      + '<span style="width:28px;text-align:center;flex-shrink:0;">' + placeCell(bigPlaces[i], true) + '</span>'
+      + '<span style="width:28px;text-align:center;flex-shrink:0;">' + placeCell(bigPlaces[i]) + '</span>'
       + '<div style="flex:1;min-width:0;">'
       +   '<div style="font-size:14px;font-weight:700;color:var(--text);">' + escapeHtml(r.team) + ' +' + fmt(r.spread) + '</div>'
       +   '<div style="font-size:11px;color:var(--text-faint);margin-top:1px;">' + score(r) + 'Week ' + r.week + ', ' + r.year + ' · ' + who(r) + '</div>'
@@ -3463,7 +3458,7 @@ async function renderHistoryTab(el) {
     const ratePlaces = places(hall.hitRate || [], r => Number(r.pct));
     const rates = (hall.hitRate || []).map((r, i) =>
       '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:0.5px solid var(--hairline);">'
-      + '<span style="width:28px;text-align:center;flex-shrink:0;">' + placeCell(ratePlaces[i], false) + '</span>'
+      + '<span style="width:28px;text-align:center;flex-shrink:0;">' + placeCell(ratePlaces[i]) + '</span>'
       + '<div style="flex:1;min-width:0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + who(r) + '</div>'
       + '<div style="font-size:11px;color:var(--text-faint);flex-shrink:0;">' + r.hits + ' of ' + r.attempts + '</div>'
       + '<div class="mono" style="font-size:13px;font-weight:700;color:var(--text);width:48px;text-align:right;flex-shrink:0;">' + fmt(r.pct) + '%</div>'
