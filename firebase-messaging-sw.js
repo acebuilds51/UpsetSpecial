@@ -3,6 +3,21 @@
 // Uses raw Web Push (not Firebase compat) to avoid duplicate notifications
 // ============================================================
 
+// SW v2 (2026-09-30). A new version of this file takes over at once instead of waiting until
+// every window of the app is closed -- a home-screen app parked in the background never
+// closes, so phones kept running the old click handler (tap = just open the app).
+self.addEventListener('install', function() { self.skipWaiting(); });
+self.addEventListener('activate', function(event) { event.waitUntil(self.clients.claim()); });
+
+// Where a tapped notification wants to go, kept for a minute so an app that was paused in
+// the background (iPhone) can pick it up when it comes back even if the message is lost.
+var PENDING_VIEW_CACHE = 'usl-pending-view';
+function rememberView(url) {
+  return caches.open(PENDING_VIEW_CACHE).then(function(cache) {
+    return cache.put('/UpsetSpecial/__pending_view', new Response(JSON.stringify({ url: url, at: Date.now() })));
+  }).catch(function() {});
+}
+
 // Handle push events directly — no Firebase SDK needed here
 self.addEventListener('push', function(event) {
   if (!event.data) return;
@@ -67,17 +82,21 @@ self.addEventListener('notificationclick', function(event) {
   var url = (event.notification.data && event.notification.data.url)
     ? event.notification.data.url
     : 'https://acebuilds51.github.io/UpsetSpecial/';
-  event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clients) {
-      for (var i = 0; i < clients.length; i++) {
-        var c = clients[i];
-        if (c.url.includes('UpsetSpecial') && 'focus' in c) {
-          return c.focus().then(function(focused) {
-            (focused || c).postMessage({ type: 'OPEN_VIEW', url: url });
-          });
-        }
+  event.waitUntil(rememberView(url).then(function() {
+    return self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  }).then(function(clients) {
+    for (var i = 0; i < clients.length; i++) {
+      var c = clients[i];
+      if (c.url.includes('UpsetSpecial') && 'focus' in c) {
+        c.postMessage({ type: 'OPEN_VIEW', url: url }); // before focus: some phones only deliver it on resume
+        return c.focus().then(function(focused) {
+          if (focused && focused !== c) focused.postMessage({ type: 'OPEN_VIEW', url: url });
+        }).catch(function() {
+          // not allowed to focus that window: open the app at the url instead
+          if (self.clients.openWindow) return self.clients.openWindow(url);
+        });
       }
-      if (self.clients.openWindow) return self.clients.openWindow(url);
-    })
-  );
+    }
+    if (self.clients.openWindow) return self.clients.openWindow(url);
+  }));
 });

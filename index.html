@@ -479,7 +479,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 // owner can see at a glance whether a phone is running the latest version.
 // v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
 // selections, update banner on resume, This Week fits on phones.
-const VERSION = 'v14.3';
+const VERSION = 'v14.4';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
@@ -783,10 +783,31 @@ function openViewFromUrl_(url) {
     if (applyViewParams_(new URL(url, location.href).searchParams)) { renderBottomNav(); renderContent(); }
   } catch (e) {}
 }
+// The service worker also leaves the tapped notification's url in a cache for a minute, for
+// phones that pause a background app and drop the message. Checked at start and whenever
+// the app comes back to the front; used once, then cleared.
+const PENDING_VIEW_CACHE = 'usl-pending-view', PENDING_VIEW_KEY = '/UpsetSpecial/__pending_view';
+function clearPendingView_() {
+  try { if (window.caches) caches.open(PENDING_VIEW_CACHE).then(c => c.delete(PENDING_VIEW_KEY)).catch(() => {}); } catch (e) {}
+}
+async function takePendingView_() {
+  try {
+    if (!window.caches) return null;
+    const cache = await caches.open(PENDING_VIEW_CACHE);
+    const res = await cache.match(PENDING_VIEW_KEY);
+    if (!res) return null;
+    await cache.delete(PENDING_VIEW_KEY);
+    const p = await res.json();
+    return p && p.url && Date.now() - (p.at || 0) < 60000 ? p.url : null;
+  } catch (e) { return null; }
+}
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) takePendingView_().then(url => { if (url) openViewFromUrl_(url); });
+});
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.addEventListener('message', event => {
     const d = event.data || {};
-    if (d.type === 'OPEN_VIEW' && d.url) openViewFromUrl_(d.url);
+    if (d.type === 'OPEN_VIEW' && d.url) { clearPendingView_(); openViewFromUrl_(d.url); }
     // a chat / commissioner push while the app is open: refresh that channel now
     if (d.type === 'FCM_FOREGROUND' && d.tag && (d.tag === 'chat' || d.tag.indexOf('commissioner-') === 0)) {
       const type = d.tag === 'chat' ? 'general' : 'commissioner';
@@ -850,6 +871,8 @@ async function boot() {
     // (The old code then called renderContent() + refreshState() again here, firing
     // 3-4 simultaneous getState requests on every app open.)
     render();
+    // opened by tapping a notification on a phone that ignored its link: use the saved one
+    takePendingView_().then(url => { if (url) openViewFromUrl_(url); });
 
     if (hasCachedState) {
       // nothing more to do -- the background refresh is already in flight
