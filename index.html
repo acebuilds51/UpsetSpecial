@@ -488,7 +488,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 // owner can see at a glance whether a phone is running the latest version.
 // v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
 // selections, update banner on resume, This Week fits on phones.
-const VERSION = 'v14.5';
+const VERSION = 'v14.6';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
@@ -1602,13 +1602,19 @@ function retryStaleRefresh_(btn) {
 }
 setInterval(updateStaleStrip_, 30000);
 
+function bowlTabVisible_() {
+  return !!(State.player && State.player.isAdmin) || (State.bowlGames || []).length > 0 || State.view === 'bowl';
+}
+
 function renderBottomNav() {
   const nav = document.getElementById('bottomnav');
   const items = [
     { id: 'home', label: 'Home', icon: iconHome() },
     { id: 'slate', label: 'This Week', icon: iconSlate() },
     { id: 'standings', label: 'Standings', icon: iconStandings() },
-    { id: 'bowl', label: 'Bowl', icon: iconBowl() },
+    // Bowl only once the commissioner has set up bowl games (admins always see it). Until then
+    // the tab just said "not set up yet" and squeezed 8 buttons into a phone-width bar.
+    ...(bowlTabVisible_() ? [{ id: 'bowl', label: 'Bowl', icon: iconBowl() }] : []),
     { id: 'scores', label: 'Scores', icon: iconScores() },
     { id: 'chat', label: 'Chat', icon: iconChat() },
     { id: 'profile', label: 'Profile', icon: iconProfile() },
@@ -1636,7 +1642,7 @@ function renderBottomNav() {
   });
 }
 
-async function renderContent() {
+async function renderContent(opts) {
   const content = document.getElementById('content');
   document.body.classList.toggle('view-chat', State.view === 'chat'); // lifts the ? button off the Send button
   if (typeof renderPicksDueBanner === 'function') renderPicksDueBanner();
@@ -1654,8 +1660,9 @@ async function renderContent() {
     case 'info': renderInfo(content); break;
     default: renderHome(content);
   }
-  // then silently refresh in background -- if data changed, re-render
-  silentRefresh();
+  // then silently refresh in background -- if data changed, re-render.
+  // noRefresh: the caller starts its own (forced) refresh, e.g. right after a save.
+  if (!(opts && opts.noRefresh)) silentRefresh();
 }
 
 // runs a background refresh without blocking the UI -- only re-renders if something actually changed.
@@ -1940,6 +1947,8 @@ function renderHome(content) {
     const upsetPick = myPicks.find(pk => pk.isUpset === true || pk.isUpset === 'TRUE');
     const entryFee = Number(season.entryFee || 100);
     const picksLeft = posted ? describePicksLeft_(savedPicksLeftToMake_(week)) : '';
+    // During/after games the Quick Look (games / week / entry fee) gives way to "your week"
+    const weekCard = renderHomeWeekCard_(week);
 
     content.innerHTML = `
       <div class="card" style="background:var(--upset-grad); color:#1A1206; margin-bottom:4px;">
@@ -1952,6 +1961,7 @@ function renderHome(content) {
       </div>
       <div id="home-comm-strip"></div>
 
+      ${weekCard ? `<div class="section-label">How You're Doing</div><div id="home-week-card">${weekCard}</div>` : `
       <div class="section-label">Quick Look</div>
       <div class="card" style="display:flex; gap:0; padding:0; overflow:hidden;">
         <div style="flex:1; text-align:center; padding:16px 8px;">
@@ -1966,7 +1976,7 @@ function renderHome(content) {
           <div class="mono" style="font-size:26px; font-weight:700; color:var(--win);">$${entryFee}</div>
           <div class="helptext">Entry Fee</div>
         </div>
-      </div>
+      </div>`}
 
       <div class="section-label">This Week</div>
       <div class="card">
@@ -2012,6 +2022,8 @@ function renderHome(content) {
     `;
 
     document.getElementById('go-to-slate-btn').onclick = () => { State.view = 'slate'; renderContent(); };
+    const seasonLine = document.getElementById('home-season-line');
+    if (seasonLine) seasonLine.onclick = () => { State.view = 'standings'; State._standingsTab = 'season'; renderBottomNav(); renderContent(); };
 
     document.getElementById('refer-copy-btn').onclick = async () => {
       const msg = document.getElementById('refer-msg-box').innerText.trim();
@@ -2180,7 +2192,8 @@ function liveWeekTally(week) {
   return Object.values(totals);
 }
 
-function renderMyLiveWeekCard(week) {
+function renderMyLiveWeekCard(week, opts) {
+  opts = opts || {};
   const boardGames = getGamesForWeek(week);
   if (!boardGames.some(g => isGameStarted(g) || isGameFinal(g))) return '';
   const all = liveWeekTally(week);
@@ -2193,7 +2206,8 @@ function renderMyLiveWeekCard(week) {
   let upsetLine = '<span class="helptext">⭐ Upset Special: not started yet</span>';
   if (me.upset && me.upset.standing) {
     const s = liveScoreFor(me.upset.game);
-    const word = { winning: 'winning', losing: 'losing', tied: 'tied' }[me.upset.standing];
+    const done = isGameFinal(me.upset.game);
+    const word = (done ? { winning: 'hit ✓', losing: 'missed', tied: 'tied' } : { winning: 'winning', losing: 'losing', tied: 'tied' })[me.upset.standing];
     upsetLine = `⭐ Upset: <strong>${escapeHtml(me.upset.team)}</strong> ${word} ${s.away}–${s.home}${me.upset.standing === 'winning' ? ` <span style="color:var(--gold);">(+${fmtSpread(me.upset.game.spread)})</span>` : ''}`;
   } else if (!me.upset) {
     upsetLine = '<span class="helptext">⭐ No Upset Special this week</span>';
@@ -2201,12 +2215,12 @@ function renderMyLiveWeekCard(week) {
   return `
     <div class="card" id="my-live-week-card" style="border:1px solid rgba(242,182,50,0.35);">
       <div class="flex-between">
-        <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-faint);">Your week ${allFinal ? '· all games final' : '· if it ended now'}</div>
+        <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-faint);">${opts.title || 'Your week'} ${allFinal ? '· all games final' : '· if it ended now'}</div>
         <div class="helptext" style="font-size:10px;">${allFinal ? 'unofficial until results are posted' : 'live · unofficial'}</div>
       </div>
       <div class="flex-between" style="margin-top:6px; align-items:flex-end;">
         <div style="font-size:13px; line-height:1.6;">
-          <div><strong>${me.correct}</strong> of ${me.counted} started games covering</div>
+          <div><strong>${me.correct}</strong> of ${me.counted} ${allFinal ? 'picks covered' : 'started games covering'}</div>
           <div>${upsetLine}</div>
         </div>
         <div style="text-align:right;">
@@ -2214,8 +2228,36 @@ function renderMyLiveWeekCard(week) {
           <div class="helptext">${tiedWith > 0 ? 'T-' : ''}${ord(ahead + 1)} of ${all.length}</div>
         </div>
       </div>
-      <div class="helptext" style="font-size:10px; margin-top:6px;">Scores update every few minutes; covering can change until each game is final.</div>
+      ${allFinal ? '' : '<div class="helptext" style="font-size:10px; margin-top:6px;">Scores update every few minutes; covering can change until each game is final.</div>'}
     </div>`;
+}
+
+// Home: "your week" once this week's games have started (live, unofficial), or last week's
+// result while this week hasn't kicked off yet -- plus the season place. '' when neither applies.
+function renderHomeWeekCard_(week) {
+  const started = w => getGamesForWeek(w).some(g => isGameStarted(g) || isGameFinal(g));
+  const done = w => { const gs = getGamesForWeek(w); return gs.length > 0 && gs.every(isGameFinal); };
+  let w = null, title = 'Your week';
+  if (started(week)) w = week;
+  else if (week > 1 && done(week - 1)) { w = week - 1; title = `Week ${week - 1}`; }
+  if (w == null) return '';
+  const card = renderMyLiveWeekCard(w, { title });
+  if (!card) return '';
+  let season = '';
+  try {
+    const standings = computeStandingsLocally();
+    const completed = [...new Set((State.games || []).filter(g => isGameFinal(g)).map(g => Number(g.week)))].sort((a, b) => a - b);
+    const m = seasonMovement_(standings, completed).byId[State.player.id];
+    if (m && standings.length && completed.some(x => x > 0)) {
+      const me = standings.find(s => s.playerId === State.player.id);
+      const behind = standings[0].points - me.points;
+      season = `<div class="helptext" id="home-season-line" style="margin:-4px 2px 10px; cursor:pointer;">Season: <strong style="color:var(--text);">${m.label}</strong> of ${standings.length}`
+        + (behind > 0 ? ` &middot; ${fmtPts_(behind)} pts behind 1st` : '')
+        + (m.moved > 0 ? ` &middot; <span style="color:var(--win);">▲${m.moved}</span>` : m.moved < 0 ? ` &middot; <span style="color:var(--loss);">▼${-m.moved}</span>` : '')
+        + ' &rsaquo;</div>';
+    }
+  } catch (e) {}
+  return card + season;
 }
 
 // Upset Special locks 5 minutes before the EARLIEST kickoff of the week.
@@ -2567,7 +2609,7 @@ function renderPicksBoard(content, week, games, earlyWarning) {
         </div>
         <div style="text-align:right;">
           <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:rgba(255,255,255,0.6);">Upset Special</div>
-          <div id="upset-status-display" style="font-family:var(--font-display); font-size:18px; margin-top:2px; color:var(--gold);">${hasUpset ? 'Selected' : 'Not Set'}</div>
+          <div id="upset-status-display" style="font-family:var(--font-display); font-size:${hasUpset ? 15 : 18}px; margin-top:2px; color:var(--gold); max-width:160px; margin-left:auto; line-height:1.2;">${hasUpset ? escapeHtml(upsetPickLabel_(games)) : 'Not Set'}</div>
         </div>
       </div>
     </div>
@@ -2945,6 +2987,19 @@ async function runUpsetBrowseAll(week, games) {
   }
 }
 
+// Board header: the Upset Special draft pick as "Team +3.5" (what it pays if it hits).
+function upsetPickLabel_(games) {
+  if (_upsetSelection) {
+    const s = _upsetSelection;
+    return s.pickedTeam + (s.favorite ? ' +' + fmtSpread(s.spread) : '');
+  }
+  const gid = Object.keys(_draftPicks).find(id => _draftPicks[id] && _draftPicks[id].isUpset);
+  if (!gid) return 'Selected';
+  const g = (games || []).find(x => x.gameId === gid) || (State.games || []).find(x => x.gameId === gid);
+  const team = _draftPicks[gid].pickedTeam;
+  return team + (g && g.favorite ? ' +' + fmtSpread(g.spread) : '');
+}
+
 function updateBoardHeader() {
   // count all games with a pick -- including the one with the upset flag, but
   // excluding an Upset Special pick sourced from a searched game outside this
@@ -2957,7 +3012,10 @@ function updateBoardHeader() {
   const countEl = document.getElementById('picked-count-display');
   const upsetEl = document.getElementById('upset-status-display');
   if (countEl) countEl.textContent = `${straightCount} / ${games.length} picked`;
-  if (upsetEl) upsetEl.textContent = hasUpset ? 'Selected' : 'Not Set';
+  if (upsetEl) {
+    upsetEl.textContent = hasUpset ? upsetPickLabel_(games) : 'Not Set';
+    upsetEl.style.fontSize = hasUpset ? '15px' : '18px';
+  }
 
   // Unsaved changes: say so, float the save button above the nav, keep a copy on the phone
   const unsaved = draftDiffersFromSaved_(week, games, _draftPicks, _upsetSelection);
@@ -3101,7 +3159,9 @@ async function submitMyPicks(week, games) {
   clearStoredDraft_(week);
   const left = describePicksLeft_(picksLeftToMake_(games, _draftPicks, _upsetSelection));
   showToast(left ? `Saved ✓ — still to pick: ${left}` : 'All picks saved ✓', 'success');
-  renderContent();
+  // One reload after a save: renderContent's own background refresh plus this forced one
+  // used to send two getState calls per save (both to Google, since the save marks the copies stale).
+  renderContent({ noRefresh: true });
   silentRefresh(true);
 }
 
@@ -3158,6 +3218,31 @@ function describePicksLeft_(left) {
 function underdogOf(game) {
   if (!game || !game.favorite) return game ? game.awayTeam : '';
   return game.favorite === game.homeTeam ? game.awayTeam : game.homeTeam;
+}
+
+// Places that respect ties: points [10, 10, 6] -> "T1", "T1", "3". Works on any order.
+function tiePlace_(points, all) {
+  const place = 1 + all.filter(p => p > points).length;
+  const tied = all.filter(p => p === points).length > 1;
+  return { place, label: (tied ? 'T' : '') + place };
+}
+function fmtPts_(n) { return n % 1 === 0 ? String(n) : n.toFixed(1); }
+function placeColor_(place) { return place === 1 ? 'var(--gold)' : place === 2 ? 'var(--text-soft)' : place === 3 ? '#cd7f32' : 'var(--text-faint)'; }
+
+// Season place for one player now, and where they stood before the latest week that has
+// a final game (so arrows show movement from that week). Week 0 is practice and never counts.
+function seasonMovement_(standings, completedWeeks) {
+  const weeks = completedWeeks.filter(w => w > 0);
+  const last = weeks.length >= 2 ? weeks[weeks.length - 1] : null;
+  const now = standings.map(s => s.points);
+  const before = last == null ? null : standings.map(s => s.points - (s.weeklyBreakdown[last] || 0));
+  const out = {};
+  standings.forEach((s, i) => {
+    const cur = tiePlace_(s.points, now);
+    const prev = before ? tiePlace_(before[i], before).place : null;
+    out[s.playerId] = { place: cur.place, label: cur.label, moved: prev == null ? 0 : prev - cur.place };
+  });
+  return { byId: out, lastWeek: last };
 }
 
 function computeStandingsLocally() {
@@ -3233,13 +3318,29 @@ function renderStandings(content) {
 }
 
 function renderSeasonStandings(el, standings, completedWeeks) {
+  const mv = seasonMovement_(standings, completedWeeks);
+  const meId = State.player && State.player.id;
+  const me = standings.find(s => s.playerId === meId);
+  const top = standings.length ? standings[0].points : 0;
+  const arrow = m => m > 0 ? `<span style="color:var(--win);">▲${m}</span>` : m < 0 ? `<span style="color:var(--loss);">▼${-m}</span>` : '';
+  // "You: T12th of 50 · 6 pts behind 1st · ▲3 since Week 4"
+  const ord = n => n + (['th','st','nd','rd'][(n % 100 - 20) % 10] || ['th','st','nd','rd'][n % 100] || 'th');
+  const meLine = me && completedWeeks.length ? (() => {
+    const m = mv.byId[me.playerId];
+    const behind = top - me.points;
+    const parts = [`<strong>You: ${m.label.startsWith('T') ? 'T-' : ''}${ord(m.place)}</strong> of ${standings.length}`];
+    parts.push(behind > 0 ? `${fmtPts_(behind)} pt${behind === 1 ? '' : 's'} behind 1st` : m.label.startsWith('T') ? 'tied for 1st' : 'leading');
+    if (mv.lastWeek != null && m.moved) parts.push(`${arrow(m.moved)} in Week ${mv.lastWeek}`);
+    return `<div class="card" id="standings-me-line" style="padding:10px 14px; font-size:13px; border:1px solid rgba(242,182,50,0.35);">${parts.join(' &middot; ')}</div>`;
+  })() : '';
   el.innerHTML = standings.length === 0
     ? '<div class="empty-state"><p>No completed games yet this season.</p></div>'
     : `
+      ${meLine}
       <div class="card" style="padding:0; overflow:hidden;">
-        ${standings.map((s, i) => `
-          <div class="standing-row ${i === 0 ? 'rank-1' : ''}" style="padding:12px 16px; border-bottom:${i < standings.length-1 ? '1px solid var(--hairline)' : 'none'};">
-            <div class="standing-rank" style="color:${i === 0 ? 'var(--gold)' : i === 1 ? 'var(--text-soft)' : i === 2 ? '#cd7f32' : 'var(--text-faint)'};">${i + 1}</div>
+        ${standings.map((s, i) => { const m = mv.byId[s.playerId]; const isMe = s.playerId === meId; return `
+          <div class="standing-row ${i === 0 ? 'rank-1' : ''}" style="padding:12px 16px; border-bottom:${i < standings.length-1 ? '1px solid var(--hairline)' : 'none'};${isMe ? ' background:rgba(242,182,50,0.10); box-shadow:inset 3px 0 0 var(--gold);' : ''}">
+            <div class="standing-rank" style="color:${placeColor_(m.place)}; display:flex; flex-direction:column; align-items:center; line-height:1.1;">${m.label}${m.moved ? `<span style="font-size:9px; font-weight:700;">${arrow(m.moved)}</span>` : ''}</div>
             ${(() => {
               const av = (State._avatarMap || {})[s.playerId];
               return av
@@ -3247,7 +3348,7 @@ function renderSeasonStandings(el, standings, completedWeeks) {
                 : `<div style="width:32px; height:32px; border-radius:50%; background:var(--upset-grad); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; color:#1A1206; flex-shrink:0;">${escapeHtml((s.teamName || s.name || '?')[0].toUpperCase())}</div>`;
             })()}
             <div style="flex:1;">
-              <div class="standing-name" data-player-id="${s.playerId}" style="cursor:pointer;display:flex;align-items:center;gap:6px;">
+              <div class="standing-name" data-player-id="${s.playerId}" style="cursor:pointer;display:flex;align-items:center;gap:6px;${isMe ? ' color:var(--gold);' : ''}">
                 ${(() => { const yrs = getChampionYearsForPlayer(s.playerId); return yrs.length ? `<span style="font-size:11px;font-weight:800;background:linear-gradient(135deg,#9A6A00,#FFD700,#9A6A00);color:#1A0800;padding:1px 6px;border-radius:20px;white-space:nowrap;">${escapeHtml(yrs.join(', '))} 👑</span>` : ''; })()}
                 ${escapeHtml(s.teamName || s.name)}
               </div>
@@ -3261,7 +3362,7 @@ function renderSeasonStandings(el, standings, completedWeeks) {
               }).join('')}</div>` : ''}
             </div>
           </div>
-        `).join('')}
+        `; }).join('')}
       </div>
       <p class="helptext" style="text-align:center; margin-top:8px;">1 pt per correct pick &middot; Upset Special pays the spread if underdog wins outright</p>
     `;
@@ -3285,16 +3386,27 @@ function renderWeeklyHistory(el, standings, completedWeeks) {
   const weekGames = (State.games || []).filter(g => Number(g.week) === selectedWeek && isGameFinal(g));
   const weekPicks = (State.picks || []).filter(p => Number(p.week) === selectedWeek);
 
-  el.innerHTML = `
-    <div class="card" style="padding:10px 14px;">
-      <div style="display:flex; gap:6px; flex-wrap:wrap;">
-        ${completedWeeks.map(w => `
-          <button class="btn btn-sm ${w === selectedWeek ? 'btn-primary' : 'btn-ghost'}" data-week="${w}">Week ${w}</button>
-        `).join('')}
-      </div>
-    </div>
+  // Tie-aware places: only the weekly high score is paid and ties split it, so a tie
+  // for the top must read "T1", never "1" and "2".
+  const weekPts = weekStandings.map(s => s.weekPoints);
+  const meId = State.player && State.player.id;
+  const topPts = weekPts.length ? weekPts[0] : 0;
+  const boardGames = getGamesForWeek(selectedWeek);
+  const weekDone = boardGames.length > 0 && boardGames.every(isGameFinal);
+  const winnerLine = topPts > 0 ? (() => {
+    const leaders = weekStandings.filter(s => s.weekPoints === topPts);
+    const names = leaders.map(s => escapeHtml(s.teamName || s.name)).join(', ');
+    const head = !weekDone
+      ? `Leading so far: ${names} &middot; ${fmtPts_(topPts)} pts`
+      : leaders.length > 1
+        ? `🏆 Week ${selectedWeek}: ${leaders.length} tied at ${fmtPts_(topPts)} &mdash; prize split<div style="font-size:12px; font-weight:600; color:var(--text-soft); margin-top:2px;">${names}</div>`
+        : `🏆 Week ${selectedWeek} winner: ${names} &middot; ${fmtPts_(topPts)} pts`;
+    const me = weekStandings.find(s => s.playerId === meId);
+    const mine = me ? `<div class="helptext" style="margin-top:6px;">You: ${tiePlace_(me.weekPoints, weekPts).label} &middot; ${fmtPts_(me.weekPoints)} pts</div>` : '';
+    return `<div class="card" id="week-winner-line" style="padding:12px 14px; border:1px solid rgba(242,182,50,0.35);"><div style="font-size:14px; font-weight:700; color:var(--gold);">${head}</div>${mine}</div>`;
+  })() : '';
 
-    ${weekGames.length > 0 ? `
+  const resultsHtml = weekGames.length > 0 ? `
       <div class="section-label">Week ${selectedWeek} Results</div>
       <div class="card" style="padding:0; overflow:hidden;">
         ${weekGames.map(g => {
@@ -3305,6 +3417,7 @@ function renderWeeklyHistory(el, standings, completedWeeks) {
               <div>
                 <div style="font-size:13px; font-weight:700; color:var(--text);">${escapeHtml(g.awayTeam)} @ ${escapeHtml(g.homeTeam)}</div>
                 <div class="helptext">${escapeHtml(g.favorite)} -${fmtSpread(g.spread)} &middot; Dog: ${escapeHtml(dog)}</div>
+                ${renderMyPickLine(g)}
               </div>
               <div style="text-align:right;">
                 <div class="mono" style="font-size:14px; font-weight:700; color:${result.winner === dog ? 'var(--gold)' : 'var(--text)'};">
@@ -3318,7 +3431,18 @@ function renderWeeklyHistory(el, standings, completedWeeks) {
           `;
         }).join('')}
       </div>
-    ` : ''}
+    ` : '';
+
+  el.innerHTML = `
+    <div class="card" style="padding:10px 14px;">
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        ${completedWeeks.map(w => `
+          <button class="btn btn-sm ${w === selectedWeek ? 'btn-primary' : 'btn-ghost'}" data-week="${w}">Week ${w}</button>
+        `).join('')}
+      </div>
+    </div>
+
+    ${winnerLine}
 
     <div class="section-label">Week ${selectedWeek} Scores</div>
     <div class="card" style="padding:0; overflow:hidden;">
@@ -3327,13 +3451,13 @@ function renderWeeklyHistory(el, standings, completedWeeks) {
         const straightPicks = myPicks.filter(p => !(p.isUpset === true || p.isUpset === 'TRUE'));
         const upsetPick = myPicks.find(p => p.isUpset === true || p.isUpset === 'TRUE');
         return `
-        <div style="border-bottom:1px solid var(--hairline);">
+        <div style="border-bottom:1px solid var(--hairline);${s.playerId === meId ? ' background:rgba(242,182,50,0.10); box-shadow:inset 3px 0 0 var(--gold);' : ''}">
           <div style="padding:10px 14px; display:flex; align-items:center; gap:10px; cursor:pointer;" data-toggle-week-picks="${s.playerId}">
-            <div style="width:20px; text-align:center; color:var(--text-faint); font-weight:700;">${i + 1}</div>
+            <div style="min-width:24px; text-align:center; color:${placeColor_(tiePlace_(s.weekPoints, weekPts).place)}; font-weight:700;">${tiePlace_(s.weekPoints, weekPts).label}</div>
             <div style="flex:1;">
-              <div style="font-size:13px; font-weight:700; color:var(--text);">${escapeHtml(s.teamName || s.name)}</div>
+              <div style="font-size:13px; font-weight:700; color:${s.playerId === meId ? 'var(--gold)' : 'var(--text)'};">${escapeHtml(s.teamName || s.name)}</div>
             </div>
-            <div class="mono" style="font-weight:700; color:${i === 0 ? 'var(--gold)' : 'var(--text)'};">${s.weekPoints % 1 === 0 ? s.weekPoints : s.weekPoints.toFixed(1)}</div>
+            <div class="mono" style="font-weight:700; color:${topPts > 0 && s.weekPoints === topPts ? 'var(--gold)' : 'var(--text)'};">${fmtPts_(s.weekPoints)}</div>
             <div class="week-pick-arrow" style="color:var(--gold); font-size:14px;">▾</div>
           </div>
           <div id="week-picks-${s.playerId}" style="display:none; padding:0 14px 12px;">
@@ -3385,6 +3509,8 @@ function renderWeeklyHistory(el, standings, completedWeeks) {
         </div>
       `}).join('')}
     </div>
+
+    ${resultsHtml}
   `;
 
   el.querySelectorAll('[data-toggle-week-picks]').forEach(row => {
