@@ -904,7 +904,7 @@ test('keepWarm without the onSheetChange trigger still rebuilds every run (old b
   eq(b.n, 2);
 });
 
-test('keepWarm skips the rebuild when watched and nothing changed; rebuilds after writes, manual edits, or 15 min', () => {
+test('keepWarm skips the rebuild when watched and nothing changed; rebuilds after writes, manual edits, or the hourly check', () => {
   const env = loadBackend(); seedLeague(env);
   env.ctx.installSheetChangeTrigger();
   ok(env.triggers.some(t => t.getHandlerFunction() === 'onSheetChange'), 'trigger installed');
@@ -922,9 +922,11 @@ test('keepWarm skips the rebuild when watched and nothing changed; rebuilds afte
   eq(env.call('getState').games.find(g => g.gameId === 'g2').spread, 11, 'manual edit visible immediately');
   const n = b.n;
   env.ctx.keepWarm(); eq(b.n, n, 'getState already rebuilt it');
-  // safety net: an old build is always rebuilt
+  // safety net: an old build is always re-read (hourly; 15 min is no longer enough)
   env.cache.put('appState_v3_builtAt', String(Date.now() - 16 * 60000));
-  env.ctx.keepWarm(); eq(b.n, n + 1, 'rebuilt after 15 min');
+  env.ctx.keepWarm(); eq(b.n, n, 'not after 15 min');
+  env.cache.put('appState_v3_builtAt', String(Date.now() - 61 * 60000));
+  env.ctx.keepWarm(); eq(b.n, n + 1, 're-read after an hour');
 });
 
 test('keepWarm during live games fetches scores and re-caches them', () => {
@@ -1121,7 +1123,7 @@ test('BUG FIX: Trophy Room counts this season\'s Upset Specials once (not again 
   ok(t.ok); eq([reads.Picks, reads.UpsetHistory, reads.Players], [undefined, undefined, undefined], JSON.stringify(reads));
 });
 
-test('keepWarm keeps the picks cache as long as the state cache when watched; the 15-min rebuild refreshes it', () => {
+test('keepWarm keeps the picks cache as long as the state cache when watched; the hourly check refreshes it', () => {
   const env = loadBackend(); seedLeague(env);
   const ttls = {};
   const putAll = env.cache.putAll;
@@ -1131,13 +1133,13 @@ test('keepWarm keeps the picks cache as long as the state cache when watched; th
   env.ctx.installSheetChangeTrigger();
   env.ctx.invalidateStateCache();
   env.ctx.keepWarm();
-  eq(ttls.picksBundle_v1, 1500, 'watched: outlives the 15-min safety net');
-  // a raw script write that bypassed the helpers shows up after the 15-min rebuild
+  eq(ttls.picksBundle_v1, 4200, 'watched: outlives the hourly safety net');
+  // a raw script write that bypassed the helpers shows up after the hourly check
   const pk = env.ss.getSheetByName('Picks'); const h = pk._data[0];
   pk.appendRow(h.map(c => ({ week: 1, playerId: 'p3', gameId: 'g2', pickedTeam: 'Home2', isUpset: false })[c] ?? ''));
   env.ctx.keepWarm();
   eq(env.call('getState', { compact: 1 }).picksCompact.r.length, 0, 'still cached (fresh)');
-  env.cache.put('appState_v3_builtAt', String(Date.now() - 16 * 60000));
+  env.cache.put('appState_v3_builtAt', String(Date.now() - 61 * 60000));
   env.ctx.keepWarm();
   eq(env.call('getState', { compact: 1 }).picksCompact.r.length, 1, 'refreshed with the state');
 });
@@ -1628,6 +1630,41 @@ test('week wrap-up records who each Upset Special played and the final score', (
   eq(rowsOf(env, 'UpsetHistory').find(x => x.teamName === 'TEAM3').opponent, '', 'no Upset Special, no opponent');
   const hall = env.call('getAllTimeLeaderboard').upsetHall.biggest;
   eq([hall[0].team, hall[0].opponent, hall[0].dogScore, hall[0].oppScore], ['Dog U', 'Fav U', 24, 10]);
+});
+
+test('keepWarm hourly check: unchanged data keeps the caches and the Worker copies; a change replaces both and signals once', () => {
+  const env = loadBackend(); seedLeague(env); enableFrontDoor(env);
+  env.ctx.installSheetChangeTrigger();
+  env.ctx.keepWarm(); // cold -> builds both caches
+  const old = () => env.cache.put('appState_v3_builtAt', String(Date.now() - 61 * 60000));
+  const gens = () => [env.cache.get('appStateGen'), env.cache.get('picksBundleGen')];
+  let n = staleSignals().length, g = gens();
+  // hour passes, nothing changed
+  old(); env.ctx._sheetDataCache = {};
+  env.ctx.keepWarm();
+  eq(staleSignals().length - n, 0, 'no stale signal when nothing changed');
+  eq(gens(), g, 'no generation bump');
+  ok(Number(env.cache.get('appState_v3_builtAt')) > Date.now() - 60000, 'build time renewed (next check in an hour)');
+  ok(env.cache.get('appState_v3_n') && env.cache.get('picksBundle_v1_n'), 'both caches still there');
+  const reads = countSheetReads(env); env.ctx._sheetDataCache = {};
+  env.ctx.keepWarm();
+  eq(reads.Picks, undefined, 'next run is a plain cache hit again');
+  // a raw script write to Games (bypassing the helpers) -> picked up within the hour
+  const gs = env.ss.getSheetByName('Games'); const h = gs._data[0];
+  gs._data.forEach((row, i) => { if (i && row[h.indexOf('gameId')] === 'g3') row[h.indexOf('spread')] = 9; });
+  old(); env.ctx._sheetDataCache = {};
+  env.ctx.keepWarm();
+  eq(staleSignals().length - n, 1, 'one signal for the change');
+  ok(gens()[0] !== g[0], 'generation bumped');
+  eq(env.call('getState').games.find(x => x.gameId === 'g3').spread, 9, 'new data served');
+  // a raw write to Picks only is caught too
+  n = staleSignals().length;
+  const pk = env.ss.getSheetByName('Picks'); const ph = pk._data[0];
+  pk.appendRow(ph.map(c => ({ week: 1, playerId: 'p3', gameId: 'g2', pickedTeam: 'Home2', isUpset: false })[c] ?? ''));
+  old(); env.ctx._sheetDataCache = {};
+  env.ctx.keepWarm();
+  eq(staleSignals().length - n, 1);
+  eq(env.call('getState', { compact: 1 }).picksCompact.r.length, 1);
 });
 
 // ---------------------------------------------------------------- report

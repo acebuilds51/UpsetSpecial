@@ -1,4 +1,4 @@
-// v21-front-door-sep30  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
+// v22-keepwarm-hourly-oct2  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
 // ============================================================
 //  UPSET SPECIAL — Notifications & week/season finalization (v2, Sep 2026)
 //

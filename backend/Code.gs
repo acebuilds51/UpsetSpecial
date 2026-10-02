@@ -1,4 +1,4 @@
-// v21-front-door-sep30  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v22-keepwarm-hourly-oct2  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -90,7 +90,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v21-front-door-sep30';
+var CODE_VERSION = 'v22-keepwarm-hourly-oct2';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -1568,10 +1568,14 @@ function computeMemberSinceMap_() {
 // a manual edit busts the cache immediately, so keepWarm only rebuilds when the cache
 // is missing or older than STATE_MAX_AGE_WATCHED_MS (a safety net for script-side
 // writes run from the editor, which don't fire onChange either).
+// That safety net was 15 min: every 3rd keepWarm run (~96/day, ~10s each) rebuilt for
+// nothing, and each one told the Worker its copies were stale. It is now hourly, and it
+// only replaces the caches / signals the Worker when the rebuilt data actually differs
+// (keepWarmSafetyNet_).
 var STATE_CACHE_KEY = 'appState_v3';
 var STATE_CACHE_TTL = 360; // > the 5-min keepWarm interval, so the cache never goes cold between runs
-var STATE_CACHE_TTL_WATCHED = 1500; // outlives STATE_MAX_AGE_WATCHED + one keepWarm interval
-var STATE_MAX_AGE_WATCHED_MS = 15 * 60 * 1000;
+var STATE_CACHE_TTL_WATCHED = 4200; // outlives STATE_MAX_AGE_WATCHED + one keepWarm interval
+var STATE_MAX_AGE_WATCHED_MS = 60 * 60 * 1000;
 var CACHE_CHUNK = 90000;
 
 // True once installSheetChangeTrigger() has run (runDiagnostics re-syncs this flag
@@ -1784,10 +1788,10 @@ function apiGetState(payload) {
 // When manual edits are watched, the 10-min expiry made keepWarm (every 5 min)
 // re-read the whole Picks tab -- the biggest sheet -- on every other run even with
 // nothing changed. Then it lives as long as the state cache and keepWarm refreshes
-// both on the same 15-min safety-net schedule (STATE_MAX_AGE_WATCHED_MS).
+// both on the same hourly safety-net schedule (STATE_MAX_AGE_WATCHED_MS).
 var PICKS_BUNDLE_KEY = 'picksBundle_v1';
 var PICKS_BUNDLE_TTL = 600;
-var PICKS_BUNDLE_TTL_WATCHED = 1500;
+var PICKS_BUNDLE_TTL_WATCHED = 4200;
 
 var _picksDirty = false; // this execution wrote to Picks/Ledger/BowlPicks (see releaseLock_ / handle)
 function invalidatePicksBundle_() {
@@ -1867,18 +1871,22 @@ function getPicksBundle_(currentWeek) {
   } catch (e) {}
   perfNote_('picksCache', 'miss');
   var genBefore = cache.get('picksBundleGen') || '0';
-  var bundle = {
-    week: currentWeek,
-    picksCompact: compactPicks_(slimPicksForClient_(sheetToObjects(SHEET_NAMES.PICKS), currentWeek)),
-    ledger: sheetToObjects(SHEET_NAMES.LEDGER).map(withoutRow_),
-    bowlPicks: sheetToObjects(SHEET_NAMES.BOWL_PICKS).map(withoutRow_)
-  };
+  var bundle = buildPicksBundle_(currentWeek);
   try {
     if ((cache.get('picksBundleGen') || '0') === genBefore) {
       cachePutChunked_(cache, PICKS_BUNDLE_KEY, JSON.stringify(bundle), sheetChangeWatched_() ? PICKS_BUNDLE_TTL_WATCHED : PICKS_BUNDLE_TTL);
     }
   } catch (e) { Logger.log('picks cache write: ' + e.message); }
   return bundle;
+}
+
+function buildPicksBundle_(currentWeek) {
+  return {
+    week: currentWeek,
+    picksCompact: compactPicks_(slimPicksForClient_(sheetToObjects(SHEET_NAMES.PICKS), currentWeek)),
+    ledger: sheetToObjects(SHEET_NAMES.LEDGER).map(withoutRow_),
+    bowlPicks: sheetToObjects(SHEET_NAMES.BOWL_PICKS).map(withoutRow_)
+  };
 }
 
 function withoutRow_(r) { var o = Object.assign({}, r); delete o._row; return o; }
@@ -4856,8 +4864,8 @@ function keepWarm_() {
     // The cached state (if any) answers the live-games check without re-reading the
     // Season + Games sheets, and tells us whether a rebuild is needed at all.
     var cache = CacheService.getScriptCache();
-    var cachedShared = null;
-    try { var raw = cacheGetChunked_(cache, STATE_CACHE_KEY); if (raw) cachedShared = JSON.parse(raw); } catch (e) {}
+    var cachedShared = null, raw = null;
+    try { raw = cacheGetChunked_(cache, STATE_CACHE_KEY); if (raw) cachedShared = JSON.parse(raw); } catch (e) {}
 
     // During live games, refresh scores + auto-default picks HERE (on the trigger)
     // so real users' getState calls don't have to pay for the ESPN fetch + writes.
@@ -4871,11 +4879,12 @@ function keepWarm_() {
     var builtAt = Number(cache.get(STATE_CACHE_KEY + '_builtAt') || 0);
     var watched = sheetChangeWatched_();
     var fresh = cachedShared && watched && (Date.now() - builtAt) < STATE_MAX_AGE_WATCHED_MS;
-    // The 15-min safety-net rebuild refreshes the (long-lived) picks cache too, for
-    // raw script writes that bypassed the helpers and never busted it.
     if (fetched) invalidateStateCache();
-    else if (cachedShared && watched && !fresh) invalidatePicksBundle_();
-    if (fetched || !fresh) {
+    if (!fetched && cachedShared && watched && !fresh) {
+      // Hourly safety net (raw script writes that bypassed the helpers): re-read and
+      // compare; the caches -- and the Worker's copies -- are only replaced on a change.
+      perfNote_('keepWarm', keepWarmSafetyNet_(cache, raw) ? 'rebuilt' : 'checked');
+    } else if (fetched || !fresh) {
       var shared = rebuildStateCache_();
       perfNote_('keepWarm', 'rebuilt');
       Logger.log('keepWarm: state cache pre-built, ' + JSON.stringify(shared).length + ' bytes');
@@ -4894,6 +4903,33 @@ function keepWarm_() {
     Logger.log('keepWarm error: ' + e.message);
     logPerf_('keepWarm', Date.now() - t0, { ok: false, error: e.message });
   }
+}
+
+// keepWarm's hourly safety net. Rebuilds the shared state and the picks bundle from the
+// sheets and compares them with what's cached:
+//  - same  -> both are re-cached as they are (TTL + build time renewed); no generation
+//             bump, so the Cloudflare Worker's copies stay valid. Returns false.
+//  - changed (or the picks cache was gone) -> busted like any write (Worker told once,
+//             at the end of keepWarm) and the new data cached. Returns true.
+// If an app write busted either cache while this was reading, nothing is stored: that
+// write already did the busting and the rest of keepWarm / the next run re-warms.
+function keepWarmSafetyNet_(cache, cachedRaw) {
+  var stateGen = stateCacheGen_(cache);
+  var picksGen = cache.get('picksBundleGen') || '0';
+  var shared = buildSharedState_();
+  var sharedStr = JSON.stringify(shared);
+  var week = currentWeekOf_(shared);
+  var picksStr = JSON.stringify(buildPicksBundle_(week));
+  var oldPicks = cacheGetChunked_(cache, PICKS_BUNDLE_KEY);
+  if (stateCacheGen_(cache) !== stateGen || (cache.get('picksBundleGen') || '0') !== picksGen) return true;
+  var changed = sharedStr !== cachedRaw || picksStr !== oldPicks;
+  if (changed) invalidateStateCache(); // bumps both generations + marks the Worker stale
+  try {
+    cachePutChunked_(cache, STATE_CACHE_KEY, sharedStr, STATE_CACHE_TTL_WATCHED);
+    cache.put(STATE_CACHE_KEY + '_builtAt', String(Date.now()), STATE_CACHE_TTL_WATCHED);
+    cachePutChunked_(cache, PICKS_BUNDLE_KEY, picksStr, PICKS_BUNDLE_TTL_WATCHED);
+  } catch (e) { Logger.log('keepWarm safety net cache write: ' + e.message); }
+  return changed;
 }
 
 function installKeepWarmTrigger() {
