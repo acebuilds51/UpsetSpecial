@@ -1667,6 +1667,123 @@ test('keepWarm hourly check: unchanged data keeps the caches and the Worker copi
   eq(env.call('getState', { compact: 1 }).picksCompact.r.length, 1);
 });
 
+// ---------------------------------------------------------------- admin's week (S-026..S-028)
+test('ESPN day copies: a search reuses a fresh copy (no ESPN call); scores/snapshot callers always fetch live', () => {
+  const env = loadBackend(); seedLeague(env);
+  espnEvents = [mkEvent('1', 'Dog U', 'Fav U', { odds: 'FAV -7' })];
+  let before = counters.fetchAll;
+  const first = env.ctx.fetchEspnScoreboardRange('20260901', '20260902', { maxAgeSec: 600 });
+  eq(counters.fetchAll - before, 1, 'cold copy -> one fetchAll');
+  espnEvents = [mkEvent('1', 'Dog U', 'Fav U', { odds: 'FAV -10' })];
+  before = counters.fetchAll;
+  const again = env.ctx.fetchEspnScoreboardRange('20260901', '20260902', { maxAgeSec: 600 });
+  eq(counters.fetchAll - before, 0, 'fresh copy -> no ESPN call');
+  const line = ev => { const c = ev.competitions[0]; return env.ctx.extractEspnLine(ev, c, c.competitors.find(x => x.homeAway === 'home'), c.competitors.find(x => x.homeAway === 'away')); };
+  eq(line(again[0]).favorite, line(first[0]).favorite, 'slim copy gives the same favorite');
+  eq(line(again[0]).spread, 7);
+  eq(line(again[0]).homeLogo, 'https://x/Fav U.png', 'logo survives slimming');
+  before = counters.fetchAll;
+  const live = env.ctx.fetchEspnScoreboardRange('20260901', '20260902');
+  eq(counters.fetchAll - before, 1, 'no maxAgeSec -> live');
+  eq(line(live[0]).spread, 10);
+  // a copy older than maxAgeSec is not used
+  const k = 'espnDay2_20260901'; const v = JSON.parse(env.cache.get(k)); v.at = Date.now() - 700000; env.cache.put(k, JSON.stringify(v));
+  before = counters.fetchAll;
+  env.ctx.fetchEspnScoreboardRange('20260901', '20260901', { maxAgeSec: 600 });
+  eq(counters.fetchAll - before, 1, 'old copy -> refetch');
+});
+
+test('Upset Special search: 2nd search within 10 min makes no ESPN call and still shows today\'s line', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  espnEvents = [mkEvent('E100', 'Dog U', 'Fav U', { date: kickoff, odds: 'FAV -10' })];
+  const a = env.call('searchSnapshotGames', { week: 1, query: 'dog' });
+  ok(a.ok, a.error); eq(a.results.length, 1); eq(a.results[0].spread, 14, 'frozen line'); eq(a.results[0].currentSpread, 10);
+  const before = counters.fetchAll;
+  const b = env.call('searchSnapshotGames', { week: 1, query: 'fav' });
+  eq(counters.fetchAll - before, 0, 'no ESPN fetch'); eq(b.results[0].currentSpread, 10);
+});
+
+test('slate submitted -> one push to admins only (tag slate-w<week>, opens Admin); picker assignment pushes the picker', () => {
+  const env = loadBackend(); seedLeague(env); enablePush(env);
+  env.call('adminAssignPicker', { adminId: 'p1', week: 2, playerId: 'p3' });
+  let ps = pushes();
+  ok(ps.length > 0, 'picker push sent');
+  ok(ps.every(m => m.data.tag === 'picker-w2' && /view=slate/.test(m.data.url)), 'picker push tag/url');
+  ok(ps.every(m => /^tok2/.test(m.token)), 'only the picker (p3 = row 2) gets it: ' + ps.map(m => m.token));
+  const n = pushes().length;
+  const r = env.call('submitSlate', { week: 2, games: [{ awayTeam: 'X', homeTeam: 'Y', espnEventId: 'E100' }], playerId: 'p3' });
+  ok(r.ok, r.error);
+  ps = pushes().slice(n);
+  ok(ps.length > 0, 'admins pushed');
+  ok(ps.every(m => /^tok0/.test(m.token)), 'admin p1 (row 0) only: ' + ps.map(m => m.token));
+  ok(ps.every(m => m.data.tag === 'slate-w2' && /view=admin/.test(m.data.url)), 'slate push tag/url');
+});
+
+test('slate push failure never fails the slate save', () => {
+  const env = loadBackend(); seedLeague(env); enablePush(env);
+  env.props.FCM_SERVICE_ACCOUNT_JSON = '{not json';
+  const r = env.call('submitSlate', { week: 2, games: [{ awayTeam: 'X', homeTeam: 'Y', espnEventId: 'E100' }], playerId: 'p1' });
+  ok(r.ok, r.error);
+});
+
+function seedClaims(env, rows) {
+  const nc = env.ss.getSheetByName('NameClaims'); const nh = nc._data[0];
+  rows.forEach(c => nc.appendRow(nh.map(h => c[h] ?? '')));
+  env.ss.getSheetByName('CareerHistory').appendRow(['', '', 'OLD TIMERS', 2018, 50]);
+  env.ctx._sheetDataCache = {}; env.ctx.invalidateStateCache();
+}
+
+test('name claims: approving one of two claims for the same name rejects the other; a taken name cannot be approved again', () => {
+  const env = loadBackend(); seedLeague(env);
+  seedClaims(env, [
+    { claimId: 'c1', playerId: 'p2', claimedTeamName: 'OLD TIMERS', status: 'pending' },
+    { claimId: 'c2', playerId: 'p3', claimedTeamName: 'old timers ', status: 'pending' }
+  ]);
+  const list = env.call('adminGetNameClaims', { adminId: 'p1' }).claims;
+  eq(list.map(c => c.competing), [1, 1], 'each sees the competing claim');
+  eq(env.call('getState').pendingNameClaims, 2, 'pending count in state');
+  ok(env.call('adminReviewNameClaim', { adminId: 'p1', claimId: 'c1', decision: 'approved' }).ok);
+  eq(rowsOf(env, 'NameClaims').map(c => c.status), ['approved', 'rejected'], 'competing claim closed');
+  eq(rowsOf(env, 'CareerHistory').find(r => r.teamName === 'OLD TIMERS').playerId, 'p2');
+  eq(env.call('getState').pendingNameClaims, 0, 'count drops after review');
+  // a later claim for the same name by someone else is refused at submit and at approve
+  eq(env.call('submitNameClaim', { playerId: 'p3', claimedTeamName: 'Old Timers' }).ok, false, 'submit refused');
+  seedClaims(env, [{ claimId: 'c3', playerId: 'p3', claimedTeamName: 'OLD TIMERS', status: 'pending' }]);
+  ok(env.call('adminGetNameClaims', { adminId: 'p1' }).claims.find(c => c.claimId === 'c3').taken, 'flagged as taken');
+  const r = env.call('adminReviewNameClaim', { adminId: 'p1', claimId: 'c3', decision: 'approved' });
+  eq(r.ok, false, 'second approval refused');
+  eq(rowsOf(env, 'CareerHistory').find(r => r.teamName === 'OLD TIMERS').playerId, 'p2', 'history NOT relinked');
+});
+
+test('name claim submitted -> admins get a push opening Admin -> Name Claims; no hidden admin_alert row', () => {
+  const env = loadBackend(); seedLeague(env); enablePush(env);
+  const msgsBefore = rowsOf(env, 'Messages').length;
+  const n = pushes().length;
+  const r = env.call('submitNameClaim', { playerId: 'p2', claimedTeamName: 'Old Timers' });
+  ok(r.ok, r.error);
+  const ps = pushes().slice(n);
+  ok(ps.length > 0 && ps.every(m => /^tok0/.test(m.token)), 'admins only');
+  ok(ps.every(m => m.data.tag === 'claim' && /view=admin&atab=nameclaims/.test(m.data.url)), 'tag/url');
+  eq(rowsOf(env, 'Messages').length, msgsBefore, 'no admin_alert row');
+  eq(env.call('getState').pendingNameClaims, 1);
+});
+
+test('approving a claim relinks UpsetHistory in one column write and refreshes the Trophy Room index', () => {
+  const env = loadBackend(); seedLeague(env);
+  const uh = env.ss.getSheetByName('UpsetHistory'); uh._data[0].push('playerId'); const uhh = uh._data[0]; // the real tab has a playerId column
+  uh.appendRow(uhh.map(h => ({ teamName: 'OLD TIMERS', year: 2018, week: 3 })[h] ?? ''));
+  uh.appendRow(uhh.map(h => ({ teamName: 'SOMEONE', year: 2018, week: 3, playerId: 'x' })[h] ?? ''));
+  seedClaims(env, [{ claimId: 'c1', playerId: 'p2', claimedTeamName: 'OLD TIMERS', status: 'pending' }]);
+  let busted = 0; const orig = env.ctx.invalidateUpsetHistoryIndex_; env.ctx.invalidateUpsetHistoryIndex_ = () => { busted++; return orig(); };
+  let setValueCalls = 0; const gr = uh.getRange;
+  uh.getRange = (...a) => { const r = gr(...a); const sv = r.setValue; r.setValue = v => { setValueCalls++; return sv(v); }; return r; };
+  ok(env.call('adminReviewNameClaim', { adminId: 'p1', claimId: 'c1', decision: 'approved' }).ok);
+  eq(setValueCalls, 0, 'no per-cell writes');
+  const rows = rowsOf(env, 'UpsetHistory');
+  eq(rows.map(r => r.playerId), ['p2', 'x']);
+  ok(busted > 0, 'UpsetHistory index busted');
+});
+
 // ---------------------------------------------------------------- report
 let failed = 0;
 results.forEach(([pass, name, err]) => {

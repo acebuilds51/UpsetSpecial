@@ -488,7 +488,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 // owner can see at a glance whether a phone is running the latest version.
 // v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
 // selections, update banner on resume, This Week fits on phones.
-const VERSION = 'v14.6';
+const VERSION = 'v14.7';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
@@ -560,7 +560,7 @@ async function api(action, payload, silent) {
   payload = payload || {};
   payload.action = action;
   // Per-action timeouts — trophy room needs more time for heavy players
-  const timeouts = { getTrophyRoom: 55000, helpChat: 40000, adminGenerateResultsEmail: 120000, adminClearWeek: 90000, adminSendCustomEmail: 60000, adminSendTemplateEmail: 60000, adminPostWeek: 90000 };
+  const timeouts = { getTrophyRoom: 55000, helpChat: 40000, adminGenerateResultsEmail: 120000, adminClearWeek: 90000, adminSendCustomEmail: 60000, adminSendTemplateEmail: 60000, adminPostWeek: 90000, adminRefreshSnapshot: 60000 };
   const ms = timeouts[action] || 25000;
   const retryable = RETRYABLE_ACTIONS[action] || (IDEMPOTENT_ACTIONS[action] && payload.requestId);
   const maxAttempts = retryable ? RETRY_DELAYS_MS.length + 1 : 1;
@@ -791,10 +791,15 @@ async function unregisterPushNotifications(playerId) {
 // Push notifications carry a tab to open (?view=chat&chat=commissioner, ?view=slate, ...).
 // Read at start, and sent by the service worker when a tap lands on an app already open.
 const LINKABLE_VIEWS = ['home', 'slate', 'standings', 'bowl', 'scores', 'chat', 'profile', 'info', 'rules'];
+// Admin pushes (slate is in, name claim) open ?view=admin[&atab=<admin sub-tab>] -- admins only.
+const LINKABLE_ADMIN_TABS = ['week', 'players', 'ledger', 'season', 'bowladmin', 'career', 'nameclaims', 'audit'];
+var _linkedAdminTab = '';
 function applyViewParams_(params) {
   const v = params.get('view');
-  if (!v || LINKABLE_VIEWS.indexOf(v) < 0) return false;
+  const adminLink = v === 'admin' && State.player && State.player.isAdmin;
+  if (!v || (LINKABLE_VIEWS.indexOf(v) < 0 && !adminLink)) return false;
   if (v === 'chat') { const c = params.get('chat'); if (c === 'general' || c === 'commissioner') _chatTab = c; }
+  if (adminLink) { const a = params.get('atab'); _linkedAdminTab = LINKABLE_ADMIN_TABS.indexOf(a) >= 0 ? a : 'week'; }
   State.view = v;
   return true;
 }
@@ -854,7 +859,7 @@ async function boot() {
     try {
       const lp = new URLSearchParams(location.search);
       if (applyViewParams_(lp)) {
-        lp.delete('view'); lp.delete('chat');
+        lp.delete('view'); lp.delete('chat'); lp.delete('atab');
         const qs = lp.toString();
         history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
       }
@@ -882,6 +887,7 @@ async function boot() {
           State.bowlChampion = c.bowlChampion || [];
           State.bowlLedger   = c.bowlLedger   || [];
           State.snapshotCount = c.snapshotCount || 0;
+          State.pendingNameClaims = c.pendingNameClaims || 0;
           State._dataAsOf = Number(c._ts) || null; // how old the saved board is (stale strip)
           hasCachedState = true;
         }
@@ -1071,6 +1077,7 @@ async function _doRefreshState() {
   State.bowlChampion = data.bowlChampion || [];
   State.bowlLedger = data.bowlLedger || [];
   State.snapshotCount = data.snapshotCount || 0;
+  State.pendingNameClaims = data.pendingNameClaims || 0;
 
   // Cache to localStorage for next boot. _ts = how old the data is (shown as "saved data
   // from 2:14 PM" when the next boot can't reach the server).
@@ -1621,7 +1628,8 @@ function renderBottomNav() {
     ...(State.player && State.player.isAdmin ? [] : [{ id: 'info', label: 'Info', icon: iconRules() }])
   ];
   if (State.player.isAdmin) {
-    const pendingCount = State.players.filter(p => !p.active && !p.isAdmin).length;
+    // pending registrations + pending name claims
+    const pendingCount = State.players.filter(p => !p.active && !p.isAdmin).length + (Number(State.pendingNameClaims) || 0);
     const badge = pendingCount > 0 ? `<span style="position:absolute; top:6px; right:4px; background:var(--loss); color:#fff; font-size:10px; font-weight:700; border-radius:10px; padding:1px 5px; line-height:1.4;">${pendingCount}</span>` : '';
     items.push({ id: 'admin', label: 'Admin', icon: `<span style="position:relative; display:inline-block;">${iconAdmin()}${badge}</span>` });
   }
@@ -6520,7 +6528,14 @@ let _adminTab = 'week';
 let _bowlAdminPhaseDraft = []; // for entering quarter/semi matchups manually
 let _bowlRound1DateRange = { start: '', end: '' };
 
+// Name Claims tab label with the pending count (red pill) when there are any
+function nameClaimsTabLabel_(n) {
+  n = Number(n) || 0;
+  return n ? `Name Claims <span style="background:var(--loss); color:#fff; border-radius:10px; padding:0 6px; font-size:10px;">${n}</span>` : 'Name Claims';
+}
+
 function renderAdmin(content) {
+  if (_linkedAdminTab) { _adminTab = _linkedAdminTab; _linkedAdminTab = ''; } // opened from an admin push
   const tabs = [
     { id: 'week', label: 'This Week' },
     { id: 'players', label: 'Players' },
@@ -6528,7 +6543,7 @@ function renderAdmin(content) {
     { id: 'season', label: 'Season' },
     { id: 'bowladmin', label: 'Bowl' },
     { id: 'career', label: 'Career' },
-    { id: 'nameclaims', label: 'Name Claims' },
+    { id: 'nameclaims', label: nameClaimsTabLabel_(State.pendingNameClaims) },
     { id: 'audit', label: '🔍 Audit' }
   ];
   content.innerHTML = `
@@ -6652,6 +6667,14 @@ async function renderAdminNameClaims(el) {
       if (b.status === 'pending' && a.status !== 'pending') return 1;
       return new Date(b.submittedAt) - new Date(a.submittedAt);
     });
+    // keep the tab / Admin-icon counts in step with what was just loaded (after a review too)
+    const pendingNow = claims.filter(c => c.status === 'pending').length;
+    if (pendingNow !== (Number(State.pendingNameClaims) || 0)) {
+      State.pendingNameClaims = pendingNow;
+      const tabBtn = document.querySelector('.tab-row [data-tab="nameclaims"]');
+      if (tabBtn) tabBtn.innerHTML = nameClaimsTabLabel_(pendingNow);
+      renderBottomNav();
+    }
 
     if (!claims.length) {
       el.innerHTML = '<div class="card"><p class="helptext">No name claims submitted yet.</p></div>';
@@ -6674,9 +6697,11 @@ async function renderAdminNameClaims(el) {
             <span style="font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;background:${badgeBg};color:${badgeColor};text-transform:uppercase;flex-shrink:0;">${c.status}</span>
           </div>
           ${c.reason ? `<div style="font-size:13px;color:var(--text);background:var(--surface-2);border-radius:var(--radius-sm);padding:8px 10px;margin-bottom:10px;font-style:italic;">"${escapeHtml(c.reason)}"</div>` : ''}
+          ${isPending && c.taken ? `<p class="helptext" style="color:var(--loss);font-weight:700;margin-bottom:8px;">This name was already approved for another player — approving is blocked.</p>`
+            : isPending && c.competing ? `<p class="helptext" style="color:var(--gold);font-weight:700;margin-bottom:8px;">⚠️ ${c.competing} other player${c.competing === 1 ? ' is' : 's are'} also claiming this name. Approving this one rejects the other${c.competing === 1 ? '' : 's'}.</p>` : ''}
           ${isPending ? `
             <div style="display:flex;gap:8px;">
-              <button class="btn btn-primary btn-sm claim-approve-btn" data-id="${escapeHtml(c.claimId)}" data-name="${escapeHtml(c.claimedTeamName)}" style="flex:1;">✓ Approve</button>
+              <button class="btn btn-primary btn-sm claim-approve-btn" data-id="${escapeHtml(c.claimId)}" data-name="${escapeHtml(c.claimedTeamName)}" style="flex:1;" ${c.taken ? 'disabled' : ''}>✓ Approve</button>
               <button class="btn btn-danger btn-sm claim-reject-btn" data-id="${escapeHtml(c.claimId)}" style="flex:1;">✗ Reject</button>
             </div>` : ''}
         </div>`;
@@ -6689,8 +6714,8 @@ async function renderAdminNameClaims(el) {
         btn.disabled = true; btn.textContent = 'Approving...';
         try {
           const res = await api('adminReviewNameClaim', { playerId: State.player.id, claimId: btn.dataset.id, decision: 'approved', reviewerName: State.player.teamName });
-          if (res.ok) { showToast('Claim approved — history linked!', 'success'); renderAdminNameClaims(el); }
-          else showToast(res.error || 'Error', 'error');
+          if (res.ok) { showToast('Claim approved — history linked!', 'success'); renderAdminNameClaims(el); refreshState().catch(() => {}); }
+          else { showToast(res.error || 'Error', 'error'); renderAdminNameClaims(el); }
         } catch(e) { showToast('Network error', 'error'); }
       };
     });
@@ -6701,7 +6726,7 @@ async function renderAdminNameClaims(el) {
         btn.disabled = true; btn.textContent = 'Rejecting...';
         try {
           const res = await api('adminReviewNameClaim', { playerId: State.player.id, claimId: btn.dataset.id, decision: 'rejected', reviewerName: State.player.teamName });
-          if (res.ok) { showToast('Claim rejected', 'success'); renderAdminNameClaims(el); }
+          if (res.ok) { showToast('Claim rejected', 'success'); renderAdminNameClaims(el); refreshState().catch(() => {}); }
           else showToast(res.error || 'Error', 'error');
         } catch(e) { showToast('Network error', 'error'); }
       };
@@ -6736,6 +6761,8 @@ function renderAdminTodoStrip(week, games, posted, picker) {
     { done: recapSentWeeks().includes(week), label: 'Recap sent', go: 'mail:results' },
     { done: complete && prizeRows.every(r => r.recorded), label: 'Prizes', go: 'tab:ledger' }
   ];
+  const claims = Number(State.pendingNameClaims) || 0;
+  if (claims) steps.push({ done: false, warn: true, label: `Name claim${claims === 1 ? '' : 's'} · ${claims}`, go: 'tab:nameclaims' });
   const firstOpen = steps.findIndex(s => !s.done);
   return `
     <div class="card" style="padding:10px 12px; margin-bottom:12px;">
@@ -6974,11 +7001,20 @@ function renderAdminWeek(el) {
     document.getElementById('refresh-snapshot-btn').onclick = async () => {
       const btn = document.getElementById('refresh-snapshot-btn');
       btn.innerHTML = '<span class="spinner"></span>';
+      btn.disabled = true;
       try {
         const data = await api('adminRefreshSnapshot', { adminId: State.player.id, week });
         showToast(`Snapshot updated — ${data.added} new games added, ${data.existing} already on file`, 'success');
-        btn.innerHTML = 'Add Missing Lines to Snapshot';
-      } catch(e) { btn.innerHTML = 'Add Missing Lines to Snapshot'; }
+        // show the new count straight away (it used to keep the old number until a reload)
+        await refreshState(); renderAdmin(document.getElementById('content'));
+      } catch(e) {
+        // a slow ESPN can outlast the wait; the server usually still finishes and adds the lines
+        if (e.name === 'AbortError' || e.transient) {
+          showToast('No answer in time — the lines may still have been added. The count updates in about a minute.', 'error');
+          setTimeout(() => { refreshState({ shared: true }).catch(() => {}); }, 60000);
+        }
+        btn.innerHTML = 'Add Missing Lines to Snapshot'; btn.disabled = false;
+      }
     };
     document.getElementById('apply-defaults-btn').onclick = async () => {
       try {
@@ -7368,7 +7404,7 @@ function renderAdminGamesCard(games, posted) {
         ${missing.length ? `<p class="helptext" style="color:var(--loss); font-weight:700; margin-bottom:8px;">Missing: ${missing.join(', ')} — needed before posting</p>` : ''}
         ${!posted ? `
           <div class="row2">
-            <select data-gameid="${g.gameId}" style="padding:8px; border-radius:7px; border:1.5px solid var(--hairline);">
+            <select data-gameid="${g.gameId}" style="padding:8px; border-radius:7px; border:1.5px solid var(--hairline); background:var(--surface-2); color:var(--text);">
               <option value="">Favorite...</option>
               <option value="${escapeHtml(g.awayTeam)}" ${g.favorite === g.awayTeam ? 'selected' : ''}>${escapeHtml(g.awayTeam)}</option>
               <option value="${escapeHtml(g.homeTeam)}" ${g.favorite === g.homeTeam ? 'selected' : ''}>${escapeHtml(g.homeTeam)}</option>
@@ -8071,8 +8107,8 @@ function renderBowlSetupGames(phase, count) {
     <div class="card" style="padding:10px 14px;">
       <div class="helptext" style="margin-bottom:4px; font-weight:700;">GAME ${i + 1}</div>
       <div class="row2">
-        <input type="text" value="${escapeHtml(g.awayTeam)}" data-idx="${i}" data-field="awayTeam" placeholder="Away team" style="padding:8px; border-radius:7px; border:1.5px solid var(--hairline);">
-        <input type="text" value="${escapeHtml(g.homeTeam)}" data-idx="${i}" data-field="homeTeam" placeholder="Home team" style="padding:8px; border-radius:7px; border:1.5px solid var(--hairline);">
+        <input type="text" value="${escapeHtml(g.awayTeam)}" data-idx="${i}" data-field="awayTeam" placeholder="Away team" style="padding:8px; border-radius:7px; border:1.5px solid var(--hairline); background:var(--surface-2); color:var(--text);">
+        <input type="text" value="${escapeHtml(g.homeTeam)}" data-idx="${i}" data-field="homeTeam" placeholder="Home team" style="padding:8px; border-radius:7px; border:1.5px solid var(--hairline); background:var(--surface-2); color:var(--text);">
       </div>
     </div>
   `).join('');
@@ -8134,7 +8170,7 @@ function renderAdminBowlGamesList(games, posted, phase) {
         </div>
         ${!posted ? `
           <div class="row2">
-            <select data-bowlgameid="${g.gameId}" style="padding:8px; border-radius:7px; border:1.5px solid var(--hairline);">
+            <select data-bowlgameid="${g.gameId}" style="padding:8px; border-radius:7px; border:1.5px solid var(--hairline); background:var(--surface-2); color:var(--text);">
               <option value="">Favorite...</option>
               <option value="${escapeHtml(g.awayTeam)}" ${g.favorite === g.awayTeam ? 'selected' : ''}>${escapeHtml(g.awayTeam)}</option>
               <option value="${escapeHtml(g.homeTeam)}" ${g.favorite === g.homeTeam ? 'selected' : ''}>${escapeHtml(g.homeTeam)}</option>
@@ -8191,7 +8227,7 @@ function renderAdminBowlResolve(el) {
       <div class="card-title">Resolve National Champion</div>
       <p class="helptext" style="margin-bottom:10px;">Once the championship game is decided, select the winner here. This awards 5 points to everyone who picked them as champion — it's tracked separately since the title game itself isn't one of the bracketed picks.</p>
       ${teams.length === 0 ? '<p class="helptext">Set up the Semifinals first — the champion options come from those 4 teams.</p>' : `
-        <select id="champion-winner-select" style="width:100%; padding:10px; border-radius:9px; border:1.5px solid var(--hairline);">
+        <select id="champion-winner-select" style="width:100%; padding:10px; border-radius:9px; border:1.5px solid var(--hairline); background:var(--surface-2); color:var(--text);">
           <option value="">— Select champion —</option>
           ${teams.map(t => `<option value="${escapeHtml(t)}" ${current === t ? 'selected' : ''}>${escapeHtml(t)}</option>`).join('')}
         </select>

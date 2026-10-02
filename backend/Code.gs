@@ -1,4 +1,4 @@
-// v22-keepwarm-hourly-oct2  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v23-admin-week-oct2  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -90,7 +90,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v22-keepwarm-hourly-oct2';
+var CODE_VERSION = 'v23-admin-week-oct2';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -1634,7 +1634,8 @@ function buildSharedState_() {
     bowlGames: noRow(sheetToObjects(SHEET_NAMES.BOWL_GAMES)),
     bowlChampion: noRow(sheetToObjects(SHEET_NAMES.BOWL_CHAMPION)),
     bowlLedger: noRow(sheetToObjects(SHEET_NAMES.BOWL_LEDGER)),
-    snapshotCount: sheetToObjects(SHEET_NAMES.LINE_SNAPSHOT).filter(function(r) { return Number(r.week) === currentWeek; }).length
+    snapshotCount: sheetToObjects(SHEET_NAMES.LINE_SNAPSHOT).filter(function(r) { return Number(r.week) === currentWeek; }).length,
+    pendingNameClaims: pendingNameClaimCount_() // the admin's count on the Name Claims tab
   };
 }
 
@@ -2282,7 +2283,13 @@ function debugEspnFetch() {
 // another (an 11-day window used to be 11 serial ~1-2s requests; a ~35-day bowl
 // window could exceed the client timeout on its own). Output is identical: same
 // day order, same first-seen dedupe by event id.
-function fetchEspnScoreboardRange(startYYYYMMDD, endYYYYMMDD) {
+//
+// opts.maxAgeSec (optional): days fetched within that many seconds are served from a
+// slimmed per-day copy (ESPN_DAY_CACHE_) instead of ESPN -- only for callers that just
+// need lines/teams/kickoffs (the Upset Special search's "today's line"). Every fetch
+// refreshes those copies. Callers without it (scores, finals, snapshot jobs) always
+// get ESPN live, as before.
+function fetchEspnScoreboardRange(startYYYYMMDD, endYYYYMMDD, opts) {
   const start = parseYYYYMMDD(startYYYYMMDD);
   const end = parseYYYYMMDD(endYYYYMMDD);
   const days = [];
@@ -2291,16 +2298,73 @@ function fetchEspnScoreboardRange(startYYYYMMDD, endYYYYMMDD) {
     days.push(formatYYYYMMDD(cur));
     cur.setDate(cur.getDate() + 1);
   }
-  const allEvents = [];
-  const seen = {};
-  for (let i = 0; i < days.length; i += 20) {
-    const reqs = days.slice(i, i + 20).map(ymd => ({ url: espnScoreboardUrl_(ymd), muteHttpExceptions: true, headers: { 'User-Agent': ESPN_UA } }));
+  const maxAgeSec = opts && opts.maxAgeSec ? Number(opts.maxAgeSec) : 0;
+  const byDay = maxAgeSec ? readEspnDayCache_(days, maxAgeSec) : {};
+  const toFetch = days.filter(d => !byDay[d]);
+  const fresh = {};
+  for (let i = 0; i < toFetch.length; i += 20) {
+    const chunk = toFetch.slice(i, i + 20);
+    const reqs = chunk.map(ymd => ({ url: espnScoreboardUrl_(ymd), muteHttpExceptions: true, headers: { 'User-Agent': ESPN_UA } }));
     const resps = UrlFetchApp.fetchAll(reqs);
-    resps.forEach(resp => {
-      parseEspnEvents_(resp).forEach(ev => { if (!seen[ev.id]) { seen[ev.id] = true; allEvents.push(ev); } });
+    resps.forEach((resp, j) => {
+      const ok = resp.getResponseCode() === 200;
+      byDay[chunk[j]] = parseEspnEvents_(resp);
+      if (ok) fresh[chunk[j]] = byDay[chunk[j]];
     });
   }
+  writeEspnDayCache_(fresh);
+  // same day order and first-seen dedupe by event id as before
+  const allEvents = [];
+  const seen = {};
+  days.forEach(d => (byDay[d] || []).forEach(ev => { if (!seen[ev.id]) { seen[ev.id] = true; allEvents.push(ev); } }));
   return allEvents;
+}
+
+// Per-day slim copies of ESPN's scoreboard: just what extractEspnLine / matchEspnEvent
+// read (ids, kickoff, odds, final flag, team names/abbreviations/logo). A busy Saturday
+// is ~25KB this way (the raw day is far over CacheService's 100KB limit).
+var ESPN_DAY_CACHE_ = 'espnDay2_';
+var ESPN_DAY_CACHE_TTL_ = 1800; // the copy is kept 30 min; each caller says how old it may be
+function slimEspnEvent_(ev) {
+  const comp = (ev.competitions && ev.competitions[0]) || {};
+  const odds = comp.odds && comp.odds[0];
+  const team = t => (t ? { displayName: t.displayName, name: t.name, abbreviation: t.abbreviation, logo: extractTeamLogo(t) } : null);
+  return {
+    id: ev.id, date: ev.date || comp.date || '',
+    competitions: [{
+      date: comp.date || ev.date || '',
+      status: { type: { completed: !!(comp.status && comp.status.type && comp.status.type.completed) } },
+      odds: odds ? [{
+        details: odds.details,
+        homeTeamOdds: { favorite: !!(odds.homeTeamOdds && odds.homeTeamOdds.favorite) },
+        awayTeamOdds: { favorite: !!(odds.awayTeamOdds && odds.awayTeamOdds.favorite) }
+      }] : [],
+      competitors: (comp.competitors || []).map(c => ({ homeAway: c.homeAway, team: team(c.team) }))
+    }]
+  };
+}
+function readEspnDayCache_(days, maxAgeSec) {
+  const out = {};
+  try {
+    const got = CacheService.getScriptCache().getAll(days.map(d => ESPN_DAY_CACHE_ + d));
+    days.forEach(d => {
+      const raw = got[ESPN_DAY_CACHE_ + d];
+      if (!raw) return;
+      const v = JSON.parse(raw);
+      if (v && Date.now() - Number(v.at) <= maxAgeSec * 1000) out[d] = v.events || [];
+    });
+  } catch (e) {}
+  return out;
+}
+function writeEspnDayCache_(byDay) {
+  try {
+    const puts = {};
+    Object.keys(byDay).forEach(d => {
+      const s = JSON.stringify({ at: Date.now(), events: byDay[d].map(slimEspnEvent_) });
+      if (s.length < 95000) puts[ESPN_DAY_CACHE_ + d] = s;
+    });
+    if (Object.keys(puts).length) CacheService.getScriptCache().putAll(puts, ESPN_DAY_CACHE_TTL_);
+  } catch (e) {}
 }
 
 function parseYYYYMMDD(s) {
@@ -2511,7 +2575,45 @@ function apiAdminAssignPicker(payload) {
   });
   if (!found) appendObject(SHEET_NAMES.ROTATION, { week, playerId: payload.playerId, status: 'assigned', assignedAt: new Date().toISOString() });
   sendPickerAssignedEmail_(payload.playerId, week);
+  sendPickerAssignedPush_(payload.playerId, week);
   return { ok: true };
+}
+
+// Push to the players matching `match` (from the cached player list -- no avatar read).
+// Never throws: a push problem must not undo the save it follows.
+function pushToPlayers_(match, title, body, data) {
+  try {
+    var tokens = [];
+    playersLite_().forEach(function(p) {
+      if (!match(p)) return;
+      String(p.fcmToken || '').split(',').forEach(function(t) {
+        t = t.trim();
+        if (t && tokens.indexOf(t) < 0) tokens.push(t);
+      });
+    });
+    if (!tokens.length) return 0;
+    return sendFcmBatch_(tokens.map(function(token) { return { token: token, title: title, body: body, data: data }; }));
+  } catch (e) {
+    Logger.log('pushToPlayers_ error: ' + e.message);
+    return 0;
+  }
+}
+function isAdminFlag_(p) { return p.isAdmin === true || p.isAdmin === 'TRUE'; }
+
+// The picker also gets a push (the email alone was easy to miss).
+function sendPickerAssignedPush_(playerId, week) {
+  pushToPlayers_(function(p) { return String(p.id) === String(playerId); },
+    "🎯 You're the picker — Week " + week,
+    'Choose this week\'s 10 games in the app.',
+    pushData_('picker', 'picker-w' + week, 'slate'));
+}
+
+// Admins hear when the picker's slate is in, so the board can be posted straight away.
+function sendSlateInPush_(week, gameCount, submitterId) {
+  pushToPlayers_(function(p) { return isAdminFlag_(p) && String(p.id) !== String(submitterId); },
+    '📋 Week ' + week + ' slate is in',
+    gameCount + ' game' + (gameCount === 1 ? '' : 's') + ' picked — review the lines and post the board.',
+    pushData_('slate_in', 'slate-w' + week, 'admin'));
 }
 
 function apiAdminRandomPicker(payload) {
@@ -2528,6 +2630,7 @@ function apiAdminRandomPicker(payload) {
   });
   if (!found) appendObject(SHEET_NAMES.ROTATION, { week, playerId: chosen.id, status: 'assigned', assignedAt: new Date().toISOString() });
   sendPickerAssignedEmail_(chosen.id, week);
+  sendPickerAssignedPush_(chosen.id, week);
   return { ok: true, playerId: chosen.id, playerName: chosen.name };
 }
 
@@ -2619,10 +2722,12 @@ function apiSubmitSlate(payload) {
   appendObjects_(SHEET_NAMES.GAMES, newGames);
   updateRowByMatch(SHEET_NAMES.ROTATION, r => Number(r.week) === week, { status: 'submitted' });
   invalidateStateCache();
-  return { ok: true };
   } finally {
     releaseLock_(lock);
   }
+  // after the lock: pushes are slow-ish HTTP calls and must not hold up other saves
+  sendSlateInPush_(week, games.length, submitter.id);
+  return { ok: true };
 }
 
 // fetch the full college football schedule for a given week so the picker can browse
@@ -3252,7 +3357,9 @@ function apiSearchSnapshotGames(payload) {
     if (kickoffs.length > 0) {
       const minD = new Date(Math.min.apply(null, kickoffs));
       const maxD = new Date(Math.max.apply(null, kickoffs));
-      liveEvents = fetchEspnScoreboardRange(formatYYYYMMDD(minD), formatYYYYMMDD(maxD));
+      // up to 10 min old: one ESPN fetch serves every player's searches (each search
+      // used to fetch every day of the week live, and timed out when ESPN was slow)
+      liveEvents = fetchEspnScoreboardRange(formatYYYYMMDD(minD), formatYYYYMMDD(maxD), { maxAgeSec: 600 });
     }
   } catch (e) {
     Logger.log('apiSearchSnapshotGames: live odds fetch failed, continuing with snapshot line only: ' + e.message);
@@ -4546,6 +4653,8 @@ function apiSubmitNameClaim(payload) {
            c.status === 'pending';
   });
   if (existing.length > 0) return { ok: false, error: 'You already have a pending claim for this team name.' };
+  var takenBy = approvedClaimOwner_(payload.claimedTeamName);
+  if (takenBy && takenBy !== String(payload.playerId)) return { ok: false, error: 'That team name has already been claimed by another player.' };
 
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('NameClaims');
@@ -4569,20 +4678,32 @@ function apiSubmitNameClaim(payload) {
     ''
   ]);
 
-  // Notify admins via message board
-  try {
-    var msgSheet = ss.getSheetByName('Messages');
-    if (msgSheet) {
-      msgSheet.appendRow([
-        'MSG-' + Date.now(), 'admin_alert', payload.playerId,
-        player.name, player.teamName,
-        player.teamName + ' is claiming the historical team name "' + payload.claimedTeamName + '". Review in Admin → Name Claims.',
-        now, getSeasonConfig().year
-      ]);
-    }
-  } catch(e) {}
+  invalidateSheetCache('NameClaims');
+
+  // Tell the admins (this used to write an 'admin_alert' row to Messages, which the app
+  // never shows). The Name Claims tab also carries a pending count (pendingNameClaims).
+  pushToPlayers_(function(p) { return isAdminFlag_(p); },
+    '🏷️ Name claim to review',
+    (player.teamName || 'A player') + ' is claiming "' + String(payload.claimedTeamName).trim().toUpperCase() + '".',
+    pushData_('name_claim', 'claim', 'admin', 'atab=nameclaims'));
 
   return { ok: true, claimId: claimId };
+}
+
+// playerId an approved claim already gave this historical name to, or '' if none.
+function approvedClaimOwner_(teamName) {
+  var name = String(teamName || '').trim().toUpperCase();
+  var hit = sheetToObjects('NameClaims').find(function(c) {
+    return c.status === 'approved' && String(c.claimedTeamName || '').trim().toUpperCase() === name;
+  });
+  return hit ? String(hit.playerId) : '';
+}
+
+// Pending claims, for the admin's count on the Name Claims tab (part of the cached state).
+function pendingNameClaimCount_() {
+  try {
+    return sheetToObjects('NameClaims').filter(function(c) { return c.status === 'pending'; }).length;
+  } catch (e) { return 0; }
 }
 
 function apiGetMyNameClaims(payload) {
@@ -4604,8 +4725,15 @@ function apiAdminGetNameClaims(payload) {
     });
     c.years = rows.map(function(h) { return Number(h.year); }).filter(Boolean).sort();
     c.seasons = c.years.length;
+    // same name claimed by someone else: still pending (competing) or already given away (taken)
+    var name = String(c.claimedTeamName || '').trim().toUpperCase();
+    var others = claims.filter(function(o) {
+      return o !== c && String(o.playerId) !== String(c.playerId) && String(o.claimedTeamName || '').trim().toUpperCase() === name;
+    });
+    c.competing = others.filter(function(o) { return o.status === 'pending'; }).length;
+    c.taken = others.some(function(o) { return o.status === 'approved'; });
   });
-  return { ok: true, claims: claims };
+  return { ok: true, claims: claims.map(function(c) { var o = Object.assign({}, c); delete o._row; return o; }) };
 }
 
 function apiAdminReviewNameClaim(payload) {
@@ -4634,14 +4762,34 @@ function apiAdminReviewNameClaim(payload) {
   if (rowIdx < 0) return { ok: false, error: 'Claim not found.' };
   if (String(data[rowIdx][statusCol]) !== 'pending') return { ok: false, error: 'Claim is not pending.' };
 
+  var claimPlayerId = String(data[rowIdx][playerIdCol]);
+  var claimedTeamName = String(data[rowIdx][claimedNameCol]).trim().toUpperCase();
+  var sameName = function(r) { return String(r[claimedNameCol] || '').trim().toUpperCase() === claimedTeamName; };
+  if (payload.decision === 'approved') {
+    // One historical name belongs to one player: approving a second claim used to silently
+    // relink all of that name's history to the second player.
+    for (var k = 1; k < data.length; k++) {
+      if (k !== rowIdx && sameName(data[k]) && String(data[k][statusCol]) === 'approved' && String(data[k][playerIdCol]) !== claimPlayerId) {
+        return { ok: false, error: '"' + claimedTeamName + '" was already approved for another player. Reject this claim, or fix the earlier one first.' };
+      }
+    }
+  }
+
   var now = new Date().toISOString();
+  var reviewer = payload.reviewerName || 'Admin';
   sheet.getRange(rowIdx + 1, statusCol + 1).setValue(payload.decision);
   sheet.getRange(rowIdx + 1, reviewedAtCol + 1).setValue(now);
-  sheet.getRange(rowIdx + 1, reviewedByCol + 1).setValue(payload.reviewerName || 'Admin');
+  sheet.getRange(rowIdx + 1, reviewedByCol + 1).setValue(reviewer);
 
   if (payload.decision === 'approved') {
-    var claimPlayerId = String(data[rowIdx][playerIdCol]);
-    var claimedTeamName = String(data[rowIdx][claimedNameCol]).toUpperCase();
+    // other players' pending claims for the same name can't be granted any more -- close them
+    for (var m = 1; m < data.length; m++) {
+      if (m !== rowIdx && sameName(data[m]) && String(data[m][statusCol]) === 'pending' && String(data[m][playerIdCol]) !== claimPlayerId) {
+        sheet.getRange(m + 1, statusCol + 1).setValue('rejected');
+        sheet.getRange(m + 1, reviewedAtCol + 1).setValue(now);
+        sheet.getRange(m + 1, reviewedByCol + 1).setValue(reviewer + ' (name went to another player)');
+      }
+    }
 
     // Link all CareerHistory rows with this teamName to this playerId
     var chSheet = ss.getSheetByName('CareerHistory');
@@ -4656,7 +4804,7 @@ function apiAdminReviewNameClaim(payload) {
       var chChanged = false;
       for (var j = 1; j < chData.length; j++) {
         var rowTeam = String(chData[j][chTeamNameCol] || '').trim().toUpperCase();
-        if (rowTeam === claimedTeamName) {
+        if (claimedTeamName && rowTeam === claimedTeamName) {
           chData[j][chPlayerIdCol] = claimPlayerId;
           if (chMatchedCol >= 0) chData[j][chMatchedCol] = 'YES';
           chChanged = true;
@@ -4678,12 +4826,18 @@ function apiAdminReviewNameClaim(payload) {
       var uhHeaders = uhData[0];
       var uhTeamNameCol = uhHeaders.indexOf('teamName');
       var uhPlayerIdCol = uhHeaders.indexOf('playerId');
-      if (uhPlayerIdCol >= 0) {
-        for (var k = 1; k < uhData.length; k++) {
-          var uhTeam = String(uhData[k][uhTeamNameCol] || '').trim().toUpperCase();
-          if (uhTeam === claimedTeamName) {
-            uhSheet.getRange(k + 1, uhPlayerIdCol + 1).setValue(claimPlayerId);
-          }
+      if (uhPlayerIdCol >= 0 && uhData.length > 1) {
+        // one column write (was one setValue per matching row), then flush + bust the
+        // Trophy Room's cached UpsetHistory index so the relinked hits show at once
+        var uhChanged = false;
+        for (var u = 1; u < uhData.length; u++) {
+          var uhTeam = String(uhData[u][uhTeamNameCol] || '').trim().toUpperCase();
+          if (claimedTeamName && uhTeam === claimedTeamName) { uhData[u][uhPlayerIdCol] = claimPlayerId; uhChanged = true; }
+        }
+        if (uhChanged) {
+          uhSheet.getRange(2, uhPlayerIdCol + 1, uhData.length - 1, 1).setValues(uhData.slice(1).map(function(r) { return [r[uhPlayerIdCol]]; }));
+          SpreadsheetApp.flush();
+          invalidateSheetCache('UpsetHistory');
         }
       }
     }
@@ -4701,6 +4855,7 @@ function apiAdminReviewNameClaim(payload) {
     } catch(e) {}
   }
 
+  invalidateSheetCache('NameClaims');
   return { ok: true, decision: payload.decision };
 }
 

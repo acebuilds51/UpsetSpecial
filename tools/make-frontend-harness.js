@@ -11,6 +11,7 @@
 //                          another player's picks, like a busy week in the background)
 //               ?msgs=N (N General chat messages + a commissioner post; window.__chat holds them)
 //               ?postfail=1 (chat sends fail)
+//               ?claims=1 (name claims: two players claiming one name + a claim for a name already taken)
 // Admin writes that matter for the Pot tab (adminTogglePaid, adminLedgerEntry, adminLedgerBatch)
 // update the fake state, so the next getState shows them.
 const fs = require('fs');
@@ -53,6 +54,23 @@ const mock = `<script>
     var sat = new Date(); sat.setDate(sat.getDate() + ((6 - sat.getDay() + 7) % 7 || 7)); sat.setHours(15, 30, 0, 0);
     for (var s = 1; s <= 14; s++) slate.push({ espnEventId: 'S' + s, awayTeam: 'Road ' + s, homeTeam: 'Host ' + s, favorite: 'Host ' + s, spread: 2.5 + s, kickoff: sat.toISOString(), homeLogo: '', awayLogo: '', source: 'snapshot', hasSnapshot: true, started: false, statusDetail: '' });
   }
+  // name claims: ?claims=1 -> PATS and SAMS both claim OLD TIMERS; SAMS also claims GONE BUT NOT, already approved for TESTERS
+  var claims = [];
+  if (qs.get('claims') === '1') {
+    claims = [
+      { claimId: 'c1', playerId: 'p2', playerName: 'Pat', currentTeamName: 'PATS', claimedTeamName: 'OLD TIMERS', reason: 'That was me 2018-2020', status: 'pending', submittedAt: new Date(Date.now() - 86400000).toISOString(), years: [2018, 2019, 2020], seasons: 3 },
+      { claimId: 'c2', playerId: 'p3', playerName: 'Sam', currentTeamName: 'SAMS', claimedTeamName: 'OLD TIMERS', reason: '', status: 'pending', submittedAt: new Date().toISOString(), years: [2018, 2019, 2020], seasons: 3 },
+      { claimId: 'c3', playerId: 'p3', playerName: 'Sam', currentTeamName: 'SAMS', claimedTeamName: 'GONE BUT NOT', reason: '', status: 'pending', submittedAt: new Date().toISOString(), years: [2017], seasons: 1 },
+      { claimId: 'c4', playerId: 'p1', playerName: 'Test Admin', currentTeamName: 'TESTERS', claimedTeamName: 'GONE BUT NOT', reason: '', status: 'approved', submittedAt: new Date(Date.now() - 9 * 86400000).toISOString(), years: [2017], seasons: 1 }
+    ];
+  }
+  function claimView() {
+    return claims.map(function(c) {
+      var others = claims.filter(function(o) { return o !== c && o.playerId !== c.playerId && o.claimedTeamName === c.claimedTeamName; });
+      return Object.assign({}, c, { competing: others.filter(function(o) { return o.status === 'pending'; }).length, taken: others.some(function(o) { return o.status === 'approved'; }) });
+    });
+  }
+  state.pendingNameClaims = claims.filter(function(c) { return c.status === 'pending'; }).length;
   var draft = null;
   // chat: ?msgs=N seeds N General messages from other players + one commissioner post;
   // postMessage appends (and fails with ?postfail=1)
@@ -107,6 +125,19 @@ const mock = `<script>
         else if (body.action === 'adminGenerateResultsEmail') {
           draft = { ok: true, week: body.week, title: 'Week ' + body.week + ' Results', subtitle: 'Fake', bodyHtml: '<p>Fake recap</p>', verified: false, validationIssues: ['Fake issue'], attempts: 3, generatedAt: new Date().toISOString(), stats: { games: 10, players: 3, upsetHits: 0, perfectWeeks: 2 } };
           data = draft;
+        }
+        else if (body.action === 'adminGetNameClaims') data = { ok: true, claims: claimView() };
+        else if (body.action === 'adminReviewNameClaim') {
+          var cl = claims.filter(function(c) { return c.claimId === body.claimId; })[0];
+          var view = claimView().filter(function(c) { return c.claimId === body.claimId; })[0];
+          if (!cl || cl.status !== 'pending') data = { ok: false, error: 'Claim is not pending.' };
+          else if (body.decision === 'approved' && view.taken) data = { ok: false, error: 'Already approved for another player.' };
+          else {
+            cl.status = body.decision;
+            if (body.decision === 'approved') claims.forEach(function(o) { if (o !== cl && o.status === 'pending' && o.claimedTeamName === cl.claimedTeamName && o.playerId !== cl.playerId) o.status = 'rejected'; });
+            state.pendingNameClaims = claims.filter(function(c) { return c.status === 'pending'; }).length;
+            data = { ok: true, decision: body.decision };
+          }
         }
         else if (body.action === 'adminGetResultsDraft') data = { ok: true, draft: draft && draft.week === body.week ? draft : null };
         else if (body.action === 'adminSendCustomEmail') {
