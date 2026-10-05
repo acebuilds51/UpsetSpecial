@@ -488,7 +488,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 // owner can see at a glance whether a phone is running the latest version.
 // v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
 // selections, update banner on resume, This Week fits on phones.
-const VERSION = 'v14.7';
+const VERSION = 'v14.8';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
@@ -655,6 +655,72 @@ function pinProblem(pin) {
 function loadSession() { try { return JSON.parse(localStorage.getItem('usl_player') || 'null'); } catch(e) { return null; } }
 function clearSession() { try { localStorage.removeItem('usl_player'); } catch(e) {} }
 function loadSavedAvatar(playerId) { try { return localStorage.getItem('usl_avatar_' + playerId) || ''; } catch(e) { return ''; } }
+
+// Everyone's photos, kept on the phone as { playerId: { v: avatarVer, a: dataUrl } }.
+// The server sends a short fingerprint per player (avatarVer); only photos whose
+// fingerprint changed are fetched, AVATAR_BATCH at a time. Fetching every photo
+// (~0.5 MB) each session was the read Google dropped most, and a failure re-sent it
+// on every 90s poll -- now a failure waits AVATAR_RETRY_MS.
+const AVATAR_BATCH = 10;
+const AVATAR_RETRY_MS = 10 * 60 * 1000;
+// Same fingerprint as avatarVer_ in Code.gs (a test checks they agree)
+function avatarVer_(avatar) {
+  const s = String(avatar || '');
+  if (!s) return '';
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return s.length.toString(36) + h.toString(36);
+}
+function loadAvatarStore_() { try { return JSON.parse(localStorage.getItem('usl_avatars') || '{}') || {}; } catch(e) { return {}; } }
+function saveAvatarStore_(store) { try { localStorage.setItem('usl_avatars', JSON.stringify(store)); } catch(e) {} }
+function applyMyAvatar_() {
+  const mine = State.player && State._avatarMap && State._avatarMap[State.player.id];
+  if (mine && State.player.avatar !== mine) { State.player.avatar = mine; saveSession(State.player); }
+}
+function syncAvatars_() {
+  const players = State.players || [];
+  if (!players.length || State._avatarSyncing) return;
+  if (State._avatarRetryAt && Date.now() < State._avatarRetryAt) return;
+  // an older backend sends only hasAvatar: then fetch once per session, as before
+  const versioned = players.some(p => p.avatarVer !== undefined);
+  if (!versioned && State._avatarsLoadedOnce) return;
+  const store = loadAvatarStore_();
+  const want = {};
+  players.forEach(p => { const v = versioned ? (p.avatarVer || '') : (p.hasAvatar ? 'any' : ''); if (v) want[p.id] = v; });
+  const map = {}, need = [];
+  Object.keys(want).forEach(id => {
+    const kept = store[id];
+    if (kept && kept.a) map[id] = kept.a; // shown meanwhile, even if a newer one is coming
+    if (!(kept && kept.a && versioned && kept.v === want[id])) need.push(id);
+  });
+  State._avatarMap = map;
+  applyMyAvatar_();
+  const finish = (failed) => {
+    Object.keys(store).forEach(id => { if (!want[id]) delete store[id]; }); // photo removed / player gone
+    saveAvatarStore_(store);
+    State._avatarRetryAt = failed ? Date.now() + AVATAR_RETRY_MS : 0;
+    if (!failed) State._avatarsLoadedOnce = true;
+  };
+  if (!need.length) { finish(false); return; }
+  State._avatarSyncing = true;
+  (async () => {
+    let failed = false;
+    for (let i = 0; i < need.length; i += AVATAR_BATCH) {
+      const ids = need.slice(i, i + AVATAR_BATCH);
+      try {
+        const got = (await api('getAvatars', { playerIds: ids }, true)).avatars || {};
+        ids.forEach(id => {
+          if (got[id]) { store[id] = { v: want[id], a: got[id] }; State._avatarMap[id] = got[id]; }
+          else { delete store[id]; delete State._avatarMap[id]; }
+        });
+      } catch(e) { failed = true; break; }
+    }
+    finish(failed);
+    State._avatarSyncing = false;
+    applyMyAvatar_();
+    if (State.view === 'standings' || State.view === 'profile') renderContent();
+  })();
+}
 
 /* ============================================================
    FIREBASE PUSH NOTIFICATIONS
@@ -890,6 +956,10 @@ async function boot() {
           State.pendingNameClaims = c.pendingNameClaims || 0;
           State._dataAsOf = Number(c._ts) || null; // how old the saved board is (stale strip)
           hasCachedState = true;
+          // photos kept on the phone show at once; syncAvatars_ fetches only changed ones
+          const keptPhotos = loadAvatarStore_();
+          State._avatarMap = {};
+          Object.keys(keptPhotos).forEach(id => { if (keptPhotos[id] && keptPhotos[id].a) State._avatarMap[id] = keptPhotos[id].a; });
         }
       } catch(e) {}
     }
@@ -1101,22 +1171,9 @@ async function _doRefreshState() {
       .catch(()=>{})
       .finally(() => { State._careerHistoryPending = false; });
   }
-  // pre-load everyone's avatars in the background, once per session — kept out of
-  // the main getState payload so photos never bloat the frequently-polled state call
-  if (!State._avatarMap) {
-    State._avatarMap = {};
-    const idsWithAvatars = (State.players || []).filter(p => p.hasAvatar).map(p => p.id);
-    if (idsWithAvatars.length > 0) {
-      api('getAvatars', { playerIds: idsWithAvatars }, true).then(d => {
-        State._avatarMap = d.avatars || {};
-        if (State.player && State._avatarMap[State.player.id]) {
-          State.player.avatar = State._avatarMap[State.player.id];
-          saveSession(State.player);
-        }
-        if (State.view === 'standings' || State.view === 'profile') renderContent();
-      }).catch(() => { State._avatarMap = null; /* allow a retry on the next refresh */ });
-    }
-  }
+  // everyone's photos, kept on the phone; only new or changed ones are fetched (kept out
+  // of the main getState payload so photos never bloat the frequently-polled state call)
+  syncAvatars_();
   // user may have logged out while the request was in flight
   if (!State.player) return changed;
   // refresh logged-in player's own record
@@ -3150,14 +3207,33 @@ async function submitMyPicks(week, games) {
   if (btn.disabled) return; // already submitting -- ignore a rapid second tap
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+  let confirmedLate = false;
   try {
     // One requestId per tap: if Google loses the answer, the resend can't save twice.
-    await api('submitPicks', { week, playerId: State.player.id, picks, requestId: newRequestId() });
+    const req = { week, playerId: State.player.id, picks, requestId: newRequestId() };
+    try {
+      await api('submitPicks', req, true);
+    } catch (e) {
+      // The lock is league-wide; a busy moment refuses before saving anything, so the
+      // same request (same requestId) is simply sent once more.
+      if (!/league is busy/i.test(e.message || '')) throw e;
+      await new Promise(r => setTimeout(r, 2000));
+      await api('submitPicks', req, true);
+    }
   } catch (e) {
-    btn.disabled = false;
-    btn.innerHTML = getMyPicksForWeek(week).length > 0 ? 'Update My Picks' : 'Submit My Picks';
-    showToast(e.message || 'Something went wrong -- try again.', 'error');
-    return;
+    // Google often loses the answer AFTER the save ran (error page, "No action.", timeout).
+    // Ask the server what it holds before telling the player it failed.
+    const unclear = e.transient || e.lostReply || e.name === 'AbortError' || e.name === 'TypeError';
+    if (unclear && await picksOnServerMatch_(week, picks)) {
+      confirmedLate = true;
+    } else {
+      btn.disabled = false;
+      btn.innerHTML = getMyPicksForWeek(week).length > 0 ? 'Update My Picks' : 'Submit My Picks';
+      showToast(unclear
+        ? 'Not saved yet — couldn\'t reach the server. Your picks are kept on this phone; tap Save again (it\'s safe to repeat).'
+        : (e.message || 'Something went wrong — try again.'), 'error');
+      return;
+    }
   }
   // Saved. Show it straight away from what was just sent, and refresh in the background.
   // The refresh used to be awaited inside the try above, so when getState failed after a
@@ -3166,11 +3242,32 @@ async function submitMyPicks(week, games) {
   applySubmittedPicksLocally_(week, picks, !!upsetPick);
   clearStoredDraft_(week);
   const left = describePicksLeft_(picksLeftToMake_(games, _draftPicks, _upsetSelection));
-  showToast(left ? `Saved ✓ — still to pick: ${left}` : 'All picks saved ✓', 'success');
+  const slowNote = confirmedLate ? ' (the server was slow to answer)' : '';
+  showToast(left ? `Saved ✓${slowNote} — still to pick: ${left}` : `All picks saved ✓${slowNote}`, 'success');
   // One reload after a save: renderContent's own background refresh plus this forced one
   // used to send two getState calls per save (both to Google, since the save marks the copies stale).
   renderContent({ noRefresh: true });
   silentRefresh(true);
+}
+
+// After a save whose answer got lost: does the server now hold every pick that was sent?
+// A fresh read (afterWrite: the front door must not answer with an older copy); its data
+// is only compared, never applied, so an unsaved draft on screen is left alone.
+async function picksOnServerMatch_(week, sent) {
+  try {
+    const data = await api('getState', { compact: 1, afterWrite: 1 }, true);
+    if (data._asOf) return false; // an old copy can't confirm a new save
+    const mine = unpackPicks(data).filter(p => p.playerId === State.player.id && Number(p.week) === Number(week));
+    const isUp = p => p.isUpset === true || p.isUpset === 'TRUE';
+    return sent.every(s => {
+      if (!s.isUpset) return mine.some(p => !isUp(p) && p.gameId === s.gameId && p.pickedTeam === s.pickedTeam);
+      const up = mine.find(isUp);
+      if (!up || up.pickedTeam !== s.pickedTeam) return false;
+      if (s.gameId) return up.gameId === s.gameId;
+      const g = (data.games || []).find(x => x.gameId === up.gameId); // a searched game the server just created
+      return !!(g && String(g.espnEventId) === String(s.espnEventId));
+    });
+  } catch (e) { return false; }
 }
 
 // Mirrors apiSubmitPicks_ (Code.gs): the sent picks replace those games' saved picks, and
@@ -4098,6 +4195,10 @@ async function renderProfile(content) {
           await api('updateProfile', { playerId: p.id, avatar: b64 });
           State.player.avatar = b64;
           saveSession(State.player); // persists avatar in session AND per-player store
+          // keep it with everyone's photos under the server's fingerprint, so the next
+          // refresh neither shows the old photo nor downloads this one back
+          State._avatarMap = Object.assign({}, State._avatarMap, { [p.id]: b64 });
+          const photos = loadAvatarStore_(); photos[p.id] = { v: avatarVer_(b64), a: b64 }; saveAvatarStore_(photos);
           // update the avatar wrapper in place
           document.getElementById('avatar-wrapper').innerHTML = `
             <img src="${b64}" style="width:52px; height:52px; border-radius:50%; object-fit:cover;" alt="avatar">

@@ -1,4 +1,4 @@
-// v23-admin-week-oct2  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v24-recap-winner-oct5  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -90,7 +90,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v23-admin-week-oct2';
+var CODE_VERSION = 'v24-recap-winner-oct5';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -1610,6 +1610,17 @@ function cacheGetChunked_(cache, key) {
 
 function stateCacheGen_(cache) { return cache.get('appStateGen') || '0'; }
 
+// Short fingerprint of a player's photo ('' = none). The app keeps photos on the phone
+// under this and only asks getAvatars for the ones whose fingerprint changed -- it used
+// to fetch every photo (~0.5 MB, often dropped by Google) once per session.
+function avatarVer_(avatar) {
+  var s = String(avatar || '');
+  if (!s) return '';
+  var h = 5381;
+  for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return s.length.toString(36) + h.toString(36);
+}
+
 // Builds the cacheable half of getState from the sheets (used by getState on a
 // cache miss AND by keepWarm, which used to keep its own copy of this logic).
 function buildSharedState_() {
@@ -1619,7 +1630,7 @@ function buildSharedState_() {
   var players = sheetToObjects(SHEET_NAMES.PLAYERS).map(function(p) { return {
     id: p.id, name: p.name, teamName: p.teamName, isAdmin: !!p.isAdmin, active: !!p.active,
     joinedSeason: p.joinedSeason, memberSince: memberSinceMap[p.id] || p.joinedSeason, careerPoints: Number(p.careerPoints) || 0, email: p.email || '',
-    venmo: p.venmo || '', paypal: p.paypal || '', hasAvatar: !!p.avatar, paymentPref: p.paymentPref || '',
+    venmo: p.venmo || '', paypal: p.paypal || '', hasAvatar: !!p.avatar, avatarVer: avatarVer_(p.avatar), paymentPref: p.paymentPref || '',
     fcmToken: p.fcmToken || '', scoreNotif: p.scoreNotif || 'each', installedAt: p.installedAt || '',
     isPaid: !!(p.isPaid === true || p.isPaid === 'TRUE'), chatNotif: p.chatNotif || 'on', deactivatedAt: p.deactivatedAt || ''
   }; });
@@ -1771,7 +1782,9 @@ function apiGetState(payload) {
     shared.ledger = bundle.ledger;
     shared.bowlPicks = bundle.bowlPicks;
   } else {
-    // Older cached app versions: plain lists read fresh, until they update.
+    // Older cached app versions: plain lists read fresh, until they update. Counted per
+    // day (nightly diagnostics) -- once it stays at 0 this form can be retired.
+    recordDailyCount_('getStatePlain');
     shared.picks = slimPicksForClient_(sheetToObjects(SHEET_NAMES.PICKS), currentWeekOf_(shared));
     shared.ledger = sheetToObjects(SHEET_NAMES.LEDGER).map(withoutRow_);
     shared.bowlPicks = sheetToObjects(SHEET_NAMES.BOWL_PICKS).map(withoutRow_);
@@ -4103,6 +4116,30 @@ function recordPushStats_(sent, failed, removed) {
   } catch (e) {}
 }
 
+// Per-day counts of rare events for the nightly diagnostics (Script Property DAILY_COUNTS,
+// last 8 days): { '2026-10-05': { getStatePlain: 3 } }.
+function recordDailyCount_(key) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var stats = {};
+    try { stats = JSON.parse(props.getProperty('DAILY_COUNTS') || '{}') || {}; } catch (e) {}
+    var day = new Date().toISOString().slice(0, 10);
+    var d = stats[day] || (stats[day] = {});
+    d[key] = (d[key] || 0) + 1;
+    Object.keys(stats).sort().slice(0, -8).forEach(function(k) { delete stats[k]; });
+    props.setProperty('DAILY_COUNTS', JSON.stringify(stats));
+  } catch (e) {}
+}
+function dailyCountTotal_(key, days) {
+  var n = 0;
+  try {
+    var stats = JSON.parse(PropertiesService.getScriptProperties().getProperty('DAILY_COUNTS') || '{}') || {};
+    var since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+    Object.keys(stats).forEach(function(k) { if (k >= since) n += Number((stats[k] || {})[key]) || 0; });
+  } catch (e) {}
+  return n;
+}
+
 // Totals of PUSH_STATS over the last `days` days: { sent, failed, removed }.
 function pushStatsTotals_(days) {
   var t = { sent: 0, failed: 0, removed: 0 };
@@ -5748,6 +5785,10 @@ function apiSubmitPicks(payload) {
   const playerId = payload.playerId;
   const picks = payload.picks || []; // [{gameId, pickedTeam, isUpset, espnEventId?, awayTeam?, homeTeam?, favorite?, spread?, kickoff?}]
 
+  // Refusals that need no sheet read are answered before queueing for the lock.
+  if (picks.filter(p => p.isUpset).length > 1) return { ok: false, error: 'Only one Upset Special pick is allowed.' };
+  if (picks.length === 0) return { ok: false, error: 'Pick at least one game before saving.' };
+
   // Serialize submissions for this exact player+week. Without this, two near-simultaneous
   // requests (double-tap, a retry after a slow response, two tabs open) can each read the
   // same "before" state, then both delete-then-insert -- leaving duplicate rows (e.g. two
@@ -5758,7 +5799,8 @@ function apiSubmitPicks(payload) {
   try {
     lock.waitLock(15000);
   } catch (e) {
-    return { ok: false, error: 'Another submission for this player is still processing -- please try again in a moment.' };
+    // The lock is league-wide: what it waited on was other players' saves, not this one's.
+    return { ok: false, error: 'The league is busy saving other picks -- please try again in a moment.' };
   }
   try {
     // A repeat of a save that already ran (same player + requestId: the app or the Cloudflare
@@ -5786,6 +5828,62 @@ function submitRequestKey_(playerId, requestId) {
   return 'submitReq_' + String(playerId || '') + '_' + requestId;
 }
 
+// Runs of consecutive row numbers: [3,4,5,9] -> [[3,3],[9,1]] ([first row, count]).
+function rowRuns_(rowNums) {
+  var sorted = rowNums.slice().sort(function(a, b) { return a - b; }), runs = [];
+  sorted.forEach(function(r) {
+    var last = runs[runs.length - 1];
+    if (last && last[0] + last[1] === r) last[1]++; else runs.push([r, 1]);
+  });
+  return runs;
+}
+
+// One player's rows on the Picks tab without reading the whole tab: one read of the
+// playerId column, then one read per run of their rows (a week's picks are saved
+// together, so usually one run per week). Rows are shaped like sheetToObjects' (with _row).
+// Call inside the script lock -- the row numbers are only good until the next delete.
+function readPlayerPickRows_(playerId) {
+  var sheet = getSheet(SHEET_NAMES.PICKS);
+  var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
+  var headers = lastCol > 0 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : (HEADERS[SHEET_NAMES.PICKS] || []);
+  var out = { sheet: sheet, headers: headers, rows: [] };
+  if (lastRow < 2) return out;
+  var col = headers.map(function(h) { return String(h).trim(); }).indexOf('playerId');
+  if (col < 0) { out.rows = sheetToObjects(SHEET_NAMES.PICKS).filter(function(p) { return p.playerId === playerId; }); return out; }
+  var ids = sheet.getRange(2, col + 1, lastRow - 1, 1).getValues(), mine = [];
+  ids.forEach(function(r, i) { if (r[0] !== '' && String(r[0]) === String(playerId)) mine.push(i + 2); });
+  rowRuns_(mine).forEach(function(run) {
+    sheet.getRange(run[0], 1, run[1], headers.length).getValues().forEach(function(vals, i) {
+      if (vals[0] === '' || vals[0] === null || vals[0] === undefined) return; // as sheetToObjects
+      var obj = {};
+      headers.forEach(function(h, j) { obj[h] = vals[j]; });
+      obj._row = run[0] + i;
+      out.rows.push(obj);
+    });
+  });
+  return out;
+}
+
+// Writes `objs` as the player's rows in place of `oldRowNums` (from readPlayerPickRows_,
+// same lock): the old rows are overwritten first, any extra new rows appended, any old
+// rows left over deleted bottom-up. A re-save of the same number of picks shifts no rows.
+function replacePlayerPickRows_(onSheet, oldRowNums, objs) {
+  var sheet = onSheet.sheet, headers = onSheet.headers;
+  var vals = objs.map(function(o) { return headers.map(function(h) { return o[h] !== undefined ? o[h] : ''; }); });
+  var old = oldRowNums.slice().sort(function(a, b) { return a - b; });
+  var reuse = old.slice(0, vals.length), k = 0;
+  rowRuns_(reuse).forEach(function(run) {
+    sheet.getRange(run[0], 1, run[1], headers.length).setValues(vals.slice(k, k + run[1]));
+    k += run[1];
+  });
+  if (vals.length > reuse.length) {
+    var rest = vals.slice(reuse.length);
+    sheet.getRange(sheet.getLastRow() + 1, 1, rest.length, headers.length).setValues(rest);
+  }
+  rowRuns_(old.slice(vals.length)).reverse().forEach(function(run) { sheet.deleteRows(run[0], run[1]); });
+  invalidateSheetCache(SHEET_NAMES.PICKS); // also busts getState's picks bundle
+}
+
 function apiSubmitPicks_(payload, week, playerId, picks) {
 
   const weekGames = sheetToObjects(SHEET_NAMES.GAMES).filter(g => Number(g.week) === week);
@@ -5793,7 +5891,10 @@ function apiSubmitPicks_(payload, week, playerId, picks) {
     return { ok: false, error: 'This week is not posted yet.' };
   }
   const now = new Date();
-  const existingPicksForPlayer = sheetToObjects(SHEET_NAMES.PICKS).filter(ep => Number(ep.week) === week && ep.playerId === playerId);
+  // Only this player's rows -- the whole Picks tab (3,000+ rows by mid-season) used to be
+  // read here on every save, inside the league-wide lock.
+  const mineOnSheet = readPlayerPickRows_(playerId);
+  const existingPicksForPlayer = mineOnSheet.rows.filter(ep => Number(ep.week) === week);
 
   // enforce per-game lock for the 10 straight picks: locked if within 5 min of kickoff, already started, or final --
   // applies equally to a first submission and to changing an existing pick. The only picks exempt from this check
@@ -5850,20 +5951,19 @@ function apiSubmitPicks_(payload, week, playerId, picks) {
     createdGame = res.createdGame;
   }
 
-  // Replace the player's picks for the week: grouped row deletes + ONE batched append
-  // (was 11 single-row deletes + 11 appendObject calls = ~35 spreadsheet calls, all
-  // while holding the league-wide script lock that every other submitter waits on).
+  // Replace the player's picks for the week: their existing rows are overwritten in place
+  // (a re-save shifts no rows), extra new rows appended, leftover old rows deleted -- all
+  // while holding the league-wide script lock that every other submitter waits on.
   // Saved picks for games not in this submission (and the saved Upset Special, if none
   // was sent) are carried over unchanged, so a partial save never erases earlier picks.
   const isUpsetRow = p => p.isUpset === true || p.isUpset === 'TRUE';
   const carried = existingPicksForPlayer
     .filter(ep => isUpsetRow(ep) ? !upsetGameId : (boardIds.has(ep.gameId) && !seenIds.has(ep.gameId)))
     .map(ep => ({ week, playerId, gameId: ep.gameId, pickedTeam: ep.pickedTeam, isUpset: isUpsetRow(ep), isAutoDefault: ep.isAutoDefault === true || ep.isAutoDefault === 'TRUE', submittedAt: ep.submittedAt }));
-  deleteRowsByMatch(SHEET_NAMES.PICKS, p => Number(p.week) === week && p.playerId === playerId);
   const submittedAt = new Date().toISOString();
   const newRows = carried.concat(straightPicks.map(p => ({ week, playerId, gameId: p.gameId, pickedTeam: p.pickedTeam, isUpset: false, isAutoDefault: false, submittedAt: submittedAt })));
   if (upsetGameId) newRows.push({ week, playerId, gameId: upsetGameId, pickedTeam: upsetPicks[0].pickedTeam, isUpset: true, isAutoDefault: false, submittedAt: submittedAt });
-  appendObjects_(SHEET_NAMES.PICKS, newRows);
+  replacePlayerPickRows_(mineOnSheet, existingPicksForPlayer.map(ep => ep._row), newRows);
   // Picks are never part of the cached state, so only a newly-created external game needs a cache bust
   if (createdGame) invalidateStateCache();
   const missing = boardGames.filter(g => !newRows.some(r => r.gameId === g.gameId && !r.isUpset)).length;
@@ -7430,6 +7530,9 @@ function buildWeekRecap_(week) {
     });
   });
   perf.sort(function(a, b) { return b.weekPts - a.weekPts; });
+  // Who won the week (and the weekly prize): the highest week points, ties share it.
+  // Stated to the AI and checked in its text -- Week 5's recap crowned the 2nd-best score.
+  var topPts = perf.length ? perf[0].weekPts : 0;
 
   return {
     week: week,
@@ -7437,6 +7540,7 @@ function buildWeekRecap_(week) {
     gameLines: gameLines,
     gameResults: gameResults,
     performances: perf,
+    weekWinners: topPts > 0 ? perf.filter(function(p) { return p.weekPts === topPts; }) : [],
     upsetHitters: perf.filter(function(p) { return p.upsetHit; }),
     perfectWeeks: perf.filter(function(p) { return p.perfect; })
   };
@@ -7464,8 +7568,14 @@ function apiAdminGenerateResultsEmail(payload) {
            ', ' + p.weekPts + ' pts';
   }).join('\n');
 
+  var winners = recap.weekWinners || [];
   var dataBlock =
     'WEEK ' + recap.week + ' — ' + recap.year + '\n\n' +
+    'WEEK WINNER (highest week points -- the ONLY ' + (winners.length > 1 ? 'players who' : 'player who') + ' won the week and the weekly prize): ' +
+      (winners.length
+        ? winners.map(function(p) { return p.team; }).join(' and ') + ' with ' + winners[0].weekPts + ' pts' +
+          (winners.length > 1 ? ' -- a ' + winners.length + '-way TIE, the prize is split' : '')
+        : 'none') + '\n\n' +
     'GAME RESULTS:\n' + recap.gameLines.join('\n') + '\n\n' +
     'PLAYER PERFORMANCE (top 12 by week points):\n' + top + '\n\n' +
     'UPSET SPECIALS HIT: ' + (recap.upsetHitters.length
@@ -7498,6 +7608,9 @@ function apiAdminGenerateResultsEmail(payload) {
     '- An Upset Special only "hits" for a player if they appear in the UPSET SPECIALS HIT list below. If a ' +
     'player is not in that list, their upset pick missed -- even if the team covered the spread or played well. ' +
     'Covering is not the same as winning outright.\n' +
+    '- Only the WEEK WINNER line decides who won the week. Never say anyone else won, took, or topped the week -- not the ' +
+    'biggest Upset Special hit, not the best straight record. The Winners section must open with the week winner(s): the ' +
+    'first player you name there is the week winner, and everyone after is a runner-up.\n' +
     '- When you state a player\'s point total, it must exactly match the number in PLAYER PERFORMANCE. Always ' +
     'write points and scores as numerals (19, not "nineteen") so they can be verified.\n' +
     '- The number of games in a week VARIES (it is not always 10) -- read the actual count from the data.\n' +
@@ -7754,6 +7867,8 @@ function teamMentionsIn_(lower, aliases) {
 }
 
 var RECAP_NEGATION_ = /(\bnot\b|\bnever\b|\bfail(ed|s)?\b|\bfell\b|\bshort\b|n't|n’t|\bno\b)/;
+// "wins the week", "took Week 5", "the week's winner", "weekly champ", "top score of the week"
+var RECAP_WIN_WEEK_ = /\b(?:wins?|won|winning|takes?|took|taking|claims?|claimed|captures?|captured|tops?|topped|owns?|owned)\s+(?:the\s+)?(?:week\b|weekly\b|week\s+\d+\b)|\bweek(?:'s|’s|ly)?\s+(?:winner|champ(?:ion)?|crown)\b|\bwinner of (?:the )?week\b|\b(?:top|high(?:est)?)\s+score\s+of\s+the\s+week\b/;
 
 function validateRecapAccuracy_(bodyHtml, recap) {
   var errors = [];
@@ -7800,6 +7915,11 @@ function validateRecapAccuracy_(bodyHtml, recap) {
   var aliases = buildTeamAliases_(allTeams);
   var gameOf = {};
   (recap.gameResults || []).forEach(function(g) { gameOf[g.awayTeam] = g; gameOf[g.homeTeam] = g; });
+  var winners = recap.weekWinners || [];
+  var isWinner = function(p) { return winners.some(function(w) { return w.team === p.team; }); };
+  var winnerText = winners.length > 1
+    ? winners.map(function(w) { return w.team; }).join(' and ') + ' tied for the week at ' + (winners[0] || {}).weekPts + ' pts'
+    : 'the week winner is ' + (winners[0] || {}).team + ' with ' + (winners[0] || {}).weekPts + ' pts';
 
   sentences.forEach(function(s) {
     var pm = playerMentionsIn_(s.lower);
@@ -7865,6 +7985,34 @@ function validateRecapAccuracy_(bodyHtml, recap) {
         errors.push('The text says ' + subj.team + ' covered, but ' + gg.coveringTeam + ' is the team that covered (' + gg.awayTeam + ' ' + gg.awayScore + ', ' + gg.homeTeam + ' ' + gg.homeScore + ', ' + gg.favorite + ' favored by ' + gg.spread + ').');
       }
     }
+
+    // 6. "wins the week" / "week's winner": the player it's about must be a week winner
+    var wm = RECAP_WIN_WEEK_.exec(s.lower);
+    if (wm && winners.length) {
+      var claimant = null;
+      pm.forEach(function(x) { if (x.end <= wm.index) claimant = x; });
+      if (!claimant) claimant = pm.filter(function(x) { return x.start >= wm.index; })[0] || null;
+      var gap = claimant ? s.lower.slice(Math.min(claimant.end, wm.index), Math.max(claimant.start, wm.index + wm[0].length)) : '';
+      if (claimant && !isWinner(claimant.p) && !RECAP_NEGATION_.test(gap)) {
+        errors.push('The text says ' + claimant.p.team + ' won the week, but ' + winnerText + '.');
+      }
+    }
+  });
+
+  // 7. The Winners section must open with the week winner(s)
+  var labelAt = -1;
+  sentences.forEach(function(s, i) { if (labelAt < 0 && /^(the )?(week(ly)? )?winners?:?$/.test(s.lower)) labelAt = i; });
+  if (labelAt >= 0 && winners.length) {
+    for (var si = labelAt + 1; si < sentences.length; si++) {
+      var first = playerMentionsIn_(sentences[si].lower)[0];
+      if (!first) continue;
+      if (!isWinner(first.p)) errors.push('The Winners section opens with ' + first.p.team + ' (' + first.p.weekPts + ' pts), but ' + winnerText + ' -- lead the Winners section with the week winner.');
+      break;
+    }
+  }
+  // 8. The week winner(s) must be named
+  winners.forEach(function(p) {
+    if (findExactMentions_(textLower, p.team).length === 0) errors.push(p.team + ' won the week with ' + p.weekPts + ' pts but is not mentioned anywhere in the recap.');
   });
 
   // Every player who actually hit their upset must be named in the recap somewhere.
@@ -7909,9 +8057,15 @@ function buildOfficialBoxScoreHtml_(recap) {
       '<strong>' + escapeHtmlGas_(p.team) + '</strong> — ' + p.correct + '/' + p.total + ' straight, ' + escapeHtmlGas_(upsetText) + ', <strong>' + p.weekPts + ' pts</strong>' +
       '</div>';
   }).join('');
+  var winners = recap.weekWinners || [];
+  var winnerRow = winners.length
+    ? '<div style="padding:8px 0 12px;font-size:14px;color:#3a2a00;"><strong>Week ' + escapeHtmlGas_(recap.week) + ' winner' + (winners.length > 1 ? 's (tie)' : '') + ':</strong> ' +
+      winners.map(function(p) { return '<strong>' + escapeHtmlGas_(p.team) + '</strong>'; }).join(' and ') + ' — ' + winners[0].weekPts + ' pts</div>'
+    : '';
   return '<hr style="border:none;border-top:1px solid #ebe5d8;margin:22px 0;">' +
     '<div style="font-size:11px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:#8c6a2a;margin:22px 0 10px;">Official Box Score</div>' +
     '<p style="margin:0 0 10px;font-size:12px;color:#6e7892;">Generated directly from the results data -- this section is always accurate, independent of the recap above.</p>' +
+    winnerRow +
     '<div style="margin-bottom:16px;">' + gamesRows + '</div>' +
     '<div>' + playerRows + '</div>';
 }
@@ -8111,7 +8265,8 @@ function diagSheets_(report, warn, info) {
 function diagTimings_(report, warn, info) {
   var week = Number(getSeasonConfig().currentWeek || 1);
   var tests = [
-    { name: 'getState (cache warm)', fn: function() { return apiGetState({}); } },
+    // compact = what current phones get (the plain form, ~0.5 MB, is only for old app versions)
+    { name: 'getState (cache warm)', fn: function() { return apiGetState({ compact: 1 }); }, warnKB: 300 },
     { name: 'getState (cold rebuild)', fn: function() { return { ok: true, _b: buildSharedState_() }; } },
     { name: 'getStandings', fn: function() { return apiGetStandings({}); } },
     { name: 'getBowlStandings', fn: function() { return apiGetBowlStandings({}); } },
@@ -8132,6 +8287,7 @@ function diagTimings_(report, warn, info) {
     if (!ok) warn(t.name + ' FAILED: ' + (err || (res && res.error) || 'unknown error'));
     else if (ms > 8000) warn(t.name + ' took ' + ms + 'ms (target < 8000ms)');
     if (size > 1500000) warn(t.name + ' returns ' + Math.round(size / 1024) + 'KB -- large payloads are slow on phones.');
+    else if (t.warnKB && size > t.warnKB * 1024) warn(t.name + ' is ' + Math.round(size / 1024) + 'KB -- Google drops replies near 440KB (the app then sees "No action.").');
   });
   _sheetDataCache = {};
 }
@@ -8218,6 +8374,8 @@ function diagIntegrity_(report, warn, info) {
   report.integrity.push({ check: 'Push messages sent (7 days)', count: push.sent });
   report.integrity.push({ check: 'Push messages failed (7 days)', count: push.failed });
   report.integrity.push({ check: 'Dead push registrations removed (7 days)', count: push.removed });
+  // Old app versions still asking for the ~0.5 MB plain getState; 0 for weeks = it can be retired
+  report.integrity.push({ check: 'Old-app getState requests, plain form (7 days)', count: dailyCountTotal_('getStatePlain', 7) });
   if (push.sent + push.failed >= 50 && push.failed - push.removed > push.sent) {
     warn('Push notifications: ' + (push.failed - push.removed) + ' of ' + (push.sent + push.failed) + ' failed in the last 7 days for reasons other than a dead phone -- check the FCM service account.');
   }

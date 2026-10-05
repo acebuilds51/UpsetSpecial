@@ -251,6 +251,82 @@ test('submitPicks leaves other players\' picks untouched', () => {
   eq(all.filter(p => p.playerId === 'p2' && p.isUpset === true)[0].gameId, 'g3');
 });
 
+test('submitPicks reads only the saver\'s rows and rewrites them in place (no whole-tab read, no row shifting on a re-save)', () => {
+  const env = loadBackend(); seedLeague(env);
+  env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' }));
+  env.call('submitPicks', picksPayload('p3', { gameId: 'g2', pickedTeam: 'Away2' }));
+  // an older week's rows for p2 sit below p3's (interleaved, as on the real sheet)
+  const ps = env.ss.getSheetByName('Picks'); const h = ps._data[0];
+  ps.appendRow(h.map(k => ({ week: 0, playerId: 'p2', gameId: 'old', pickedTeam: 'X', isUpset: false })[k] ?? ''));
+  const before = ps._data.map(r => r.slice());
+  const real = env.ctx.sheetToObjects; let wholeTabReads = 0;
+  env.ctx.sheetToObjects = n => { if (n === 'Picks') wholeTabReads++; return real(n); };
+  const deletesBefore = counters.deleteRows;
+  // same 11 picks, one changed: overwritten in place
+  const again = picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' }); again.picks[4].pickedTeam = 'Away5';
+  ok(env.call('submitPicks', again).ok);
+  eq(wholeTabReads, 0, 'whole Picks tab not read'); eq(counters.deleteRows, deletesBefore, 'no rows deleted');
+  eq(ps._data.length, before.length, 'no rows added');
+  ps._data.forEach((r, i) => { if (r[h.indexOf('playerId')] !== 'p2' || r[h.indexOf('week')] !== 1) eq(r, before[i], 'other rows untouched at row ' + (i + 1)); });
+  env.ctx.sheetToObjects = real;
+  let mine = rowsOf(env, 'Picks').filter(p => p.playerId === 'p2' && p.week === 1);
+  eq(mine.length, 11); eq(mine.find(p => p.gameId === 'g5').pickedTeam, 'Away5');
+  // grow: leave only 3 of p2's week-1 rows, then save 11 -> 3 overwritten + 8 appended
+  const keep = []; ps._data.forEach((r, i) => { if (i && r[h.indexOf('playerId')] === 'p2' && r[h.indexOf('week')] === 1) keep.push(i); });
+  keep.slice(3).reverse().forEach(i => ps._data.splice(i, 1)); env.ctx._sheetDataCache = {};
+  ok(env.call('submitPicks', picksPayload('p2', { gameId: 'g3', pickedTeam: 'Away3' })).ok);
+  mine = rowsOf(env, 'Picks').filter(p => p.playerId === 'p2' && p.week === 1);
+  eq(mine.length, 11, 'grew back to 11'); eq(mine.filter(p => p.isUpset === true).map(p => p.gameId), ['g3']);
+  eq(rowsOf(env, 'Picks').filter(p => p.playerId === 'p3').length, 11, 'p3 untouched');
+  eq(rowsOf(env, 'Picks').filter(p => p.playerId === 'p2' && p.week === 0).length, 1, 'old week untouched');
+  // shrink: 13 rows on file (2 stray duplicates) -> 11 written, 2 deleted
+  const extra = ps._data.find((r, i) => i && r[h.indexOf('playerId')] === 'p2' && r[h.indexOf('week')] === 1);
+  ps.appendRow(extra.slice()); ps.appendRow(extra.slice()); env.ctx._sheetDataCache = {};
+  ok(env.call('submitPicks', picksPayload('p2', { gameId: 'g3', pickedTeam: 'Away3' })).ok);
+  eq(rowsOf(env, 'Picks').filter(p => p.playerId === 'p2' && p.week === 1).length, 11, 'strays removed');
+  eq(rowsOf(env, 'Picks').filter(p => p.playerId === 'p3').length, 11, 'p3 still untouched');
+  // the app sees the save at once (picks bundle busted)
+  eq(env.call('getState').picks.filter(p => p.playerId === 'p2' && p.week === 1).length, 11);
+});
+
+test('submitPicks: plain refusals come back without taking the lock; busy lock names the real reason', () => {
+  const env = loadBackend(); seedLeague(env);
+  let locks = 0; env.ctx.LockService.getScriptLock = () => ({ waitLock: () => { locks++; throw new Error('busy'); }, tryLock: () => true, releaseLock: () => {} });
+  const two = picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' }); two.picks.push({ gameId: 'g2', pickedTeam: 'Away2', isUpset: true });
+  ok(/Only one Upset Special/.test(env.call('submitPicks', two).error));
+  ok(/at least one/.test(env.call('submitPicks', { week: 1, playerId: 'p2', picks: [] }).error));
+  eq(locks, 0, 'no lock wait for a refusal');
+  ok(/league is busy saving other picks/.test(env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' })).error));
+});
+
+test('photos: getState carries a per-player avatarVer that changes with the photo and matches the app\'s own', () => {
+  const env = loadBackend(); seedLeague(env);
+  const ps = env.ss.getSheetByName('Players'); const h = ps._data[0];
+  ps._data[2][h.indexOf('avatar')] = 'data:image/jpeg;base64,AAAA'; env.ctx.invalidateStateCache(); env.ctx._sheetDataCache = {};
+  let p = env.call('getState', { compact: 1 }).players;
+  const v1 = p.find(x => x.id === 'p2').avatarVer;
+  ok(v1 && p.find(x => x.id === 'p3').avatarVer === '', 'no photo = empty version');
+  ok(p.find(x => x.id === 'p2').hasAvatar, 'hasAvatar kept for older apps');
+  ps._data[2][h.indexOf('avatar')] = 'data:image/jpeg;base64,AAAB'; env.ctx.invalidateStateCache(); env.ctx._sheetDataCache = {};
+  p = env.call('getState', { compact: 1 }).players;
+  ok(p.find(x => x.id === 'p2').avatarVer !== v1, 'changes with the photo');
+  // the app computes the same fingerprint for a photo it just uploaded
+  const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+  const src = html.slice(html.indexOf('function avatarVer_('), html.indexOf('function loadAvatarStore_('));
+  const ctx = {}; vm.createContext(ctx); vm.runInContext(src, ctx);
+  const big = 'data:image/jpeg;base64,' + require('crypto').randomBytes(9000).toString('base64');
+  eq(ctx.avatarVer_(big), env.ctx.avatarVer_(big)); eq(ctx.avatarVer_(''), '');
+});
+
+test('plain (old-app) getState requests are counted per day for the nightly report; compact ones are not', () => {
+  const env = loadBackend(); seedLeague(env);
+  const base = env.ctx.dailyCountTotal_('getStatePlain', 7); // seedLeague's own plain call
+  env.call('getState', { compact: 1 }); env.call('getState', { compact: 1 });
+  eq(env.ctx.dailyCountTotal_('getStatePlain', 7), base);
+  env.call('getState'); env.call('getState');
+  eq(env.ctx.dailyCountTotal_('getStatePlain', 7), base + 2);
+});
+
 test('BUG FIX: Upset Special on the favorite of a NEW external game is rejected', () => {
   const env = loadBackend(); seedLeague(env);
   const r = env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Fav U' }));
@@ -644,7 +720,7 @@ function week4RecapFixture() {
     perf('KILO', 6, 'Cincinnati Bearcats +6.5', 12.5), perf('LIMA', 6, 'Iowa Hawkeyes +5.5', 11.5)
   ];
   return {
-    performances, upsetHitters: performances.filter(p => p.upsetHit), perfectWeeks: [],
+    performances, upsetHitters: performances.filter(p => p.upsetHit), perfectWeeks: [], weekWinners: [performances[0]],
     gameResults: [
       game('Texas Longhorns', 20, 'Tennessee Volunteers', 17, 'Texas Longhorns', 5.5),
       game('Iowa Hawkeyes', 20, 'Michigan Wolverines', 19, 'Michigan Wolverines', 5.5),
@@ -685,6 +761,45 @@ test('recap checker: catches the real Week 4 mistakes (wrong group, margin, "mos
   has(/cut off/);
   ok(!errs.some(e => /credited with/.test(e)), 'no false point-total alarms: ' + errs.join(' | '));
   ok(!errs.some(e => /Michigan Wolverines covered/.test(e)), 'no false Michigan alarm');
+});
+
+test('REGRESSION (wk5 recap): crowning the 2nd-best score as week winner is caught; the real winner is stated to the AI', () => {
+  const env = loadBackend();
+  const fx = week4RecapFixture();
+  const LABEL = '<div style="font-size:11px;">WINNERS</div>';
+  // Week 5's mistake: BRAVO (17) "wins the week" while ALPHA (18) out-pointed them
+  const bad = P('Chaos everywhere.') + LABEL +
+    '<div style="border-left:4px solid #F2B632;"><p style="margin:0;"><strong>BRAVO</strong> wins the week at 17 pts — 7/10 straight.</p></div>' +
+    '<ul style="list-style:none;"><li>&rarr; <strong>ALPHA</strong> — 18 pts, UPSET HIT on Minnesota.</li></ul>';
+  const errs = env.ctx.validateRecapAccuracy_(bad, fx);
+  ok(errs.some(e => /BRAVO won the week, but the week winner is ALPHA with 18 pts/.test(e)), errs.join(' | '));
+  ok(errs.some(e => /Winners section opens with BRAVO/.test(e)), errs.join(' | '));
+  // correct versions raise nothing new
+  const good = P('Chaos everywhere.') + LABEL + P('<strong>ALPHA</strong> wins the week at 18 pts. <strong>BRAVO</strong> fell 1 short of winning the week at 17 pts.');
+  eq(env.ctx.validateRecapAccuracy_(good, fx).filter(e => /week|Winners/.test(e)), []);
+  ok(env.ctx.validateRecapAccuracy_(P('Nothing here.'), fx).some(e => /ALPHA won the week with 18 pts but is not mentioned/.test(e)), 'winner must be named');
+  // ties: both named winners are fine, a third isn't
+  const tie = Object.assign({}, fx, { weekWinners: [fx.performances[0], Object.assign({}, fx.performances[1], { weekPts: 18 })] });
+  eq(env.ctx.validateRecapAccuracy_(P('ALPHA and BRAVO split the week.') + LABEL + P('BRAVO takes the week too.'), tie).filter(e => /week/.test(e)), []);
+  // buildWeekRecap_ + the prompt: highest points wins, and the AI is told so
+  env.ctx.sheetToObjects = name => ({
+    Season: [{ key: 'year', value: 2026 }],
+    Games: [{ week: 5, gameId: 'a', awayTeam: 'Dog', homeTeam: 'Fav', favorite: 'Fav', spread: 10, isFinal: true, finalAwayScore: 30, finalHomeScore: 20, source: 'espn' },
+            { week: 5, gameId: 'b', awayTeam: 'Pup', homeTeam: 'Big', favorite: 'Big', spread: 5.5, isFinal: true, finalAwayScore: 31, finalHomeScore: 28, source: 'espn' }],
+    Picks: [{ week: 5, playerId: 'x', gameId: 'a', pickedTeam: 'Dog', isUpset: true }, { week: 5, playerId: 'x', gameId: 'b', pickedTeam: 'Pup', isUpset: false },
+            { week: 5, playerId: 'y', gameId: 'b', pickedTeam: 'Pup', isUpset: true }, { week: 5, playerId: 'y', gameId: 'a', pickedTeam: 'Dog', isUpset: false }],
+    Players: [{ id: 'x', teamName: 'TEN DOG', active: true }, { id: 'y', teamName: 'FIVE DOG', active: true }]
+  })[name] || [];
+  const recap = env.ctx.buildWeekRecap_(5);
+  eq(recap.weekWinners.map(p => p.team), ['TEN DOG']); eq(recap.weekWinners[0].weekPts, 11);
+  ok(/Week 5 winner:<\/strong> <strong>TEN DOG<\/strong> — 11 pts/.test(env.ctx.buildOfficialBoxScoreHtml_(recap)), 'box score names the winner');
+  let sent = '';
+  env.props.ANTHROPIC_API_KEY = 'k';
+  env.ctx.requireAdmin = () => {};
+  env.ctx.UrlFetchApp.fetch = (u, o) => { sent = JSON.parse(o.payload).messages[0].content; return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ content: [{ type: 'text', text: P('TEN DOG wins the week at 11 pts.') }], stop_reason: 'end_turn' }) }; };
+  const d = env.ctx.apiAdminGenerateResultsEmail({ week: 5 });
+  ok(/WEEK WINNER .*: TEN DOG with 11 pts/.test(sent), sent.slice(0, 300));
+  ok(d.ok, JSON.stringify(d));
 });
 
 test('REGRESSION (wk5): ESPN odds using a shorter team code still find the favorite ("AF -3.5" vs abbr AFA)', () => {
