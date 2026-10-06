@@ -1,4 +1,4 @@
-// v24-recap-winner-oct5  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
+// v25-lean-reads-oct6  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
 // ============================================================
 //  UPSET SPECIAL — Notifications & week/season finalization (v2, Sep 2026)
 //

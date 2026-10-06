@@ -260,7 +260,7 @@ test('copies: a read that was on its way while something changed is never kept a
   assert.deepEqual(await r.json(), { ok: true, v: 'NEW' }, 'the OLD answer was not served as a copy');
 });
 
-test('copies: max age -- chat copies last 30 s, then go back to Apps Script', async () => {
+test('copies: chat copies (us5) last until a post / any change, max 15 min, then go back to Apps Script', async () => {
   const w = setup2();
   await w.stale();
   await w.post({ action: 'getMessages', type: 'general' });
@@ -268,9 +268,15 @@ test('copies: max age -- chat copies last 30 s, then go back to Apps Script', as
   assert.equal(w.hits.getMessages, 1);
   w.env.DB.raw.prepare("UPDATE copies SET stored_at = stored_at - 31000 WHERE key = 'getMessages|general'").run();
   await w.post({ action: 'getMessages', type: 'general' });
-  assert.equal(w.hits.getMessages, 2);
+  assert.equal(w.hits.getMessages, 1, 'still current after 30 s (was the old limit)');
+  await w.post({ action: 'postMessage', type: 'general', message: 'hi' });
+  await w.post({ action: 'getMessages', type: 'general' });
+  assert.equal(w.hits.getMessages, 2, 'a post drops the copy at once');
+  w.env.DB.raw.prepare("UPDATE copies SET stored_at = stored_at - 15 * 60000 - 1000 WHERE key = 'getMessages|general'").run();
+  await w.post({ action: 'getMessages', type: 'general' });
+  assert.equal(w.hits.getMessages, 3, 'max age 15 min');
   await w.post({ action: 'getMessages', type: 'commissioner' });
-  assert.equal(w.hits.getMessages, 3, 'each channel has its own copy');
+  assert.equal(w.hits.getMessages, 4, 'each channel has its own copy');
 });
 
 test('copies: each player\'s Trophy Room is its own copy; old-app getState (not compact) and ok:false answers are never copied', async () => {

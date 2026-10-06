@@ -1210,7 +1210,7 @@ test('BUG FIX: Trophy Room counts this season\'s Upset Specials once (not again 
   env.ctx.invalidateStateCache();
   env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U' }));
   finishWeek(env, kickoff, 2);
-  const room = () => { env.cache.remove('trophy_v4_p2'); return env.call('getTrophyRoom', { playerId: 'p2' }); };
+  const room = () => { env.cache.remove('trophy_v5_p2'); return env.call('getTrophyRoom', { playerId: 'p2' }); };
   let t = room();
   ok(t.ok, t.error);
   eq([t.upsetAttempts, t.upsetHits, t.totalUpsetPts], [1, 1, 14], 'before the wrap-up: counted from picks');
@@ -1897,6 +1897,114 @@ test('approving a claim relinks UpsetHistory in one column write and refreshes t
   const rows = rowsOf(env, 'UpsetHistory');
   eq(rows.map(r => r.playerId), ['p2', 'x']);
   ok(busted > 0, 'UpsetHistory index busted');
+});
+
+// ---------------------------------------------------------------- v25: lean reads (2026-10-06)
+test('Trophy Room: history tabs come from one shared cached copy; same answers; bio email never sent; writes and hand edits show at once', () => {
+  const env = loadBackend(); seedLeague(env);
+  const add = (name, o) => { const s = env.ss.getSheetByName(name); s.appendRow(s._data[0].map(h => o[h] ?? '')); };
+  add('SeasonTrophies', { playerId: 'p2', teamName: 'TEAM2', year: 2021, position: 2, points: 90 });
+  add('SeasonTrophies', { playerId: 'p2', teamName: 'TEAM2', year: 2019, position: 1, points: 99 });
+  add('SeasonTrophies', { playerId: 'p3', teamName: 'TEAM3', year: 2019, position: 2, points: 95 });
+  add('BowlWinners', { playerId: 'p2', name: 'Pat Two', teamName: 'TEAM2', year: 2022, position: 3, points: 12 });
+  add('PerfectWeeks', { playerId: 'p2', teamName: 'TEAM2', week: 4, year: 2020, totalGames: 10 });
+  add('PerfectWeeks', { playerId: 'p3', teamName: 'TEAM3', week: 5, year: 2020, totalGames: 10 });
+  add('NameClaims', { claimId: 'c1', playerId: 'p2', claimedTeamName: 'OLD TWO', status: 'approved' });
+  add('NameClaims', { claimId: 'c2', playerId: 'p2', claimedTeamName: 'NOPE', status: 'pending' });
+  add('Bios', { playerId: 'p2', teamName: 'TEAM2', hometown: 'Richmond', email: 'secret@example.com', bioText: 'hi' });
+  const uh = env.ss.getSheetByName('UpsetHistory'); const uhh = uh._data[0];
+  uh.appendRow(uhh.map(h => ({ year: 2018, week: 2, teamName: 'OLD TWO', upsetPick: 'Claimed Dog', spread: 9, attempted: true, hit: true, upsetPts: 9 })[h] ?? ''));
+  uh.appendRow(uhh.map(h => ({ year: 2018, week: 2, teamName: 'NOPE', upsetPick: 'Not Mine', spread: 30, attempted: true, hit: true, upsetPts: 30 })[h] ?? ''));
+  env.ctx._sheetDataCache = {}; env.ctx.invalidateStateCache(); env.ctx.invalidateUpsetHistoryIndex_();
+  const room = id => { env.cache.remove('trophy_v5_' + id); env.ctx._sheetDataCache = {}; return env.call('getTrophyRoom', { playerId: id }); };
+  let t = room('p2');
+  ok(t.ok, t.error);
+  eq(t.trophies, [{ year: 2019, position: 1, points: 99 }, { year: 2021, position: 2, points: 90 }]);
+  eq(t.champYears, [2019]);
+  eq(t.bowlTrophies, [{ year: 2022, position: 3, points: 12, type: 'bowl' }]);
+  eq(t.perfectWeeks, [{ week: 4, year: 2020, games: 10 }]);
+  eq(t.leaguePerfectCount, 2);
+  eq([t.upsetHits, t.biggestUpset && t.biggestUpset.team], [1, 'Claimed Dog'], 'approved claim counted, pending one not');
+  eq([t.bio.hometown, t.bio.bioText], ['Richmond', 'hi']);
+  ok(!('email' in t.bio) && !('_row' in t.bio), 'bio email is not sent to whoever opens the Trophy Room');
+  // another player's visit reads none of those tabs again
+  const reads = countSheetReads(env);
+  t = room('p3');
+  eq(t.trophies, [{ year: 2019, position: 2, points: 95 }]);
+  eq([t.bio, t.bowlTrophies, t.perfectWeeks.length], [null, [], 1]);
+  eq(['SeasonTrophies', 'BowlWinners', 'PerfectWeeks', 'NameClaims', 'Bios'].map(n => reads[n]), [undefined, undefined, undefined, undefined, undefined], JSON.stringify(reads));
+  // saveBio (router) shows at once
+  ok(env.call('saveBio', { playerId: 'p2', hometown: 'Norfolk' }).ok);
+  eq(env.call('getTrophyRoom', { playerId: 'p2' }).bio.hometown, 'Norfolk');
+  // a hand edit (onSheetChange) shows at once
+  add('SeasonTrophies', { playerId: 'p3', teamName: 'TEAM3', year: 2023, position: 1, points: 101 });
+  env.ctx.onSheetChange({ changeType: 'EDIT' });
+  eq(room('p3').champYears, [2023]);
+  // the week wrap-up's perfect-week archive also busts it (archivePerfectWeeks_ -> invalidateStateCache)
+  add('PerfectWeeks', { playerId: 'p3', teamName: 'TEAM3', week: 6, year: 2026, totalGames: 10 });
+  env.ctx.invalidateStateCache();
+  eq(room('p3').perfectWeeks.length, 2);
+});
+
+test('admin checks and the all-time leaderboard use the cached player list, not the avatar-heavy Players tab', () => {
+  const env = loadBackend(); seedLeague(env);
+  env.ss.getSheetByName('PerfectWeeks').appendRow(['p2', 'TEAM2', 3, 2025, 10]);
+  env.ss.getSheetByName('CareerHistory').appendRow(['p2', 'Pat Two', 'TEAM2', 2025, 120]);
+  env.ctx.invalidateStateCache(); env.ctx.invalidateCareerHistoryCache();
+  env.call('getState'); // the app / keepWarm has the state cached
+  const reads = countSheetReads(env);
+  env.ctx._sheetDataCache = {};
+  env.ctx.requireAdmin({ adminId: 'p1' });
+  let threw = false; try { env.ctx.requireAdmin({ adminId: 'p2' }); } catch (e) { threw = /Admin access/.test(e.message); }
+  ok(threw, 'non-admin still refused');
+  const lb = env.call('getAllTimeLeaderboard');
+  ok(lb.ok, lb.error);
+  const me = lb.leaderboard.find(r => r.playerId === 'p2');
+  eq([me && me.teamName, me && me.perfectWeeks.length, me && me.seasons], ['TEAM2', 1, 1]);
+  eq(reads.Players, undefined, JSON.stringify(reads));
+  // demoting an admin by hand takes effect at once (manual edit busts the cached list)
+  const pl = env.ss.getSheetByName('Players'); const h = pl._data[0];
+  pl._data.forEach((row, i) => { if (i && row[h.indexOf('id')] === 'p1') row[h.indexOf('isAdmin')] = false; });
+  env.ctx.onSheetChange({ changeType: 'EDIT' });
+  env.ctx._sheetDataCache = {};
+  threw = false; try { env.ctx.requireAdmin({ adminId: 'p1' }); } catch (e) { threw = true; }
+  ok(threw, 'demoted admin refused');
+  // nothing cached at all -> falls back to the sheet
+  env.ctx.invalidateStateCache(); env.ctx._sheetDataCache = {};
+  pl._data.forEach((row, i) => { if (i && row[h.indexOf('id')] === 'p1') row[h.indexOf('isAdmin')] = true; });
+  env.ctx.requireAdmin({ adminId: 'p1' });
+});
+
+test('chat cache: kept 10 min when hand edits are watched (30s otherwise); posts, deletes and hand edits show at once; a read racing a post never caches the old list', () => {
+  const env = loadBackend(); seedLeague(env);
+  const ttls = {}; const put = env.cache.put;
+  env.cache.put = (k, v, ttl) => { ttls[k] = ttl; return put(k, v, ttl); };
+  env.call('getMessages', { type: 'general' });
+  eq(ttls.chat_general_2026, 30, 'unwatched: as before');
+  env.ctx.installSheetChangeTrigger();
+  env.cache.remove('chat_general_2026');
+  env.call('getMessages', { type: 'general' });
+  eq(ttls.chat_general_2026, 600, 'watched: 10 min');
+  const r = env.call('postMessage', { playerId: 'p2', type: 'general', message: 'first' });
+  ok(r.ok, r.error);
+  eq(env.call('getMessages', { type: 'general' }).messages.map(m => m.message), ['first'], 'post visible at once');
+  ok(env.call('deleteMessage', { adminId: 'p1', messageId: r.messageId }).ok);
+  eq(env.call('getMessages', { type: 'general' }).messages.length, 0, 'delete visible at once');
+  ok(env.call('postMessage', { playerId: 'p2', type: 'general', message: 'second' }).ok);
+  eq(env.call('getMessages', { type: 'general' }).messages.length, 1);
+  // the commissioner deletes the row by hand in the Sheet
+  const ms = env.ss.getSheetByName('Messages'); ms._data.splice(1, 1);
+  env.ctx.onSheetChange({ changeType: 'REMOVE_ROW' });
+  env.ctx._sheetDataCache = {};
+  eq(env.call('getMessages', { type: 'general' }).messages.length, 0, 'hand delete visible at once');
+  // a read whose sheet read happens before a post lands must not cache its (old) list
+  env.cache.remove('chat_general_2026');
+  const orig = env.ctx.sheetToObjects;
+  env.ctx.sheetToObjects = function(name) { const rows = orig(name); if (name === 'Messages') env.ctx.invalidateChatCache_(2026); return rows; };
+  env.ctx._sheetDataCache = {};
+  env.ctx.apiGetMessages({ type: 'general' });
+  env.ctx.sheetToObjects = orig;
+  eq(env.cache.get('chat_general_2026'), null, 'racing read not cached');
 });
 
 // ---------------------------------------------------------------- report

@@ -1,4 +1,4 @@
-// v24-recap-winner-oct5  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v25-lean-reads-oct6  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -90,7 +90,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v24-recap-winner-oct5';
+var CODE_VERSION = 'v25-lean-reads-oct6';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -547,7 +547,10 @@ function setSeasonConfig(key, value) {
 }
 
 function requireAdmin(payload) {
-  const players = sheetToObjects(SHEET_NAMES.PLAYERS);
+  // Cached player list (same isAdmin flag; every write and manual edit busts it): reading the
+  // Players tab here loaded every base64 avatar on every admin action, even ones that never
+  // touch players (email templates, line overrides...). Sheet fallback when nothing is cached.
+  const players = playersLite_();
   const player = players.find(p => p.id === payload.adminId);
   if (!player || !player.isAdmin) throw new Error('Admin access required.');
 }
@@ -1963,7 +1966,7 @@ function invalidateStateCache() {
 }
 
 function invalidateTrophyCache(playerId) {
-  try { CacheService.getScriptCache().remove('trophy_v4_' + playerId); } catch(e) {}
+  try { CacheService.getScriptCache().remove('trophy_v5_' + playerId); } catch(e) {}
   markFrontDoorStale_();
 }
 
@@ -3453,18 +3456,34 @@ function apiGetMessages(payload) {
   // even when the messages themselves came from the 30s cache
   var season = seasonYearLite_();
   var type = payload.type || 'general';
-  // Cache chat messages for 30s — players see near-real-time updates without hammering Sheets
+  // Cached chat list. Every post/delete busts it (invalidateChatCache_), and so does a manual
+  // edit once onSheetChange is installed -- then it is kept 10 min (was 30s, so most reads
+  // re-read the Messages tab); without that trigger, 30s as before. The generation check
+  // stops a read that started before a post from caching the list without it.
   var cache = CacheService.getScriptCache();
   var cacheKey = 'chat_' + type + '_' + season;
   try {
     var cached = cache.get(cacheKey);
     if (cached) return { ok: true, messages: JSON.parse(cached) };
   } catch(e) {}
+  var genBefore = cache.get('chatGen') || '0';
   var messages = sheetToObjects(SHEET_NAMES.MESSAGES)
     .filter(function(m) { return String(m.season) === String(season) && m.type === type; })
     .sort(function(a, b) { return new Date(a.postedAt) - new Date(b.postedAt); });
-  try { cache.put(cacheKey, JSON.stringify(messages), 30); } catch(e) {}
+  try {
+    if ((cache.get('chatGen') || '0') === genBefore) cache.put(cacheKey, JSON.stringify(messages), sheetChangeWatched_() ? 600 : 30);
+  } catch(e) {}
   return { ok: true, messages: messages };
+}
+
+// Busts both chat lists (and any read of them already on its way) + marks the Worker's copies stale.
+function invalidateChatCache_(season) {
+  try {
+    var cache = CacheService.getScriptCache();
+    cache.put('chatGen', String(Date.now()) + Math.random().toString(36).slice(2, 6), 21600);
+    cache.removeAll(['chat_general_' + season, 'chat_commissioner_' + season]);
+  } catch(e) {}
+  markFrontDoorStale_();
 }
 
 function apiPostMessage(payload) {
@@ -3498,9 +3517,8 @@ function apiPostMessage(payload) {
     season: season
   });
   // Bust chat cache AFTER the append (busting before it let a concurrent reader
-  // re-cache the list without the new message for 30s)
-  try { CacheService.getScriptCache().remove('chat_' + type + '_' + season); } catch(e) {}
-  markFrontDoorStale_();
+  // re-cache the list without the new message)
+  invalidateChatCache_(season);
 
   // send push notification: commissioner messages notify everyone (using the same
   // shared broadcast helper as board-posted alerts); general messages only notify
@@ -3683,13 +3701,63 @@ function readPlayerAvatar_(playerId) {
   return '';
 }
 
+// ---- Trophy Room tables ------------------------------------------------------
+// The Trophy Room's small history tabs -- SeasonTrophies, BowlWinners, PerfectWeeks, approved
+// NameClaims, Bios -- were read one by one on every uncached visit (five sheet reads, most of
+// its ~4.5s p50). They change only through router writes (archives, claim reviews, bowl
+// winners, saveBio), the week wrap-up (archivePerfectWeeks_) and manual edits, and every one of
+// those busts the state cache. So one summary is cached for all players and tied to the state
+// cache generation: any bust makes it a miss. The expiry is only the safety net for a bust
+// that never came (6h when manual edits are watched, 6 min otherwise -- as the UpsetHistory index).
+// Bios leave out `email`: the Trophy Room is open to anyone and the app never shows it.
+var TROPHY_TABLES_KEY = 'trophyTables_v1';
+function getTrophyTables_() {
+  var cache = CacheService.getScriptCache();
+  var gen = stateCacheGen_(cache);
+  try {
+    var raw = cacheGetChunked_(cache, TROPHY_TABLES_KEY);
+    if (raw) {
+      var hit = JSON.parse(raw);
+      if (hit.gen === gen) { perfNote_('trophyTables', 'hit'); return hit; }
+    }
+  } catch (e) {}
+  perfNote_('trophyTables', 'miss');
+  var rowsOf = function(name) { try { return sheetToObjects(name); } catch (e) { return []; } };
+  var t = { gen: gen, claims: {}, trophies: {}, bowl: {}, pw: [], bios: {} };
+  rowsOf(SHEET_NAMES.NAME_CLAIMS).forEach(function(r) {
+    if (r.status === 'approved') (t.claims[r.playerId] = t.claims[r.playerId] || []).push(String(r.claimedTeamName || ''));
+  });
+  rowsOf(SHEET_NAMES.SEASON_TROPHIES).forEach(function(r) {
+    (t.trophies[r.playerId] = t.trophies[r.playerId] || []).push({ year: Number(r.year), position: Number(r.position), points: Number(r.points) });
+  });
+  rowsOf(SHEET_NAMES.BOWL_WINNERS).forEach(function(r) {
+    (t.bowl[r.playerId] = t.bowl[r.playerId] || []).push({ year: Number(r.year), position: Number(r.position), points: Number(r.points) });
+  });
+  t.pw = rowsOf(SHEET_NAMES.PERFECT_WEEKS).map(function(r) {
+    return { playerId: r.playerId, teamName: r.teamName, week: r.week, year: r.year, totalGames: r.totalGames };
+  });
+  rowsOf(SHEET_NAMES.BIOS).forEach(function(b) {
+    if (t.bios[b.playerId]) return; // the first row wins, as before
+    var o = withoutRow_(b);
+    delete o.email;
+    t.bios[b.playerId] = o;
+  });
+  t = JSON.parse(JSON.stringify(t)); // dates as the reply carries them, hit or miss
+  try {
+    if (stateCacheGen_(cache) === gen) {
+      cachePutChunked_(cache, TROPHY_TABLES_KEY, JSON.stringify(t), sheetChangeWatched_() ? 21600 : 360);
+    }
+  } catch (e) {}
+  return t;
+}
+
 function apiGetTrophyRoom(payload) {
   var targetPlayerId = payload.playerId;
   if (!targetPlayerId) return { ok: false, error: 'Missing playerId.' };
 
   // CacheService cache — 5 min TTL, busted on bio/profile updates
-  // (v4: this season's Upset Specials are no longer double-counted)
-  var cacheKey = 'trophy_v4_' + targetPlayerId;
+  // (v4: this season's Upset Specials are no longer double-counted; v5: bio without email)
+  var cacheKey = 'trophy_v5_' + targetPlayerId;
   try {
     var cached = CacheService.getScriptCache().get(cacheKey);
     if (cached) {
@@ -3706,45 +3774,35 @@ function apiGetTrophyRoom(payload) {
 
   var norm = trophyNorm_;
 
+  // SeasonTrophies / BowlWinners / PerfectWeeks / approved NameClaims / Bios, from one
+  // cached copy (getTrophyTables_) instead of five sheet reads per uncached visit
+  var tables = getTrophyTables_();
+
   // Build myTeamNorms from NameClaims only — no CareerHistory scan needed
   // Current team name + any approved claimed names
   var playerNorm = norm(player.teamName);
   var myTeamNorms = [playerNorm];
-  try {
-    sheetToObjects(SHEET_NAMES.NAME_CLAIMS)
-      .filter(function(r) { return r.playerId === targetPlayerId && r.status === 'approved'; })
-      .forEach(function(r) {
-        var n = norm(r.claimedTeamName);
-        if (n && myTeamNorms.indexOf(n) < 0) myTeamNorms.push(n);
-      });
-  } catch(e) {}
+  (tables.claims[targetPlayerId] || []).forEach(function(claimed) {
+    var n = norm(claimed);
+    if (n && myTeamNorms.indexOf(n) < 0) myTeamNorms.push(n);
+  });
 
-  // Regular season trophies — read from SeasonTrophies sheet (pre-archived)
+  // Regular season trophies — from the SeasonTrophies sheet (pre-archived)
   // Run apiAdminArchiveSeasonTrophies to backfill all historical years.
-  // No more scanning CareerHistory for ranking — fast single sheet read.
+  // No more scanning CareerHistory for ranking.
   var trophies = [];
   var champYears = [];
-  try {
-    sheetToObjects(SHEET_NAMES.SEASON_TROPHIES)
-      .filter(function(r) { return r.playerId === targetPlayerId; })
-      .forEach(function(r) {
-        var pos = Number(r.position);
-        var yr = Number(r.year);
-        trophies.push({ year: yr, position: pos, points: Number(r.points) });
-        if (pos === 1) champYears.push(yr);
-      });
-  } catch(e) {}
+  (tables.trophies[targetPlayerId] || []).forEach(function(r) {
+    trophies.push({ year: r.year, position: r.position, points: r.points });
+    if (r.position === 1) champYears.push(r.year);
+  });
   trophies.sort(function(a, b) { return a.year - b.year; });
   champYears.sort(function(a, b) { return a - b; });
 
   // Bowl trophies
-  var bowlTrophies = [];
-  try {
-    sheetToObjects('BowlWinners').filter(function(r) { return r.playerId === targetPlayerId; })
-      .forEach(function(r) {
-        bowlTrophies.push({ year: Number(r.year), position: Number(r.position), points: Number(r.points), type: 'bowl' });
-      });
-  } catch(e) {}
+  var bowlTrophies = (tables.bowl[targetPlayerId] || []).map(function(r) {
+    return { year: r.year, position: r.position, points: r.points, type: 'bowl' };
+  });
 
   // Upset stats from UpsetHistory — match any teamName this player has ever used
   var config = {};
@@ -3787,26 +3845,22 @@ function apiGetTrophyRoom(payload) {
     }
   });
 
-  // Perfect weeks — read from PerfectWeeks sheet only (pre-archived by apiAdminArchivePerfectWeeks)
-  // No more scanning all picks/games — O(1) sheet read instead of O(players*weeks*games)
+  // Perfect weeks — from the PerfectWeeks sheet only (pre-archived by apiAdminArchivePerfectWeeks)
+  // No more scanning all picks/games
   var perfectWeeks = [];
-  try {
-    sheetToObjects(SHEET_NAMES.PERFECT_WEEKS)
-      .filter(function(r) {
-        if (r.playerId && r.playerId === targetPlayerId) return true;
-        if (!r.playerId || r.playerId === '') return myTeamNorms.indexOf(norm(r.teamName)) >= 0;
-        return false;
-      })
-      .forEach(function(r) { perfectWeeks.push({ week: Number(r.week), year: Number(r.year), games: Number(r.totalGames) || 10 }); });
-  } catch(e) {}
+  tables.pw
+    .filter(function(r) {
+      if (r.playerId && r.playerId === targetPlayerId) return true;
+      if (!r.playerId || r.playerId === '') return myTeamNorms.indexOf(norm(r.teamName)) >= 0;
+      return false;
+    })
+    .forEach(function(r) { perfectWeeks.push({ week: Number(r.week), year: Number(r.year), games: Number(r.totalGames) || 10 }); });
 
   // League perfect week count — just the sheet length
-  var pwAll = [];
-  try { pwAll = sheetToObjects(SHEET_NAMES.PERFECT_WEEKS); } catch(e) {}
-  var leaguePerfectCount = pwAll.length;
+  var leaguePerfectCount = tables.pw.length;
 
-  // Bio
-  var bio = sheetToObjects(SHEET_NAMES.BIOS).find(function(b) { return b.playerId === targetPlayerId; }) || null;
+  // Bio (without the email field -- see getTrophyTables_)
+  var bio = tables.bios[targetPlayerId] || null;
 
   var result = {
     ok: true,
@@ -4325,12 +4379,8 @@ function apiDeleteMessage(payload) {
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][idIdx]).trim() === messageId) {
       sheet.deleteRow(i + 1);
-      // bust the chat cache so the deleted message disappears immediately (was up to 30s)
-      try {
-        var season = getSeasonConfig().year || new Date().getFullYear();
-        CacheService.getScriptCache().removeAll(['chat_general_' + season, 'chat_commissioner_' + season]);
-      } catch(e) {}
-      markFrontDoorStale_();
+      // bust the chat cache so the deleted message disappears immediately
+      invalidateChatCache_(seasonYearLite_());
       return { ok: true };
     }
   }
@@ -5143,9 +5193,11 @@ function installKeepWarmTrigger() {
 // Apps Script editor; after that manual fixes show up in the app immediately and
 // keepWarm can skip rebuilding the state when nothing changed.
 function onSheetChange(e) {
-  runWithOneStaleSignal_(function() { // one Worker signal (scope 'history') for both busts
+  runWithOneStaleSignal_(function() { // one Worker signal (scope 'history') for all the busts
+    var season = seasonYearLite_(); // read before the state cache it comes from is busted
     invalidateCareerHistoryCache(); // also busts the state cache (memberSince comes from it)
     invalidateUpsetHistoryIndex_();
+    invalidateChatCache_(season);   // a hand-deleted message must not live on in the chat cache
   });
 }
 
@@ -5169,7 +5221,8 @@ function apiGetAllTimeLeaderboard() {
   // Use shared cache — also warmed by keepWarm trigger
   var careerRows = getCareerHistoryCached();
 
-  var players    = sheetToObjects('Players');
+  // id / name / teamName / active only -- the cached list, not the avatar-heavy Players tab
+  var players    = playersLite_();
   var pwRows     = [];
   try { pwRows = sheetToObjects('PerfectWeeks'); } catch(e) {}
 

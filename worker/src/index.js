@@ -22,8 +22,9 @@
 // stale -- never to a refresh right after the player's own save (`afterWrite`); (3) career
 // history has its own "history" generation, bumped only by Apps Script's scoped signal, so
 // pick saves and live scores stop throwing it away; (4) per-day counts kept in D1 for /health.
+// us5: chat copies are kept until something changes (max 15 min), not 30 s.
 
-export const VERSION = 'us4';
+export const VERSION = 'us5';
 
 // Actions whose answer never changes anything, so sending one twice is harmless. This is
 // NOT Code.gs's READ_ONLY_ACTIONS (that list means "doesn't bust the state cache" and
@@ -74,7 +75,9 @@ export const COPY_RULES = {
   getBowlStandings:      { key: () => 'getBowlStandings', maxAge: 15 * MIN },
   getAllTimeLeaderboard: { key: () => 'getAllTimeLeaderboard', maxAge: 15 * MIN },
   getCareerHistory:      { key: () => 'getCareerHistory', maxAge: 6 * 60 * MIN, genKey: 'hgen' }, // = Apps Script's own cache
-  getMessages:           { key: p => 'getMessages|' + (p.type || 'general'), maxAge: 30 * 1000 },   // as Apps Script's chat cache
+  // us5: was 30 s, so ~9 of 10 chat reads still went to Google (2026-10-05: 97 of 106). Every
+  // post/delete passes through here (bumps gen), and Apps Script signals hand edits (onSheetChange).
+  getMessages:           { key: p => 'getMessages|' + (p.type || 'general'), maxAge: 15 * MIN },
   getTrophyRoom:         { key: p => (p.playerId ? 'getTrophyRoom|' + p.playerId : null), maxAge: 5 * MIN },
   getAllEspnScores:      { key: () => 'getAllEspnScores', maxAge: 45 * 1000, ignoreGen: true }       // ESPN, not the Sheet
 };
