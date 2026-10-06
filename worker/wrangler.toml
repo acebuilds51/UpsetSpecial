@@ -1,6 +1,9 @@
 # Upset Special front door. Deploy from this folder: npx wrangler deploy
 # Secrets are set with `npx wrangler secret put SYNC_SECRET`, never written here.
 name = "upset-special-api"
+# The league's Cloudflare account (tonyedmonds2003). Pinned so a deploy while wrangler is
+# logged into another account fails instead of creating a second Worker there.
+account_id = "3aed8b3c298c05cae272b310d9ea4864"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
 
