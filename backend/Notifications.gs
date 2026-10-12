@@ -1,4 +1,4 @@
-// v25-lean-reads-oct6  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
+// v26-own-staleness-oct12  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
 // ============================================================
 //  UPSET SPECIAL — Notifications & week/season finalization (v2, Sep 2026)
 //
@@ -87,7 +87,8 @@ function checkGameFinalNotifications_() {
   if (!lock.tryLock(0)) return; // another run (or a pick submission) is busy — next tick will catch up
   try {
     var props = PropertiesService.getScriptProperties();
-    var work = finalNotificationWork_(getSeasonConfig(), sheetToObjects(SHEET_NAMES.GAMES), props);
+    var allGames = sheetToObjects(SHEET_NAMES.GAMES);
+    var work = finalNotificationWork_(getSeasonConfig(), allGames, props);
     if (!work) return; // nothing new -- done after 2 sheet reads
     var week = work.week, boardGames = work.boardGames, notified = work.notified;
     var newFinals = work.newFinals, needsWrapUp = work.needsWrapUp;
@@ -126,8 +127,18 @@ function checkGameFinalNotifications_() {
         return g.awayTeam + ' ' + (Number(g.finalAwayScore) || 0) + '-' + (Number(g.finalHomeScore) || 0) + ' ' + g.homeTeam +
           (w !== 'TIE' && w === underdogOf_(g) ? ' 🚨' : '');
       });
-      sendFcmBatch_(targets.filter(function(t) { return t.scorePref === 'summary'; }).map(function(t) {
-        return { token: t.token, title: '📊 Week ' + week + ' — Final Scores', body: lines.join('\n'), data: pushData_('summary', 'summary-' + week, 'standings') };
+      // "Week N is final" (S-046): every player whose score pushes aren't off gets their own
+      // result -- it used to go only to "When the week is final" players, as a bare score list.
+      var results = null;
+      try {
+        var weekGames = allGames.filter(function(g) { return Number(g.week) === week; });
+        var weekPicksAll = sheetToObjects(SHEET_NAMES.PICKS).filter(function(p) { return Number(p.week) === week; });
+        results = weekFinalResults_(week, boardGames, weekGames, weekPicksAll);
+      } catch (e) { Logger.log('week-final results error: ' + e.message); }
+      sendFcmBatch_(targets.filter(function(t) { return t.scorePref !== 'off'; }).map(function(t) {
+        var body = results ? weekFinalPushBody_(results, t.playerId) : '';
+        if (t.scorePref === 'summary' || !body) body = (body ? body + '\n' : '') + lines.join('\n');
+        return { token: t.token, title: '📊 Week ' + week + ' is final', body: body, data: pushData_('summary', 'summary-' + week, 'standings') };
       }));
       props.setProperty(summaryKey, 'true');
 
@@ -137,6 +148,63 @@ function checkGameFinalNotifications_() {
   } finally {
     releaseLock_(lock);
   }
+}
+
+// Each player's week when the whole board is final, scored exactly as the standings
+// (computeRegularStandings): +1 per straight pick that covered the frozen spread, + the spread
+// when the Upset Special's underdog won outright. Players with no picks this week are left out.
+// -> { week, boardCount, byPlayer: { id: { score, correct, upsetPts, perfect, place, tied } }, top, topCount, field }
+function weekFinalResults_(week, boardGames, weekGames, weekPicks) {
+  var gameById = {};
+  weekGames.forEach(function(g) { gameById[g.gameId] = g; });
+  var boardIds = {};
+  boardGames.forEach(function(g) { boardIds[g.gameId] = true; });
+  var by = {};
+  weekPicks.forEach(function(p) {
+    var g = gameById[p.gameId];
+    var r = by[p.playerId] || (by[p.playerId] = { score: 0, correct: 0, straight: 0, upsetPts: 0 });
+    if (!g || !isTrue_(g.isFinal)) return;
+    if (isTrue_(p.isUpset)) {
+      var w = outrightWinner_(g);
+      if (w !== 'TIE' && w === underdogOf_(g)) { r.upsetPts += Number(g.spread) || 0; r.score += Number(g.spread) || 0; }
+    } else if (boardIds[p.gameId]) {
+      r.straight++;
+      if (String(p.pickedTeam) === computeCoveringTeam_(g)) { r.correct++; r.score++; }
+    }
+  });
+  var ids = Object.keys(by);
+  var scores = ids.map(function(id) { return by[id].score; });
+  var top = scores.length ? Math.max.apply(null, scores) : 0;
+  ids.forEach(function(id) {
+    var r = by[id];
+    r.place = 1 + scores.filter(function(s) { return s > r.score; }).length;
+    r.tied = scores.filter(function(s) { return s === r.score; }).length > 1;
+    // Week 0 is practice: never a perfect week (as archivePerfectWeeks_)
+    r.perfect = week > 0 && boardGames.length > 0 && r.straight === boardGames.length && r.correct === boardGames.length;
+  });
+  return { week: week, boardCount: boardGames.length, byPlayer: by, top: top,
+    topCount: scores.filter(function(s) { return s === top; }).length, field: ids.length };
+}
+
+function ordinal_(n) {
+  var s = ['th', 'st', 'nd', 'rd'], v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+function fmtPts_(x) { return String(Math.round(Number(x) * 10) / 10); }
+
+// One player's "Week N is final" text. '' when the player had no picks this week.
+function weekFinalPushBody_(res, playerId) {
+  var r = res.byPlayer[playerId];
+  if (!r) return '';
+  var out = [];
+  if (r.perfect) out.push('🎯 PERFECT WEEK — ' + r.correct + '/' + res.boardCount + '!');
+  out.push('You scored ' + fmtPts_(r.score) + ' (' + r.correct + '/' + res.boardCount + ' covered) · ' +
+    (r.tied ? 'T' : '') + ordinal_(r.place) + ' of ' + res.field + '.');
+  if (r.upsetPts > 0) out.push('🚨 Your Upset Special hit: +' + fmtPts_(r.upsetPts) + '.');
+  if (r.place === 1) out.push(r.tied ? 'You share the top score!' : 'Top score of the week!');
+  else out.push('Top score: ' + fmtPts_(res.top) + (res.topCount > 1 ? ' (' + res.topCount + ' tied)' : '') + '.');
+  out.push('Unofficial until results are posted.');
+  return out.join(' ');
 }
 
 // What checkGameFinalNotifications has to do for the current week, or null if nothing:

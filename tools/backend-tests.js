@@ -1318,7 +1318,7 @@ test('front door: a web write sends ONE stale signal (with the secret), after th
   ok(env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' })).ok);
   eq(staleSignals().length, 1, 'several caches busted, one signal');
   const sig = staleSignals()[0];
-  eq(JSON.parse(sig.opts.payload), { action: 'frontDoorStale', secret: 'test-secret' });
+  eq(JSON.parse(sig.opts.payload), { action: 'frontDoorStale', secret: 'test-secret', parts: ['state'] });
   eq(sig.opts.method, 'post');
   ok(env.call('adminOverrideLine', { adminId: 'p1', gameId: 'g1', favorite: 'Away1', spread: 7 }).ok);
   ok(env.call('postMessage', { playerId: 'p2', type: 'general', message: 'hi' }).ok);
@@ -1940,9 +1940,9 @@ test('Trophy Room: history tabs come from one shared cached copy; same answers; 
   add('SeasonTrophies', { playerId: 'p3', teamName: 'TEAM3', year: 2023, position: 1, points: 101 });
   env.ctx.onSheetChange({ changeType: 'EDIT' });
   eq(room('p3').champYears, [2023]);
-  // the week wrap-up's perfect-week archive also busts it (archivePerfectWeeks_ -> invalidateStateCache)
+  // the week wrap-up's perfect-week archive also busts it (archivePerfectWeeks_ -> invalidateTrophyTables_)
   add('PerfectWeeks', { playerId: 'p3', teamName: 'TEAM3', week: 6, year: 2026, totalGames: 10 });
-  env.ctx.invalidateStateCache();
+  env.ctx.invalidateTrophyTables_();
   eq(room('p3').perfectWeeks.length, 2);
 });
 
@@ -2005,6 +2005,126 @@ test('chat cache: kept 10 min when hand edits are watched (30s otherwise); posts
   env.ctx.apiGetMessages({ type: 'general' });
   env.ctx.sheetToObjects = orig;
   eq(env.cache.get('chat_general_2026'), null, 'racing read not cached');
+});
+
+// ---------------------------------------------------------------- v26: own staleness (S-045) + week-final push (S-046)
+test('front door: the signal names what changed -- picks/scores "state", chat "chat", bios/finals "trophy"; admin writes and hand edits everything', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env); enableFrontDoor(env);
+  const last = () => JSON.parse(staleSignals()[staleSignals().length - 1].opts.payload);
+  let n = staleSignals().length;
+  ok(env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' })).ok);
+  eq(last().parts, ['state'], 'pick save');
+  ok(env.call('postMessage', { playerId: 'p2', type: 'general', message: 'hi' }).ok);
+  eq(last().parts, ['chat'], 'chat post: getState copies stay');
+  env.call('getState');
+  const stateGen = env.ctx.stateCacheGen_(env.cache);
+  ok(env.call('saveBio', { playerId: 'p2', hometown: 'Norfolk' }).ok);
+  eq(last().parts, ['trophy'], 'bio save');
+  eq(env.ctx.stateCacheGen_(env.cache), stateGen, 'a bio save no longer busts everyone\'s getState');
+  ok(env.call('adminOverrideLine', { adminId: 'p1', gameId: 'g1', favorite: 'Away1', spread: 7 }).ok);
+  eq(last().parts, ['state', 'chat', 'trophy'], 'admin write');
+  env.ctx.onSheetChange({});
+  eq([last().parts, last().scope], [['state', 'chat', 'trophy', 'history'], 'history'], 'hand edit');
+  // live scores: 'state' only while games are going; + 'trophy' when one goes final
+  env.ctx.invalidateStateCache(); // (state for the live-games check)
+  n = staleSignals().length;
+  espnEvents = [];
+  for (let i = 1; i <= 10; i++) espnEvents.push(mkEvent('E' + i, 'Away' + i, 'Home' + i, { date: kickoff, homeScore: 7, awayScore: 3 }));
+  setGamesKickoff(env, new Date(Date.now() - 3600000).toISOString());
+  env.props.lastAutoScoreFetch = '0';
+  env.ctx.keepWarm();
+  ok(staleSignals().length > n);
+  eq(last().parts, ['state'], 'live score, nothing final');
+  espnEvents[0] = mkEvent('E1', 'Away1', 'Home1', { date: kickoff, final: true, homeScore: 30, awayScore: 3 });
+  env.props.lastAutoScoreFetch = '0';
+  env.ctx._sheetDataCache = {};
+  env.ctx.keepWarm();
+  eq(last().parts, ['state', 'trophy'], 'a game went final');
+});
+function setGamesKickoff(env, iso) {
+  const gs = env.ss.getSheetByName('Games'); const h = gs._data[0];
+  gs._data.forEach((row, i) => { if (i) row[h.indexOf('kickoff')] = iso; });
+  env.ctx._sheetDataCache = {}; env.ctx.invalidateStateCache();
+}
+
+test('Trophy Room: pick saves and live scores no longer rebuild it (tables or answer); a bio save or a final does', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  env.ctx.installSheetChangeTrigger();
+  ok(env.call('getTrophyRoom', { playerId: 'p2' }).ok);
+  let reads = countSheetReads(env);
+  ok(env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' })).ok);
+  setGamesKickoff(env, new Date(Date.now() - 3600000).toISOString());
+  espnEvents = [];
+  for (let i = 1; i <= 10; i++) espnEvents.push(mkEvent('E' + i, 'Away' + i, 'Home' + i, { date: kickoff, homeScore: 7, awayScore: 3 }));
+  env.props.lastAutoScoreFetch = '0';
+  env.ctx.keepWarm();
+  for (const k of Object.keys(reads)) delete reads[k];
+  env.ctx._sheetDataCache = {};
+  const t0 = env.call('getTrophyRoom', { playerId: 'p2' });
+  ok(t0.ok, t0.error);
+  eq(['SeasonTrophies', 'BowlWinners', 'PerfectWeeks', 'NameClaims', 'Bios', 'Players'].map(n => reads[n]), [undefined, undefined, undefined, undefined, undefined, undefined], 'answered from cache: ' + JSON.stringify(reads));
+  // the Upset Special's game goes final (underdog Away1 wins) -> the answer is rebuilt, the tables are not
+  espnEvents[0] = mkEvent('E1', 'Away1', 'Home1', { date: kickoff, final: true, homeScore: 3, awayScore: 30 });
+  env.props.lastAutoScoreFetch = '0';
+  env.ctx._sheetDataCache = {};
+  env.ctx.keepWarm();
+  for (const k of Object.keys(reads)) delete reads[k];
+  env.ctx._sheetDataCache = {};
+  const t1 = env.call('getTrophyRoom', { playerId: 'p2' });
+  eq([t0.upsetHits, t1.upsetHits], [0, 1], 'the final shows at once');
+  eq(reads.SeasonTrophies, undefined, 'tables kept');
+  // a bio save shows at once
+  ok(env.call('saveBio', { playerId: 'p2', hometown: 'Norfolk' }).ok);
+  eq(env.call('getTrophyRoom', { playerId: 'p2' }).bio.hometown, 'Norfolk');
+});
+
+test('week-final push: everyone (not "Off") gets their own score + place; perfect weeks and Upset Special hits called out; "summary" also gets the scores', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env); enablePush(env);
+  const pl = env.ss.getSheetByName('Players'); const h = pl._data[0];
+  const pref = (id, v) => pl._data.forEach((row, i) => { if (i && row[h.indexOf('id')] === id) row[h.indexOf('scoreNotif')] = v; });
+  pref('p1', 'off'); pref('p2', 'summary'); // p3 default 'each'
+  env.ctx.invalidateStateCache();
+  // p2: all favorites (cover by 10) + external Upset Special Dog U hits (+14) -> 24, perfect
+  ok(env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U' })).ok);
+  // p3: all favorites but game 1 -> 9, Upset Special on Away2 (misses)
+  const p3 = picksPayload('p3', { gameId: 'g2', pickedTeam: 'Away2' });
+  p3.picks[0].pickedTeam = 'Away1';
+  ok(env.call('submitPicks', p3).ok);
+  finishWeek(env, kickoff, 10);
+  env.ctx._sheetDataCache = {};
+  const before = pushes().length;
+  env.ctx.checkGameFinalNotifications();
+  const wk = pushes().slice(before).filter(m => m.data.tag === 'summary-1');
+  const forTok = t => wk.filter(m => m.token === t);
+  eq(wk.length, 4, 'p2 + p3, two devices each; p1 is Off: ' + wk.map(m => m.token).join(','));
+  ok(wk.every(m => m.notification.title === '📊 Week 1 is final' && /view=standings/.test(m.data.url)));
+  const b2 = forTok('tok1a')[0].notification.body, b3 = forTok('tok2a')[0].notification.body;
+  ok(/^🎯 PERFECT WEEK — 10\/10!/.test(b2), b2);
+  ok(/You scored 24 \(10\/10 covered\) · 1st of 2\./.test(b2), b2);
+  ok(/Your Upset Special hit: \+14/.test(b2) && /Top score of the week!/.test(b2), b2);
+  ok(/Unofficial until results are posted/.test(b2), b2);
+  ok(/Away1 20-30 Home1/.test(b2), '"summary" players also get the score list: ' + b2);
+  ok(/You scored 9 \(9\/10 covered\) · 2nd of 2\. Top score: 24\./.test(b3), b3);
+  ok(!/PERFECT|Upset Special hit|Away1 20-30/.test(b3), b3);
+  // all scored exactly as the standings
+  const st = env.call('getStandings').standings;
+  eq([st.find(s => s.playerId === 'p2').points, st.find(s => s.playerId === 'p3').points], [24, 9]);
+});
+
+test('week-final push: ties share a place (T1) and a top score; a player with no picks gets the plain score list', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env); enablePush(env);
+  ok(env.call('submitPicks', picksPayload('p2', { gameId: 'g1', pickedTeam: 'Away1' })).ok);
+  ok(env.call('submitPicks', picksPayload('p3', { gameId: 'g2', pickedTeam: 'Away2' })).ok);
+  finishWeek(env, kickoff, 10);
+  env.ctx._sheetDataCache = {};
+  const before = pushes().length;
+  env.ctx.checkGameFinalNotifications();
+  const wk = pushes().slice(before).filter(m => m.data.tag === 'summary-1');
+  const body = t => wk.find(m => m.token === t).notification.body;
+  ok(/T1st of 2\. You share the top score!/.test(body('tok1a')), body('tok1a'));
+  ok(/T1st of 2/.test(body('tok2a')), body('tok2a'));
+  const p1 = body('tok0a'); // the admin made no picks
+  ok(!/You scored/.test(p1) && /Away1 20-30 Home1/.test(p1), p1);
 });
 
 // ---------------------------------------------------------------- report

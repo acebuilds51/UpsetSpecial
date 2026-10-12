@@ -1,4 +1,4 @@
-// v25-lean-reads-oct6  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v26-own-staleness-oct12  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -90,7 +90,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v25-lean-reads-oct6';
+var CODE_VERSION = 'v26-own-staleness-oct12';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -122,6 +122,7 @@ function handle(e) {
   _picksDirty = false;
   _inWebRequest = true;
   _frontDoorDirty = false;
+  _frontDoorParts = {};
 
   let action = (e.parameter && e.parameter.action) || '';
   let payload = {};
@@ -251,6 +252,11 @@ function handle(e) {
   if (result && result.ok !== false && !READ_ONLY_ACTIONS[action] && action !== 'submitPicks') {
     try { SpreadsheetApp.flush(); } catch (e) {}
     invalidateStateCache();
+    // v26: the Trophy Room tables and the Worker's chat copies have their own staleness now
+    // (pick saves and live scores leave them alone). Admin writes are rare and many touch
+    // trophies (archives, claim reviews, bowl winners, results) or team names in chat.
+    invalidateTrophyTables_();
+    markFrontDoorStale_('chat');
   } else if (_picksDirty) {
     try { SpreadsheetApp.flush(); } catch (e) {}
     invalidatePicksBundle_();
@@ -1831,24 +1837,34 @@ function invalidatePicksBundle_() {
 // scope 'history' (set by invalidateCareerHistoryCache): past seasons changed too. The Worker
 // keeps its career-history copy through ordinary signals (pick saves, live scores) and drops
 // it only on this one.
+// v26: the signal also lists `parts` -- which copies changed: 'state' (getState, standings,
+// leaderboard: picks, scores, games, players), 'chat' (getMessages), 'trophy' (getTrophyRoom),
+// 'history'. A Worker us6+ drops only those copies, so a pick save or a live score no longer
+// throws away the chat and Trophy Room copies, and a chat post no longer drops getState
+// (S-045). An older Worker ignores `parts` and drops everything, as before.
+var FRONT_DOOR_PARTS = ['state', 'chat', 'trophy', 'history'];
 var _inWebRequest = false;
 var _frontDoorDirty = false;
 var _frontDoorHistoryDirty = false;
-function markFrontDoorStale_() {
+var _frontDoorParts = {};
+function markFrontDoorStale_(part) {
+  _frontDoorParts[part || 'state'] = true;
   if (_inWebRequest) { _frontDoorDirty = true; return; }
   sendFrontDoorStale_();
 }
 
 function sendFrontDoorStale_() {
   var history = _frontDoorHistoryDirty;
-  _frontDoorDirty = false; _frontDoorHistoryDirty = false;
+  if (history) _frontDoorParts.history = true;
+  var parts = FRONT_DOOR_PARTS.filter(function(p) { return _frontDoorParts[p]; });
+  _frontDoorDirty = false; _frontDoorHistoryDirty = false; _frontDoorParts = {};
   try {
     var props = PropertiesService.getScriptProperties();
     var url = props.getProperty('FRONT_DOOR_URL'), secret = props.getProperty('FRONT_DOOR_SECRET');
     if (!url || !secret) return;
     // A read the Worker sends after this must see the new data: land buffered writes first.
     try { SpreadsheetApp.flush(); } catch (e) {}
-    var signal = { action: 'frontDoorStale', secret: secret };
+    var signal = { action: 'frontDoorStale', secret: secret, parts: parts.length ? parts : ['state'] };
     if (history) signal.scope = 'history';
     UrlFetchApp.fetch(url, { method: 'post', contentType: 'text/plain', muteHttpExceptions: true,
       payload: JSON.stringify(signal) });
@@ -1862,7 +1878,7 @@ function sendFrontDoorStale_() {
 // cache rebuild, so the Worker's next read also finds a warm cache.
 function runWithOneStaleSignal_(fn) {
   if (_inWebRequest) return fn(); // handle() already sends one at the end
-  _inWebRequest = true; _frontDoorDirty = false;
+  _inWebRequest = true; _frontDoorDirty = false; _frontDoorParts = {};
   try { return fn(); }
   finally {
     _inWebRequest = false;
@@ -1965,9 +1981,31 @@ function invalidateStateCache() {
   invalidatePicksBundle_(); // same triggers (writes, manual edits, week changes) apply to picks
 }
 
-function invalidateTrophyCache(playerId) {
-  try { CacheService.getScriptCache().remove('trophy_v5_' + playerId); } catch(e) {}
-  markFrontDoorStale_();
+// ---- Trophy Room staleness (v26, S-045) ----
+// The Trophy Room used to be tied to the state cache generation, which changes on every pick
+// save and every live-score fetch -- so on a game day nearly every visit rebuilt the history
+// tables (5 sheet reads, p50 5.9s) and the Worker never had a current copy. Now:
+//   trophyTablesGen -- the history tabs (SeasonTrophies, BowlWinners, PerfectWeeks, approved
+//                      NameClaims, Bios): bumped by admin writes (handle()), saveBio, the
+//                      perfect-week archive, CareerHistory / UpsetHistory changes, hand edits.
+//   trophyGen       -- each player's whole answer (also this season's Upset Specials, which
+//                      change when a game goes final, and the player's name/photo).
+// Both mark the Worker's Trophy Room copies stale ('trophy').
+function trophyGen_(cache) { return (cache || CacheService.getScriptCache()).get('trophyGen') || '0'; }
+function trophyTablesGen_(cache) { return (cache || CacheService.getScriptCache()).get('trophyTablesGen') || '0'; }
+function newGen_() { return String(Date.now()) + Math.random().toString(36).slice(2, 6); }
+
+function invalidateTrophyResults_() {
+  try { CacheService.getScriptCache().put('trophyGen', newGen_(), 21600); } catch (e) {}
+  markFrontDoorStale_('trophy');
+}
+function invalidateTrophyTables_() {
+  try { CacheService.getScriptCache().put('trophyTablesGen', newGen_(), 21600); } catch (e) {}
+  invalidateTrophyResults_();
+}
+
+function invalidateTrophyCache(playerId) { // kept for editor use; every answer is gen-keyed now
+  invalidateTrophyTables_();
 }
 
 
@@ -2017,6 +2055,8 @@ function autoFetchScoresForWeek(week) {
       }
     });
     updateRowsByMatchBatch_(SHEET_NAMES.GAMES, scoreChanges);
+    // a game going final can change this season's Upset Special count in Trophy Rooms
+    if (scoreChanges.some(function(c) { return c.updates.isFinal; })) invalidateTrophyResults_();
   }
 
   // auto-apply default picks (favorite) for any game that has kicked off
@@ -3483,7 +3523,7 @@ function invalidateChatCache_(season) {
     cache.put('chatGen', String(Date.now()) + Math.random().toString(36).slice(2, 6), 21600);
     cache.removeAll(['chat_general_' + season, 'chat_commissioner_' + season]);
   } catch(e) {}
-  markFrontDoorStale_();
+  markFrontDoorStale_('chat'); // the Worker drops only its chat copies (v26)
 }
 
 function apiPostMessage(payload) {
@@ -3681,7 +3721,8 @@ function invalidateUpsetHistoryIndex_() {
     cache.put('upsetIndexGen', String(Date.now()) + Math.random().toString(36).slice(2, 6), 21600);
     cache.remove(UPSET_INDEX_KEY + '_n');
   } catch (e) {}
-  markFrontDoorStale_();
+  markFrontDoorStale_();       // the all-time leaderboard's Upset Hall of Fame
+  invalidateTrophyResults_();  // every Trophy Room's upset stats
 }
 
 // Reads one player's avatar without loading every player's photo (the Players tab
@@ -3705,15 +3746,16 @@ function readPlayerAvatar_(playerId) {
 // The Trophy Room's small history tabs -- SeasonTrophies, BowlWinners, PerfectWeeks, approved
 // NameClaims, Bios -- were read one by one on every uncached visit (five sheet reads, most of
 // its ~4.5s p50). They change only through router writes (archives, claim reviews, bowl
-// winners, saveBio), the week wrap-up (archivePerfectWeeks_) and manual edits, and every one of
-// those busts the state cache. So one summary is cached for all players and tied to the state
-// cache generation: any bust makes it a miss. The expiry is only the safety net for a bust
-// that never came (6h when manual edits are watched, 6 min otherwise -- as the UpsetHistory index).
+// winners, saveBio), the week wrap-up (archivePerfectWeeks_) and manual edits. So one summary
+// is cached for all players and tied to its own generation (trophyTablesGen_, v26 -- it was the
+// state cache generation, which every pick save and live score bumped). The expiry is only the
+// safety net for a bust that never came (6h when manual edits are watched, 6 min otherwise --
+// as the UpsetHistory index).
 // Bios leave out `email`: the Trophy Room is open to anyone and the app never shows it.
 var TROPHY_TABLES_KEY = 'trophyTables_v1';
 function getTrophyTables_() {
   var cache = CacheService.getScriptCache();
-  var gen = stateCacheGen_(cache);
+  var gen = trophyTablesGen_(cache);
   try {
     var raw = cacheGetChunked_(cache, TROPHY_TABLES_KEY);
     if (raw) {
@@ -3744,7 +3786,7 @@ function getTrophyTables_() {
   });
   t = JSON.parse(JSON.stringify(t)); // dates as the reply carries them, hit or miss
   try {
-    if (stateCacheGen_(cache) === gen) {
+    if (trophyTablesGen_(cache) === gen) {
       cachePutChunked_(cache, TROPHY_TABLES_KEY, JSON.stringify(t), sheetChangeWatched_() ? 21600 : 360);
     }
   } catch (e) {}
@@ -3755,11 +3797,15 @@ function apiGetTrophyRoom(payload) {
   var targetPlayerId = payload.playerId;
   if (!targetPlayerId) return { ok: false, error: 'Missing playerId.' };
 
-  // CacheService cache — 5 min TTL, busted on bio/profile updates
+  // CacheService cache, keyed by the Trophy Room generation (v26): anything that changes an
+  // answer -- bios, trophies, claims, a game going final, a name/photo change -- bumps it, so
+  // the answer can be kept 30 min (was 5 min, and it used to be thrown away with every pick save).
   // (v4: this season's Upset Specials are no longer double-counted; v5: bio without email)
-  var cacheKey = 'trophy_v5_' + targetPlayerId;
+  var trophyCache = CacheService.getScriptCache();
+  var tGen = trophyGen_(trophyCache);
+  var cacheKey = 'trophy_v6_' + tGen + '_' + targetPlayerId;
   try {
-    var cached = CacheService.getScriptCache().get(cacheKey);
+    var cached = trophyCache.get(cacheKey);
     if (cached) {
       var parsed = JSON.parse(cached);
       if (parsed && parsed.ok) return parsed;
@@ -3871,10 +3917,10 @@ function apiGetTrophyRoom(payload) {
     biggestUpset: biggestUpset, perfectWeeks: perfectWeeks,
     leaguePerfectCount: leaguePerfectCount, champYears: champYears, bio: bio
   };
-  // Cache for 5 minutes
+  // Cache for 30 minutes, unless something changed while this was being built
   try {
     var str = JSON.stringify(result);
-    if (str.length < 90000) CacheService.getScriptCache().put(cacheKey, str, 300);
+    if (str.length < 90000 && trophyGen_(trophyCache) === tGen) trophyCache.put(cacheKey, str, 1800);
   } catch(e) {}
   return result;
 }
@@ -3906,8 +3952,9 @@ function apiSaveBio(payload) {
     }
   }
   if (!found) appendObject(SHEET_NAMES.BIOS, updates);
-  invalidateStateCache();
-  invalidateTrophyCache(playerId);
+  // Bios are only in the Trophy Room (not the app state): a bio save no longer throws away
+  // everyone's cached getState (v26)
+  invalidateTrophyTables_();
   return { ok: true };
 }
 
@@ -4974,6 +5021,7 @@ function invalidateCareerHistoryCache() {
   // below sends it (one signal, not two, outside a web request)
   _frontDoorHistoryDirty = true;
   invalidateStateCache();
+  invalidateTrophyTables_(); // season archives / claim links change trophies too; memberSince
 }
 
 // Run this manually from Apps Script editor if trophy room shows stale data
@@ -6314,8 +6362,10 @@ function archivePerfectWeeks_(targetWeek) { // null = all weeks
 
   // Bust trophy caches for affected players so next load is fresh
   invalidateStateCache();
+  if (newRows.length) invalidateTrophyTables_();
 
-  return { ok: true, archived: archived, weeksScanned: completedWeeks.length };
+  return { ok: true, archived: archived, weeksScanned: completedWeeks.length,
+    perfectPlayerIds: newRows.map(function(r) { return r.playerId; }) };
 }
 
 function apiAdminFetchResults(payload) {

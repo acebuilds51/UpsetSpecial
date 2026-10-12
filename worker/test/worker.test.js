@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import worker, { PURE_READS, PATIENT_READS, COPY_RULES, NO_BUMP_WRITES, hedgedRead } from '../src/index.js';
+import worker, { PURE_READS, PATIENT_READS, COPY_RULES, NO_BUMP_WRITES, SCOPED_WRITES, PART_GENS, hedgedRead } from '../src/index.js';
 
 const GS = 'https://script.example/exec';
 const ERROR_PAGE = { status: 404, body: '<html>Sorry, unable to open the file at this time.</html>' };
@@ -260,21 +260,21 @@ test('copies: a read that was on its way while something changed is never kept a
   assert.deepEqual(await r.json(), { ok: true, v: 'NEW' }, 'the OLD answer was not served as a copy');
 });
 
-test('copies: chat copies (us5) last until a post / any change, max 15 min, then go back to Apps Script', async () => {
+test('copies: chat copies last until a post / a chat change, max 2 h (us6), then go back to Apps Script', async () => {
   const w = setup2();
   await w.stale();
   await w.post({ action: 'getMessages', type: 'general' });
   await w.post({ action: 'getMessages', type: 'general' });
   assert.equal(w.hits.getMessages, 1);
-  w.env.DB.raw.prepare("UPDATE copies SET stored_at = stored_at - 31000 WHERE key = 'getMessages|general'").run();
+  w.env.DB.raw.prepare("UPDATE copies SET stored_at = stored_at - 60 * 60000 WHERE key = 'getMessages|general'").run();
   await w.post({ action: 'getMessages', type: 'general' });
-  assert.equal(w.hits.getMessages, 1, 'still current after 30 s (was the old limit)');
+  assert.equal(w.hits.getMessages, 1, 'still current after an hour (15 min was the us5 limit)');
   await w.post({ action: 'postMessage', type: 'general', message: 'hi' });
   await w.post({ action: 'getMessages', type: 'general' });
   assert.equal(w.hits.getMessages, 2, 'a post drops the copy at once');
-  w.env.DB.raw.prepare("UPDATE copies SET stored_at = stored_at - 15 * 60000 - 1000 WHERE key = 'getMessages|general'").run();
+  w.env.DB.raw.prepare("UPDATE copies SET stored_at = stored_at - 120 * 60000 - 1000 WHERE key = 'getMessages|general'").run();
   await w.post({ action: 'getMessages', type: 'general' });
-  assert.equal(w.hits.getMessages, 3, 'max age 15 min');
+  assert.equal(w.hits.getMessages, 3, 'max age 2 h');
   await w.post({ action: 'getMessages', type: 'commissioner' });
   assert.equal(w.hits.getMessages, 4, 'each channel has its own copy');
 });
@@ -382,6 +382,80 @@ test('us4: career history has its own generation -- only Apps Script\'s "history
   await w.post({ action: 'frontDoorStale', secret: SECRET, scope: 'history' });
   await w.post({ action: 'getState', compact: 1 });
   assert.equal(w.hits.getState, 2, 'the history signal also drops the ordinary copies');
+});
+
+// ── us6 (S-045): chat and Trophy Room have their own generations ──
+const sigParts = (w, parts) => w.post({ action: 'frontDoorStale', secret: SECRET, parts });
+async function warmAll(w) {
+  await w.post({ action: 'getState', compact: 1 });
+  await w.post({ action: 'getMessages', type: 'general' });
+  await w.post({ action: 'getTrophyRoom', playerId: 'p1' });
+}
+async function servedFrom(w) { // which of the three came from a copy now
+  const out = {};
+  out.state = (await w.post({ action: 'getState', compact: 1 })).headers.get('x-front-door') === 'copy';
+  out.chat = (await w.post({ action: 'getMessages', type: 'general' })).headers.get('x-front-door') === 'copy';
+  out.trophy = (await w.post({ action: 'getTrophyRoom', playerId: 'p1' })).headers.get('x-front-door') === 'copy';
+  return out;
+}
+
+test('us6: a pick save or a live-score signal keeps the chat and Trophy Room copies; a chat post keeps getState', async () => {
+  const w = setup2();
+  await w.stale(); await warmAll(w);
+  await w.post({ action: 'submitPicks', week: 1, picks: [] });
+  assert.deepEqual(await servedFrom(w), { state: false, chat: true, trophy: true }, 'pick save');
+  await sigParts(w, ['state']);                                   // keepWarm's live scores
+  assert.deepEqual(await servedFrom(w), { state: false, chat: true, trophy: true }, 'live scores');
+  await w.post({ action: 'postMessage', type: 'general', message: 'hi' });
+  assert.deepEqual(await servedFrom(w), { state: true, chat: false, trophy: true }, 'chat post');
+  await w.post({ action: 'saveBio', playerId: 'p1', hometown: 'X' });
+  assert.deepEqual(await servedFrom(w), { state: true, chat: true, trophy: false }, 'bio save');
+});
+
+test('us6: Apps Script parts drop only those copies; an old (no parts) signal or an admin write drops all but history', async () => {
+  const w = setup2({ answers: { getCareerHistory: () => ({ ok: true, history: [1] }) } });
+  await w.stale(); await warmAll(w);
+  await sigParts(w, ['chat']);
+  assert.deepEqual(await servedFrom(w), { state: true, chat: false, trophy: true });
+  await sigParts(w, ['trophy']);                                  // a game went final / trophies archived
+  assert.deepEqual(await servedFrom(w), { state: true, chat: true, trophy: false });
+  await sigParts(w, ['state', 'chat', 'trophy']);
+  assert.deepEqual(await servedFrom(w), { state: false, chat: false, trophy: false });
+  await w.post({ action: 'getCareerHistory' });
+  await w.stale();                                                // Apps Script v25: no parts
+  assert.deepEqual(await servedFrom(w), { state: false, chat: false, trophy: false }, 'old signal: as before');
+  await w.post({ action: 'adminOverrideLine', gameId: 'g1' });
+  assert.deepEqual(await servedFrom(w), { state: false, chat: false, trophy: false }, 'admin write: as before');
+  assert.equal((await w.post({ action: 'getCareerHistory' })).headers.get('x-front-door'), 'copy', 'history kept throughout');
+  await sigParts(w, ['history']);
+  assert.equal((await w.post({ action: 'getCareerHistory' })).headers.get('x-front-door'), null);
+  await sigParts(w, ['nonsense']);                                // unknown part: be safe
+  assert.deepEqual(await servedFrom(w), { state: false, chat: false, trophy: false });
+});
+
+test('us6: Trophy Room copies last 2 h unless a trophy change; /health judges each copy by its own generation', async () => {
+  const w = setup2();
+  await w.stale(); await warmAll(w);
+  w.env.DB.raw.prepare("UPDATE copies SET stored_at = stored_at - 100 * 60000 WHERE key = 'getTrophyRoom|p1'").run();
+  assert.equal((await w.post({ action: 'getTrophyRoom', playerId: 'p1' })).headers.get('x-front-door'), 'copy');
+  w.env.DB.raw.prepare("UPDATE copies SET stored_at = stored_at - 21 * 60000 WHERE key = 'getTrophyRoom|p1'").run();
+  assert.equal((await w.post({ action: 'getTrophyRoom', playerId: 'p1' })).headers.get('x-front-door'), null, 'past 2 h');
+  await w.post({ action: 'submitPicks', week: 1, picks: [] });
+  const h = await (await worker.fetch(new Request('https://api.example/health'), w.env)).json();
+  assert.equal(h.copies.find(c => c.key === 'getMessages|general').current, true);
+  assert.equal(h.copies.find(c => c.key === 'getState|compact').current, false);
+  assert.equal(h.trophyRoomCopiesCurrent, 1);
+});
+
+test('us6: every scoped write that leaves the state copies alone is in Code.gs READ_ONLY_ACTIONS', () => {
+  const code = fs.readFileSync(new URL('../../backend/Code.gs', import.meta.url), 'utf8');
+  const block = code.match(/var READ_ONLY_ACTIONS = \{([\s\S]*?)\};/)[1];
+  const readOnly = new Set([...block.matchAll(/([A-Za-z]+)\s*:\s*1/g)].map(m => m[1]));
+  for (const [a, gens] of Object.entries(SCOPED_WRITES)) {
+    if (!gens.includes('gen')) assert.ok(readOnly.has(a), a + ' busts the state cache in Code.gs, so it must drop the state copies');
+    assert.ok(!PURE_READS.has(a), a);
+    for (const g of gens) assert.ok(Object.values(PART_GENS).includes(g), g);
+  }
 });
 
 test('us4: /health keeps per-day counts by action and outcome (no player data)', async () => {

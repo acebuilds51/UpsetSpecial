@@ -488,7 +488,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 // owner can see at a glance whether a phone is running the latest version.
 // v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
 // selections, update banner on resume, This Week fits on phones.
-const VERSION = 'v14.8';
+const VERSION = 'v14.9';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
@@ -2277,8 +2277,11 @@ function renderMyLiveWeekCard(week, opts) {
   } else if (!me.upset) {
     upsetLine = '<span class="helptext">⭐ No Upset Special this week</span>';
   }
+  // Every board pick covered: a perfect week (a trophy; Week 0 is practice and never counts)
+  const perfect = allFinal && Number(week) > 0 && boardGames.length > 0 && me.counted === boardGames.length && me.correct === boardGames.length;
   return `
     <div class="card" id="my-live-week-card" style="border:1px solid rgba(242,182,50,0.35);">
+      ${perfect ? `<div id="my-perfect-week" style="margin-bottom:8px; padding:6px 10px; border-radius:8px; background:var(--upset-grad); color:#1A1206; font-weight:800; font-size:13px; text-align:center;">🎯 PERFECT WEEK — ${me.correct}/${boardGames.length}! It's going in your Trophy Room.</div>` : ''}
       <div class="flex-between">
         <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; color:var(--text-faint);">${opts.title || 'Your week'} ${allFinal ? '· all games final' : '· if it ended now'}</div>
         <div class="helptext" style="font-size:10px;">${allFinal ? 'unofficial until results are posted' : 'live · unofficial'}</div>
@@ -4077,11 +4080,11 @@ async function renderProfile(content) {
           <div style="display:flex; flex-direction:column; gap:8px;">
             <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
               <input type="radio" name="score-pref" value="each" ${(p.scoreNotif || 'each') === 'each' ? 'checked' : ''} style="accent-color:var(--gold);">
-              <div><strong style="color:var(--text);">Per game</strong> — notified as each game goes final</div>
+              <div><strong style="color:var(--text);">Per game</strong> — each game as it goes final, plus how you did when the week is final</div>
             </label>
             <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
               <input type="radio" name="score-pref" value="summary" ${(p.scoreNotif || '') === 'summary' ? 'checked' : ''} style="accent-color:var(--gold);">
-              <div><strong style="color:var(--text);">End of day</strong> — one notification with all final scores</div>
+              <div><strong style="color:var(--text);">When the week is final</strong> — one notification with how you did and all the final scores</div>
             </label>
             <label style="display:flex; align-items:center; gap:10px; cursor:pointer; font-size:13px; color:var(--text-soft);">
               <input type="radio" name="score-pref" value="off" ${(p.scoreNotif || '') === 'off' ? 'checked' : ''} style="accent-color:var(--gold);">
@@ -4456,14 +4459,26 @@ async function renderProfile(content) {
   };
 
   // --- Bio: load existing data and wire handlers ---
-  api('getTrophyRoom', { playerId: p.id }).then(data => {
-    const bio = data.bio || {};
+  // From what this phone already has first (this session's Trophy Room, else the saved copy),
+  // then the fresh answer -- quietly: a slow server here used to pop a "timed out" toast.
+  // A field the player has already typed in is never overwritten.
+  const fillBio = data => {
+    const bio = (data && data.bio) || {};
     const fields = ['hometown','college','favTeam','firstGame','favGame','favPlayer','favUpset','strategy','occupation','funFact'];
     fields.forEach(f => {
       const el = document.getElementById('bio-' + f);
-      if (el && bio[f]) el.value = bio[f];
+      if (!el || !bio[f] || (el.value && el.value !== el.dataset.autofill)) return;
+      el.value = bio[f]; el.dataset.autofill = bio[f];
     });
-  }).catch(() => {});
+  };
+  const savedRoom = _trophyRoomCache[p.id] || (loadSavedTrophyRoom_(p.id) || {}).data;
+  if (savedRoom) fillBio(savedRoom);
+  if (!_trophyRoomCache[p.id]) {
+    api('getTrophyRoom', { playerId: p.id }, true).then(data => {
+      if (data.player && !data._stale) { _trophyRoomCache[p.id] = data; saveTrophyRoom_(p.id, data); }
+      fillBio(data);
+    }).catch(() => {});
+  }
 
   document.getElementById('bio-photo-btn').onclick = () => document.getElementById('bio-photo-input').click();
   document.getElementById('bio-photo-preview').onclick = () => document.getElementById('bio-photo-input').click();
@@ -4555,6 +4570,7 @@ async function renderProfile(content) {
     try {
       await api('saveBio', payload);
       _trophyRoomCache = {}; // clear cache so trophy room reloads fresh
+      forgetSavedTrophyRoom_(State.player.id); // and never shows the old bio from the saved copy
       showToast('Bio saved ✓', 'success');
       setOnboardStep('bio', true);
       btn.textContent = 'Save Bio';
@@ -5012,11 +5028,13 @@ function getMyBowlChampionPick() { return (State.bowlChampion || []).find(c => c
    TROPHY ROOM — modal overlay, tap any player name to open
    ============================================================ */
 let _trophyRoomCache = {};
+let _trophyRoomShowing = null; // the player whose Trophy Room is open (late answers for others are dropped)
 
 function openTrophyRoom(playerId) {
   // Fallback to logged-in player if no ID provided
   if (!playerId && State.player) playerId = State.player.id;
   if (!playerId) { showToast('Could not identify player', 'error'); return; }
+  _trophyRoomShowing = playerId;
   // create modal if not exists
   let modal = document.getElementById('trophy-modal');
   if (!modal) {
@@ -5041,6 +5059,49 @@ function openTrophyRoom(playerId) {
   loadTrophyRoom(playerId);
 }
 
+// The last Trophy Room this phone loaded for each player (S-047), so a slow or failed load
+// shows that at once ("Saved copy from 2:14 PM") instead of a spinner or an error. Photos
+// are left out (the phone already keeps them in State._avatarMap); at most 20 players kept.
+const TROPHY_SAVED_KEY = 'usl_trophy_rooms';
+const TROPHY_SAVED_MAX = 20;
+function loadSavedTrophyRoom_(playerId) {
+  try {
+    const all = JSON.parse(localStorage.getItem(TROPHY_SAVED_KEY) || '{}');
+    return all[playerId] && all[playerId].data ? all[playerId] : null;
+  } catch (e) { return null; }
+}
+function saveTrophyRoom_(playerId, data) {
+  try {
+    const all = JSON.parse(localStorage.getItem(TROPHY_SAVED_KEY) || '{}');
+    const copy = JSON.parse(JSON.stringify(data));
+    if (copy.player) delete copy.player.avatar;
+    delete copy._version; delete copy._asOf; delete copy._stale;
+    all[playerId] = { at: Date.now(), data: copy };
+    const ids = Object.keys(all).sort((a, b) => all[b].at - all[a].at);
+    ids.slice(TROPHY_SAVED_MAX).forEach(id => { delete all[id]; });
+    localStorage.setItem(TROPHY_SAVED_KEY, JSON.stringify(all));
+  } catch (e) {}
+}
+function forgetSavedTrophyRoom_(playerId) {
+  try {
+    const all = JSON.parse(localStorage.getItem(TROPHY_SAVED_KEY) || '{}');
+    delete all[playerId];
+    localStorage.setItem(TROPHY_SAVED_KEY, JSON.stringify(all));
+  } catch (e) {}
+}
+// A strip above the Trophy Room: when this is from (saved / older copy) + Try again
+function trophyRoomStrip_(playerId, at, failed) {
+  const time = new Date(at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return `<div id="trophy-stale-strip" class="helptext" style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;padding:6px 10px;border-radius:8px;background:var(--surface-2);font-size:12px;">
+    <span>${failed ? 'Couldn’t refresh · ' : ''}Saved copy from ${escapeHtml(time)}</span>
+    ${failed ? '<button class="btn btn-ghost btn-sm" id="trophy-retry-btn">Try again</button>' : '<span class="spinner" style="width:14px;height:14px;"></span>'}
+  </div>`;
+}
+function wireTrophyRetry_(inner, playerId) {
+  const btn = inner.querySelector('#trophy-retry-btn');
+  if (btn) btn.onclick = () => { delete _trophyRoomCache[playerId]; loadTrophyRoom(playerId); };
+}
+
 async function loadTrophyRoom(playerId) {
   const inner = document.getElementById('trophy-modal-content');
   if (!inner) return;
@@ -5050,25 +5111,49 @@ async function loadTrophyRoom(playerId) {
     return;
   }
 
-  inner.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading Trophy Room...</p></div>';
+  // Draw the saved copy at once (if any) while the fresh one loads
+  const saved = loadSavedTrophyRoom_(playerId);
+  if (saved) {
+    renderTrophyRoomContent(inner, saved.data);
+    inner.insertAdjacentHTML('afterbegin', trophyRoomStrip_(playerId, saved.at, false));
+  } else {
+    inner.innerHTML = '<div class="empty-state"><span class="spinner"></span><p style="margin-top:12px;">Loading Trophy Room...</p></div>';
+  }
 
   try {
-    const data = await api('getTrophyRoom', { playerId });
+    const data = await api('getTrophyRoom', { playerId }, true);
+    if (!data.player) throw new Error('Trophy Room answer without a player');
     _trophyRoomCache[playerId] = data;
+    if (!data._stale) saveTrophyRoom_(playerId, data);
+    if (_trophyRoomShowing !== playerId) return; // closed, or another player's room opened meanwhile
     renderTrophyRoomContent(inner, data);
+    // the Worker answered with its last copy because Google failed: say how old it is
+    if (data._stale && data._asOf) inner.insertAdjacentHTML('afterbegin', trophyRoomStrip_(playerId, data._asOf, true));
+    wireTrophyRetry_(inner, playerId);
   } catch(e) {
-    const errMsg = e && e.message ? e.message : 'Unknown error';
-    console.error('Trophy room error:', errMsg, 'playerId:', playerId);
-    inner.innerHTML = `<div class="empty-state">
-      <p style="color:var(--loss);font-weight:700;">Could not load Trophy Room</p>
-      <p class="helptext" style="margin-top:8px;font-size:12px;font-family:monospace;background:var(--surface-2);padding:8px;border-radius:6px;text-align:left;word-break:break-all;">${escapeHtml(errMsg)}</p>
-      <p class="helptext" style="margin-top:8px;">Player ID: <code>${escapeHtml(playerId)}</code></p>
-    </div>`;
+    console.error('Trophy room error:', e && e.message, 'playerId:', playerId);
+    if (_trophyRoomShowing !== playerId) return;
+    if (saved) {
+      const strip = inner.querySelector('#trophy-stale-strip');
+      if (strip) strip.outerHTML = trophyRoomStrip_(playerId, saved.at, true);
+    } else {
+      inner.innerHTML = `<div class="empty-state">
+        <p style="font-weight:700;">The Trophy Room didn’t load</p>
+        <p class="helptext" style="margin-top:8px;">The league server is busy right now. It usually works again in a moment.</p>
+        <button class="btn btn-primary" id="trophy-retry-btn" style="margin-top:14px;">Try again</button>
+      </div>`;
+    }
+    wireTrophyRetry_(inner, playerId);
   }
 }
 
 function renderTrophyRoomContent(el, data) {
-  const p = data.player;
+  // name and photo from what the phone already has when the answer lacks them (saved copies
+  // leave the photo out)
+  const known = (State.players || []).find(pl => pl.id === (data.player && data.player.id)) || {};
+  const p = Object.assign({}, data.player || {});
+  if (!p.avatar) p.avatar = (State._avatarMap || {})[p.id] || (State.player && State.player.id === p.id ? State.player.avatar : '') || '';
+  if (!p.teamName && known.teamName) p.teamName = known.teamName;
   const isMe = State.player && State.player.id === p.id;
   const bio = data.bio || {};
 

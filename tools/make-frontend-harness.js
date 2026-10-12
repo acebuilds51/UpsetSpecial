@@ -11,6 +11,7 @@
 //                          another player's picks, like a busy week in the background)
 //               ?msgs=N (N General chat messages + a commissioner post; window.__chat holds them)
 //               ?postfail=1 (chat sends fail)
+//               ?trophyfail=1 (getTrophyRoom gets Google's error page; every other call works)
 //               ?claims=1 (name claims: two players claiming one name + a claim for a name already taken)
 // Admin writes that matter for the Pot tab (adminTogglePaid, adminLedgerEntry, adminLedgerBatch)
 // update the fake state, so the next getState shows them.
@@ -115,7 +116,16 @@ const mock = `<script>
         }
         else if (body.action === 'getAllTimeLeaderboard') data = { ok: true, leaderboard: [], upsetHall: hall };
         else if (body.action === 'getAllEspnScores') data = { ok: true, games: [] };
-        else if (body.action === 'getTrophyRoom') data = { ok: true };
+        else if (body.action === 'getTrophyRoom') {
+          // ?trophyfail=1: Google's error page for the Trophy Room only (the app shows a saved copy or "Try again")
+          if (qs.get('trophyfail') === '1') return resolve(new Response('<html>Service unavailable</html>', { status: 503 }));
+          var tp = state.players.find(function(p) { return p.id === body.playerId; }) || state.players[0];
+          data = { ok: true, player: { id: tp.id, name: tp.name, teamName: tp.teamName, avatar: '', joinedSeason: 2019, memberSince: 2019 },
+            trophies: [{ year: 2021, position: 1, points: 131 }, { year: 2023, position: 3, points: 118 }], bowlTrophies: [{ year: 2022, position: 2, points: 14, type: 'bowl' }],
+            upsetAttempts: 40, upsetHits: 9, totalUpsetPts: 101.5, biggestUpset: { team: 'Dog U', spread: 21.5, year: 2024, week: 7 },
+            perfectWeeks: [{ week: 4, year: 2020, games: 10 }], leaguePerfectCount: 12, champYears: [2021],
+            bio: { hometown: 'Testville', favTeam: 'Dog U', strategy: 'Always take the points', funFact: 'Never missed a week' } };
+        }
         else if (body.action === 'adminTogglePaid') state.players.forEach(function(p) { if (p.id === body.playerId) p.isPaid = body.isPaid; });
         else if (body.action === 'adminLedgerEntry') state.ledger.push({ playerId: body.playerId, season: 2026, type: body.type, amount: body.amount, note: body.note || '', date: new Date().toISOString() });
         else if (body.action === 'adminLedgerBatch') {

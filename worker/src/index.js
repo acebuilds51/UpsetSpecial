@@ -23,8 +23,12 @@
 // history has its own "history" generation, bumped only by Apps Script's scoped signal, so
 // pick saves and live scores stop throwing it away; (4) per-day counts kept in D1 for /health.
 // us5: chat copies are kept until something changes (max 15 min), not 30 s.
+// us6 (S-045): chat ('cgen') and the Trophy Room ('tgen') have their own generations too. A
+// pick save or a live score bumps only 'gen', so they no longer throw away the chat and Trophy
+// Room copies; a chat post bumps only 'cgen', so it no longer drops everyone's getState copy.
+// Apps Script v26+ says which parts changed (`parts`); an older signal drops all but history.
 
-export const VERSION = 'us5';
+export const VERSION = 'us6';
 
 // Actions whose answer never changes anything, so sending one twice is harmless. This is
 // NOT Code.gs's READ_ONLY_ACTIONS (that list means "doesn't bust the state cache" and
@@ -59,6 +63,31 @@ export const RETRYABLE_WRITES = new Set(['submitPicks']);
 // phone dropped every copy, sending the next players to Google just as it was struggling.
 export const NO_BUMP_WRITES = new Set(['logClientError', 'helpChat', 'adminGenerateResultsEmail']);
 
+// Generations: 'gen' = the app state (getState, standings, leaderboard), 'cgen' = chat,
+// 'tgen' = Trophy Room, 'hgen' = career history. Apps Script's signal names parts.
+export const PART_GENS = { state: 'gen', chat: 'cgen', trophy: 'tgen', history: 'hgen' };
+// Writes that change only some copies. Each one that leaves 'gen' alone must be in Code.gs's
+// READ_ONLY_ACTIONS (it doesn't bust the state cache either; a test checks). submitPicks:
+// picks and the board only -- Trophy Rooms change when a game goes final (Apps Script signals).
+// Every other write drops all but the history copy, as before.
+export const SCOPED_WRITES = {
+  postMessage: ['cgen'], deleteMessage: ['cgen'],
+  saveBio: ['tgen'],
+  submitPicks: ['gen']
+};
+const DEFAULT_WRITE_GENS = ['gen', 'cgen', 'tgen'];
+export function gensForWrite(action) { return SCOPED_WRITES[action] || DEFAULT_WRITE_GENS; }
+// Which generations a frontDoorStale signal bumps. No `parts` = Apps Script before v26: all
+// but history (+ history with scope 'history'), so nothing is ever kept too long.
+export function gensForSignal(body) {
+  let gens;
+  if (Array.isArray(body.parts) && body.parts.length) gens = body.parts.map(p => PART_GENS[p]).filter(Boolean);
+  else gens = DEFAULT_WRITE_GENS.slice();
+  if (body.scope === 'history' && gens.indexOf('hgen') < 0) gens.push('hgen');
+  if (!gens.length) gens = DEFAULT_WRITE_GENS.slice(); // unknown parts only: be safe
+  return gens;
+}
+
 export const HEDGE_MS = 7000;     // start another copy of a read after this long without an answer (probe: typical 4.8 s)
 export const MAX_READ_TRIES = 3;  // at most this many copies of one read
 export const READ_DEADLINE_MS = 23000;    // the app gives up at 25 s; answer (or fail) before that
@@ -75,10 +104,14 @@ export const COPY_RULES = {
   getBowlStandings:      { key: () => 'getBowlStandings', maxAge: 15 * MIN },
   getAllTimeLeaderboard: { key: () => 'getAllTimeLeaderboard', maxAge: 15 * MIN },
   getCareerHistory:      { key: () => 'getCareerHistory', maxAge: 6 * 60 * MIN, genKey: 'hgen' }, // = Apps Script's own cache
-  // us5: was 30 s, so ~9 of 10 chat reads still went to Google (2026-10-05: 97 of 106). Every
-  // post/delete passes through here (bumps gen), and Apps Script signals hand edits (onSheetChange).
-  getMessages:           { key: p => 'getMessages|' + (p.type || 'general'), maxAge: 15 * MIN },
-  getTrophyRoom:         { key: p => (p.playerId ? 'getTrophyRoom|' + p.playerId : null), maxAge: 5 * MIN },
+  // us5: was 30 s, so ~9 of 10 chat reads still went to Google (2026-10-05: 97 of 106).
+  // us6: own generation + 2 h (15 min sent most quiet-time readers to Google: on 10/12 the chat
+  // copy was current but 56 min old). Every post/delete passes through here (bumps cgen), and
+  // Apps Script signals 'chat' for hand edits (onSheetChange) and old app copies' posts.
+  getMessages:           { key: p => 'getMessages|' + (p.type || 'general'), maxAge: 120 * MIN, genKey: 'cgen' },
+  // us6: own generation (bios, trophies, claims, a game going final, name/photo changes) + 2 h;
+  // was 5 min and dropped with every pick save (10/11: 8 visits, 0 from a copy)
+  getTrophyRoom:         { key: p => (p.playerId ? 'getTrophyRoom|' + p.playerId : null), maxAge: 120 * MIN, genKey: 'tgen' },
   getAllEspnScores:      { key: () => 'getAllEspnScores', maxAge: 45 * 1000, ignoreGen: true }       // ESPN, not the Sheet
 };
 const MAX_COPY_CHARS = 1500 * 1000; // D1 rows hold 2 MB; anything bigger just isn't copied
@@ -126,8 +159,8 @@ export async function handle(req, env, ctx) {
   // Apps Script: "the Sheet changed" (never passed on).
   if (action === 'frontDoorStale' && req.method === 'POST') {
     if (!env.SYNC_SECRET || !sameSecret(body.secret, env.SYNC_SECRET)) return json({ ok: false, error: 'Not allowed' }, 403);
-    // scope 'history' = past seasons changed too (invalidateCareerHistoryCache in Code.gs)
-    if (env.DB) { await bumpGen(env); if (body.scope === 'history') await bumpGen(env, 'hgen'); await setKv(env, 'lastStale', String(Date.now())); }
+    // parts = which copies changed (Apps Script v26+); scope 'history' = past seasons too
+    if (env.DB) { await bumpGens(env, gensForSignal(body)); await setKv(env, 'lastStale', String(Date.now())); }
     stats.staleSignals++;
     return json({ ok: true });
   }
@@ -183,7 +216,7 @@ export async function handle(req, env, ctx) {
   if (RETRYABLE_WRITES.has(action) && typeof body.requestId === 'string' && body.requestId) {
     out = await hedgedRead(send, 0, READ_DEADLINE_MS);
     if (out.status !== 200) stats.writesFailed++;
-    if (bump) { try { await bumpGen(env); } catch (e) {} }
+    if (bump) { try { await bumpGens(env, gensForWrite(action)); } catch (e) {} }
     tally(out.status === 200 ? 'write' : 'writeFailed');
     return out;
   }
@@ -196,7 +229,7 @@ export async function handle(req, env, ctx) {
     stats.writesFailed++;
     out = new Response('', { status: 502, headers: CORS });
   }
-  if (bump) { try { await bumpGen(env); } catch (e) {} }
+  if (bump) { try { await bumpGens(env, gensForWrite(action)); } catch (e) {} }
   tally(out.status === 200 ? 'write' : 'writeFailed');
   return out;
 }
@@ -230,6 +263,9 @@ async function storeCopy(env, key, text, gen) {
 export async function bumpGen(env, genKey) {
   await env.DB.prepare("INSERT INTO kv (key, value) VALUES (?, '2') ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1").bind(genKey || 'gen').run();
 }
+export async function bumpGens(env, genKeys) {
+  for (const k of genKeys) await bumpGen(env, k);
+}
 // One row per day + action + outcome (copy / google / stale / failed / write / writeFailed).
 // Counts only -- no player data. Never allowed to break a request.
 async function countDaily(env, action, outcome) {
@@ -249,15 +285,20 @@ async function health(env) {
   if (env.DB) {
     try {
       const k = await env.DB.prepare("SELECT (SELECT value FROM kv WHERE key = 'gen') AS gen, (SELECT value FROM kv WHERE key = 'hgen') AS hgen, " +
+        "(SELECT value FROM kv WHERE key = 'cgen') AS cgen, (SELECT value FROM kv WHERE key = 'tgen') AS tgen, " +
         "(SELECT value FROM kv WHERE key = 'lastStale') AS lastStale").first();
       const { results } = await env.DB.prepare('SELECT key, gen, stored_at FROM copies').all();
       out.gen = Number(k.gen) || 0;
       out.hgen = Number(k.hgen) || 0;
+      out.cgen = Number(k.cgen) || 0;
+      out.tgen = Number(k.tgen) || 0;
       out.lastStaleSignal = k.lastStale ? Math.round((Date.now() - Number(k.lastStale)) / 60000) + ' min ago' : 'never';
-      const genFor = key => { const rule = COPY_RULES[key.split('|')[0]]; return rule && rule.genKey === 'hgen' ? out.hgen : out.gen; };
+      const genFor = key => { const rule = COPY_RULES[key.split('|')[0]]; return out[(rule && rule.genKey) || 'gen']; };
       out.copies = (results || []).filter(r => !r.key.startsWith('getTrophyRoom|')).map(r => ({ key: r.key, current: Number(r.gen) === genFor(r.key),
         age: Math.round((Date.now() - r.stored_at) / 1000) + ' s' }));
-      out.trophyRoomCopies = (results || []).filter(r => r.key.startsWith('getTrophyRoom|')).length;
+      const trophies = (results || []).filter(r => r.key.startsWith('getTrophyRoom|'));
+      out.trophyRoomCopies = trophies.length;
+      out.trophyRoomCopiesCurrent = trophies.filter(r => Number(r.gen) === out.tgen).length;
     } catch (e) { out.dbError = e.message; }
     try { out.daily = await dailySummary(env); } catch (e) { out.dailyError = e.message; }
   }
