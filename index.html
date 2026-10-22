@@ -488,7 +488,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 // owner can see at a glance whether a phone is running the latest version.
 // v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
 // selections, update banner on resume, This Week fits on phones.
-const VERSION = 'v14.9';
+const VERSION = 'v15.0';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
@@ -976,6 +976,8 @@ async function boot() {
     render();
     // opened by tapping a notification on a phone that ignored its link: use the saved one
     takePendingView_().then(url => { if (url) openViewFromUrl_(url); });
+    // still on the old default PIN 1234? (asked once per phone; never again after a "no")
+    setTimeout(checkPinStatus_, 3000);
 
     if (hasCachedState) {
       // nothing more to do -- the background refresh is already in flight
@@ -1462,6 +1464,8 @@ async function doLogin() {
     // the full state loads -- refreshState runs in the background and the content
     // area shows its own spinner while it completes
     render();
+    if (data.mustChangePin) showForcePinScreen_();
+    else markPinOk_(data.player.id);
     try {
       await refreshState();
       renderContent();
@@ -1580,6 +1584,7 @@ async function submitRegistration() {
     }
     State.player = data.player;
     saveSession(data.player);
+    markPinOk_(data.player.id); // a new account's PIN can never be 1234
     render();
     try {
       await refreshState();
@@ -1593,6 +1598,73 @@ async function submitRegistration() {
   } catch(e) {
     btn.innerHTML = 'Submit Registration';
   }
+}
+
+// ---- Forced PIN change ------------------------------------------------------------
+// Every player imported from the old spreadsheet started on PIN 1234; anyone who knows
+// a team name (they're on the standings page) could log in as them. A player still on
+// it can't use the app until they choose their own. Logging in with 1234 shows this
+// at once; phones that were already logged in ask the server once (pinStatus) and
+// remember a "no" so they never ask again.
+function markPinOk_(id) { try { if (id) localStorage.setItem('usl_pin_ok_' + id, '1'); } catch (e) {} }
+
+async function checkPinStatus_() {
+  const p = State.player;
+  if (!p || !p.id) return;
+  try { if (localStorage.getItem('usl_pin_ok_' + p.id)) return; } catch (e) {}
+  try {
+    const d = await api('pinStatus', { playerId: p.id }, true);
+    if (d.mustChangePin) showForcePinScreen_();
+    else markPinOk_(p.id);
+  } catch (e) { /* quiet: asked again next time the app opens */ }
+}
+
+function showForcePinScreen_() {
+  if (document.getElementById('force-pin-overlay')) return;
+  const p = State.player || {};
+  const field = 'width:100%;background:var(--surface-2);border:1px solid var(--hairline);border-radius:var(--radius-sm);color:var(--text);padding:12px;font-size:16px;margin-bottom:10px;box-sizing:border-box;';
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="force-pin-overlay" style="position:fixed;inset:0;background:rgba(9,11,20,0.97);z-index:10000;overflow-y:auto;display:flex;align-items:center;justify-content:center;padding:20px 16px;">
+      <div class="card" style="max-width:420px;width:100%;">
+        <div style="font-family:var(--font-display);font-size:22px;color:var(--gold);margin-bottom:8px;">🔐 Choose your own PIN</div>
+        <p class="helptext" style="line-height:1.6;margin-bottom:10px;">Your account (<strong>${escapeHtml(p.teamName || p.name || '')}</strong>) is still using the league's old starting PIN, <strong>1234</strong>. Team names are on the standings page, so anyone could log in as you — change your picks, your Venmo/PayPal for winnings, or post in chat as you.</p>
+        <p class="helptext" style="line-height:1.6;margin-bottom:14px;">Pick a 4–6 digit PIN only you know. It can't start with 0. You'll use it next time you log in.</p>
+        <input type="password" id="force-pin-new" inputmode="numeric" maxlength="6" placeholder="New PIN" style="${field}">
+        <input type="password" id="force-pin-confirm" inputmode="numeric" maxlength="6" placeholder="Re-enter new PIN" style="${field}">
+        <button class="btn btn-gold btn-block" id="force-pin-save" style="margin-top:4px;">Save my PIN</button>
+        <button class="btn btn-block" id="force-pin-logout" style="margin-top:10px;background:transparent;color:var(--text-soft);">Log out</button>
+      </div>
+    </div>`);
+  const save = async () => {
+    const newPin = document.getElementById('force-pin-new').value.trim();
+    const confirm = document.getElementById('force-pin-confirm').value.trim();
+    const err = pinProblem(newPin);
+    if (err) { showToast(err, 'error'); return; }
+    if (newPin !== confirm) { showToast('The two PINs don\'t match', 'error'); return; }
+    const btn = document.getElementById('force-pin-save');
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner" style="border-top-color:#1A1206;"></span>';
+    try {
+      await api('changePin', { playerId: p.id, currentPin: '1234', newPin });
+      markPinOk_(p.id);
+      setOnboardStep('pin', true);
+      document.getElementById('force-pin-overlay').remove();
+      showToast('PIN saved — use it next time you log in', 'success');
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = 'Save my PIN';
+      // "Current PIN is incorrect" = it was already changed (another phone, or the Profile tab)
+      if (/Current PIN is incorrect/.test(e.message || '')) {
+        markPinOk_(p.id);
+        document.getElementById('force-pin-overlay').remove();
+        showToast('Your PIN was already changed — you\'re all set', 'success');
+      }
+    }
+  };
+  document.getElementById('force-pin-save').onclick = save;
+  document.getElementById('force-pin-confirm').addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+  document.getElementById('force-pin-logout').onclick = () => { document.getElementById('force-pin-overlay').remove(); logout(); };
 }
 
 function logout() {
@@ -4262,6 +4334,7 @@ async function renderProfile(content) {
       await api('changePin', { playerId: p.id, currentPin: current, newPin });
       showToast('PIN updated successfully', 'success');
       setOnboardStep('pin', true);
+      markPinOk_(p.id);
       ['pin-current','pin-new','pin-confirm'].forEach(id => document.getElementById(id).value = '');
       btn.textContent = 'Update PIN';
     } catch(e) { showToast(e.message || 'Could not update PIN', 'error'); btn.textContent = 'Update PIN'; }

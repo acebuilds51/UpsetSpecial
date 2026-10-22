@@ -1,4 +1,4 @@
-// v26-own-staleness-oct12  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v28-force-pin-oct22  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -90,14 +90,14 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v26-own-staleness-oct12';
+var CODE_VERSION = 'v28-force-pin-oct22';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
 // success. When adding a new endpoint: if it only reads, add it here.
 // (submitPicks is handled inside the endpoint -- picks aren't cached.)
 var READ_ONLY_ACTIONS = {
-  login: 1, getState: 1, getAllTimeLeaderboard: 1, getAllEspnScores: 1, getMessages: 1,
+  login: 1, pinStatus: 1, getState: 1, getAllTimeLeaderboard: 1, getAllEspnScores: 1, getMessages: 1,
   postMessage: 1, deleteMessage: 1, getTrophyRoom: 1, saveBio: 1, generateBio: 1, helpChat: 1,
   getMyNameClaims: 1, getClaimableNames: 1, submitNameClaim: 1, adminAuditCareerHistory: 1,
   adminGetNameClaims: 1, getCareerHistory: 1, getAvatars: 1, getGameSummary: 1,
@@ -153,6 +153,7 @@ function handle(e) {
   try {
     switch (action) {
       case 'login': result = apiLogin(payload); break;
+      case 'pinStatus': result = apiPinStatus(payload); break;
       case 'getState': result = apiGetState(payload); break;
       case 'getAllTimeLeaderboard': result = apiGetAllTimeLeaderboard(); break;
       case 'getAllEspnScores': result = apiGetAllEspnScores(payload); break;
@@ -597,11 +598,23 @@ function apiLogin(payload) {
       && String(p.pin).trim() === pin
     );
     if (!player) return { ok: false, error: 'Name/team name or PIN not recognized.' };
-    return { ok: true, player: { id: player.id, name: player.name, teamName: player.teamName, isAdmin: !!player.isAdmin, active: !!player.active, avatar: player.avatar || '' } };
+    // mustChangePin: still on the old league-wide default -- the app makes them choose
+    // their own before going any further
+    return { ok: true, mustChangePin: pin === DEFAULT_PIN, player: { id: player.id, name: player.name, teamName: player.teamName, isAdmin: !!player.isAdmin, active: !!player.active, avatar: player.avatar || '' } };
   } catch(e) {
     Logger.log('apiLogin error: ' + e.message);
     return { ok: false, error: 'Login unavailable — try again in a moment.' };
   }
+}
+
+// For players who were already logged in before the forced PIN change shipped: is this
+// player still on the default PIN? Answers only yes/no for the given player -- the same
+// thing anyone could learn by trying 1234 at the login screen. The app asks once per
+// device and stops asking after a "no".
+function apiPinStatus(payload) {
+  var p = sheetToObjects(SHEET_NAMES.PLAYERS).find(function(x) { return x.id === payload.playerId; });
+  if (!p) return { ok: false, error: 'Player not found.' };
+  return { ok: true, mustChangePin: String(p.pin).trim() === DEFAULT_PIN };
 }
 
 function apiUpdateTeamName(payload) {
@@ -7463,11 +7476,9 @@ function buildDefaultPinEmail_(player) {
     '</div>' +
     '<p style="margin:22px 0 8px;font-weight:800;font-size:16px;">How to change it (about a minute)</p>' +
     '<table cellpadding="0" cellspacing="0" style="font-size:15px;line-height:1.5;">' +
-      step(1, 'Open the app and log in with your team name <strong>' + team + '</strong> (or your name) and PIN <strong>1234</strong>.') +
-      step(2, 'Tap <strong>Profile</strong> in the menu at the bottom of the screen.') +
-      step(3, 'Scroll down to <strong>Change PIN</strong>.') +
-      step(4, 'Enter <strong>1234</strong> as your Current PIN, then type a new <strong>4–6 digit</strong> PIN twice. It can\'t start with 0.') +
-      step(5, 'Tap <strong>Update PIN</strong>. You\'ll see "PIN updated successfully."') +
+      step(1, 'Open the app. If you\'re asked to log in, use your team name <strong>' + team + '</strong> (or your name) and PIN <strong>1234</strong>.') +
+      step(2, 'The app will ask you to <strong>choose your own PIN</strong> before you can continue. Type a new <strong>4–6 digit</strong> PIN twice. It can\'t start with 0.') +
+      step(3, 'Tap <strong>Save my PIN</strong>. That\'s it — use the new PIN from now on.') +
     '</table>' +
     '<div style="text-align:center;margin:26px 0;">' +
       '<a href="' + EMAIL_APP_URL + '" style="display:inline-block;background:#1a1a2e;color:#FFB800;font-weight:800;text-decoration:none;padding:13px 28px;border-radius:8px;font-size:15px;">Open the App</a>' +
@@ -7505,18 +7516,41 @@ function scheduleDefaultPinEmails() {
   Logger.log('PIN emails scheduled for ' + when.toString() + ' (' + defaultPinPlayers_().length + ' player(s) currently qualify).');
 }
 
+// Follow-ups until everyone has changed it: a daily 10 AM trigger. sendDefaultPinEmails
+// only sends Tue-Thu and skips anyone emailed in the last 40 hours, so in practice
+// reminders go out Tuesdays and Thursdays, and the trigger removes itself once nobody
+// is left on 1234. Safe to re-run (replaces the trigger).
+function installPinReminderTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'sendDefaultPinEmails') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('sendDefaultPinEmails').timeBased().everyDays(1).atHour(10).create();
+  Logger.log('PIN follow-ups scheduled: checked daily at 10 AM, sent Tue/Thu to anyone still on 1234; stops itself when nobody is left (' + defaultPinPlayers_().length + ' with an email today).');
+}
+
 function sendDefaultPinEmails() {
-  var day = Number(Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/New_York', 'u')) % 7; // 1=Mon..7=Sun -> 0=Sun
+  var day =Number(Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/New_York', 'u')) % 7; // 1=Mon..7=Sun -> 0=Sun
   if (PIN_EMAIL_SEND_DAYS.indexOf(day) < 0) {
     Logger.log('Not a PIN-email day (Tue-Thu only, to stay clear of weekend pick-reminder emails). Nothing sent.');
     return { sent: 0, skipped: 'day' };
   }
   var props = PropertiesService.getScriptProperties();
   var recent = JSON.parse(props.getProperty('pinEmailSentAt') || '{}');
-  var list = defaultPinPlayers_().filter(function(p) {
-    return !recent[p.id] || Date.now() - new Date(recent[p.id]).getTime() > 6 * 86400000;
+  var everyone = defaultPinPlayers_();
+  if (everyone.length === 0) {
+    // everyone has changed it -- the follow-up trigger has nothing left to do
+    ScriptApp.getProjectTriggers().forEach(function(t) {
+      if (t.getHandlerFunction() === 'sendDefaultPinEmails') ScriptApp.deleteTrigger(t);
+    });
+    Logger.log('Nobody left on the default PIN. Nothing sent; follow-up trigger removed.');
+    return { sent: 0, done: true };
+  }
+  // every other day: anyone emailed in the last 40 hours is skipped (a daily trigger
+  // therefore sends Tue + Thu, never Wed)
+  var list = everyone.filter(function(p) {
+    return !recent[p.id] || Date.now() - new Date(recent[p.id]).getTime() > 40 * 3600000;
   });
-  if (list.length === 0) { Logger.log('Nobody left on the default PIN (or all were emailed this week). Nothing sent.'); return { sent: 0 }; }
+  if (list.length === 0) { Logger.log('Everyone still on the default PIN was emailed in the last 40 hours. Nothing sent.'); return { sent: 0 }; }
   var quota = MailApp.getRemainingDailyQuota();
   if (quota - list.length < PIN_EMAIL_QUOTA_RESERVE) {
     Logger.log('Email quota too low today (' + quota + ' left, need ' + list.length + ' + ' + PIN_EMAIL_QUOTA_RESERVE + ' reserve). Nothing sent — run again tomorrow.');
@@ -8293,7 +8327,7 @@ function runDiagnostics() {
   report.durationMs = Date.now() - started;
   writeDiagnosticsReport_(report);
   saveDiagnosticsSummary_(report);
-  if (report.warnings.length) emailDiagnostics_(report);
+  emailDiagnostics_(report); // decides itself: new owner items, or Monday's weekly summary
   Logger.log(renderDiagnosticsText_(report));
   return report;
 }
@@ -8469,6 +8503,20 @@ function diagIntegrity_(report, warn, info) {
   var stale = games.filter(function(g) {
     return Number(g.week) === week && !isTrue(g.isFinal) && g.kickoff && (Date.now() - new Date(g.kickoff).getTime() > 12 * 3600000);
   });
+  // plain-language week status for the owner's digest email
+  var activeIds = {};
+  sheetToObjects(SHEET_NAMES.PLAYERS).forEach(function(p) { if (isTrue(p.active)) activeIds[p.id] = true; });
+  var pickers = {};
+  picks.forEach(function(p) { if (Number(p.week) === week && activeIds[p.playerId] && !isTrue(p.isAutoDefault)) pickers[p.playerId] = true; });
+  report.weekStatus = {
+    week: week, boardGames: board.length,
+    posted: board.length > 0 && board.every(function(g) { return isTrue(g.locked); }),
+    missingLines: noLine.length, frozenLines: snapCount,
+    final: board.filter(function(g) { return isTrue(g.isFinal); }).length,
+    started: board.filter(function(g) { return g.kickoff && new Date(g.kickoff).getTime() <= Date.now(); }).length,
+    picksIn: Object.keys(pickers).length, activePlayers: Object.keys(activeIds).length,
+    notFinalTooLong: stale.length
+  };
   report.integrity.push({ check: 'Week ' + week + ' games >12h past kickoff but not final', count: stale.length });
   if (stale.length) warn(stale.length + ' week ' + week + ' game(s) kicked off 12+ hours ago but have no final score -- run Fetch Results.');
 
@@ -8495,6 +8543,10 @@ function diagPerfLog_(report, warn, info) {
     clientFails.length + ' failure(s) reported from players\' phones in the last 24h: ' +
     clientFails.slice(0, 5).map(function(r) { return r[1] + ' "' + r[4] + '"'; }).join('; '));
   diagClientFailureGroups_(report, clientFails);
+  // who had trouble (owner's digest only -- never in the name-free summary)
+  var byTeam = {};
+  clientFails.forEach(function(r) { var n = {}; try { n = JSON.parse(r[6] || '{}'); } catch (e) {} var t = n.team || '?'; byTeam[t] = (byTeam[t] || 0) + 1; });
+  report.phoneTrouble = { failures: clientFails.length, byTeam: byTeam };
   var since = Date.now() - 7 * 86400000;
   var byAction = {};
   rows.forEach(function(r) {
@@ -8723,14 +8775,127 @@ function noteGetRequest_(e) {
   } catch (err) {}
 }
 
+// ---- Owner's digest email ------------------------------------------------------
+// The nightly report is written for debugging (timings, front-door counts, request
+// stats) and lives in the DiagnosticsReport tab for the weekly review. The OWNER gets
+// a short digest instead: a verdict, only the things they can act on (each with what
+// to do), how the app did for players yesterday, and where the week stands.
+// It is emailed when something NEW needs the owner (an item already reported and
+// unchanged moves to a one-line "still open" note, so the same list isn't re-sent
+// daily), and every Monday as a weekly summary.
+
+// Sorts the report's warnings into owner action items vs. technical notes.
+// Returns { attention: [{key, title, detail, todo}], technical: [text] }.
+function classifyDiagnostics_(r) {
+  var attention = [], technical = [];
+  var ws = r.weekStatus || {};
+  r.warnings.forEach(function(w) {
+    var m;
+    if ((m = w.match(/^(\d+) active player\(s\) still use the default PIN 1234[^:]*:\s*(.*)$/))) {
+      attention.push({ key: 'pin', title: m[1] + ' players still use PIN 1234',
+        detail: m[2], todo: 'Anyone who knows their team name can log in as them. Nudge them to change it on the Profile tab (or schedule the PIN reminder email).' });
+    } else if (/kicked off 12\+ hours ago but have no final score/.test(w)) {
+      attention.push({ key: 'notfinal', title: w.replace(/ -- run Fetch Results\.$/, ''), detail: '', todo: 'In Admin, run Fetch Results for Week ' + (ws.week || '') + '.' });
+    } else if (/posted game\(s\) missing a line or kickoff|is posted but has NO line snapshot/.test(w)) {
+      attention.push({ key: 'board', title: w.replace(/ -- .*$/, ''), detail: '', todo: 'Open the Week ' + (ws.week || '') + ' board in Admin and fill in the missing line, or run Add Missing Lines.' });
+    } else if (/duplicate straight pick|more than one Upset Special|Upset Special pick\(s\) are on the favorite/.test(w)) {
+      attention.push({ key: 'picks:' + w.slice(0, 40), title: w.replace(/ -- .*$|\. See .*$/, ''), detail: '', todo: 'This affects scoring. Ask Claude to look at it before results are final.' });
+    } else if (/trigger is NOT installed|check is NOT installed|hasn't run in over a day|Duplicate triggers|marked finalized|PIN under 4 digits|stored PIN under 4 digits/.test(w)) {
+      attention.push({ key: 'setup:' + w.slice(0, 40), title: w.replace(/ -- .*$/, ''), detail: '', todo: (w.match(/Run (\w+\(\))/) ? 'In the Apps Script editor, run ' + w.match(/Run (\w+\(\))/)[1] + '.' : w.replace(/^[^-]*-- /, '')) });
+    } else if (/Push notifications: .* failed|check the FCM service account/.test(w)) {
+      attention.push({ key: 'push', title: 'Push notifications are failing', detail: w, todo: 'Check that the FCM_SERVICE_ACCOUNT_JSON Script Property holds the current Firebase key.' });
+    } else if (/^Front door: .* reads failed/.test(w)) {
+      attention.push({ key: 'frontdoor', title: 'Some app requests failed outright yesterday', detail: w.replace(/^Front door: /, ''), todo: 'Players may have seen errors. Ask Claude to check the Cloudflare front door.' });
+    } else if (/failure\(s\) reported from players' phones/.test(w)) {
+      // reported in the "How the app did" section instead
+    } else if (/check crashed|FAILED:/.test(w)) {
+      attention.push({ key: 'crash:' + w.slice(0, 40), title: 'A nightly check failed', detail: w, todo: 'Ask Claude to look at it (the details are in the DiagnosticsReport tab).' });
+    } else {
+      technical.push(w);
+    }
+  });
+  return { attention: attention, technical: technical };
+}
+
+function buildOwnerDigest_(r, attention, technical, previous) {
+  var esc = escapeHtmlGs_;
+  var isNew = function(a) { return previous[a.key] !== (a.title + '|' + a.detail); };
+  var fresh = attention.filter(isNew), still = attention.filter(function(a) { return !isNew(a); });
+  var ws = r.weekStatus || {}, fd = r.frontDoor, pt = r.phoneTrouble || { failures: 0, byTeam: {} };
+
+  var verdict = attention.length === 0 ? 'All good'
+    : attention.length + ' thing' + (attention.length === 1 ? '' : 's') + ' need' + (attention.length === 1 ? 's' : '') + ' you';
+  var body = '';
+  var section = function(label) { return '<div style="font-size:11px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:#8c6a2a;margin:22px 0 8px;">' + label + '</div>'; };
+
+  // 1. Needs you
+  if (attention.length) {
+    body += section('Needs you');
+    attention.forEach(function(a) {
+      body += '<div style="border-left:4px solid ' + (isNew(a) ? '#FF6B35' : '#c9c2b4') + ';padding:8px 12px;margin:0 0 10px;background:' + (isNew(a) ? '#fff5f0' : '#f7f7fb') + ';">' +
+        '<strong>' + esc(a.title) + '</strong>' + (isNew(a) ? '' : ' <span style="color:#8c97ac;font-size:12px;">(no change since last report)</span>') +
+        (a.detail ? '<div style="font-size:13px;color:#4a5068;margin-top:4px;">' + esc(a.detail) + '</div>' : '') +
+        '<div style="font-size:13px;margin-top:6px;">→ ' + esc(a.todo) + '</div></div>';
+    });
+  } else {
+    body += '<p style="margin:0 0 6px;">Nothing needs your attention.</p>';
+  }
+
+  // 2. How the app did for players
+  body += section('How the app did yesterday');
+  var lines = [];
+  if (fd && fd.reads) {
+    var failedReqs = (fd.failed || 0) + (fd.writesFailed || 0);
+    lines.push((fd.reads + fd.writes) + ' app requests, ' + (failedReqs ? failedReqs + ' failed' : 'none failed') + (fd.stale ? ' (' + fd.stale + ' answered from a saved copy while Google was slow)' : '') + '.');
+  }
+  var teams = Object.keys(pt.byTeam || {});
+  if (!pt.failures) {
+    lines.push('No player reported a problem from their phone.');
+  } else if (teams.length === 1) {
+    lines.push('Only ' + esc(teams[0]) + '\'s phone had trouble (' + pt.failures + ' time' + (pt.failures === 1 ? '' : 's') + ', ' + (pt.failures === 1 ? 'a timeout' : 'timeouts') + '). With nobody else affected, that\'s most likely their connection, not the app.');
+  } else {
+    lines.push(teams.length + ' players\' phones had trouble (' + pt.failures + ' failures): ' + teams.map(function(t) { return esc(t) + ' ×' + pt.byTeam[t]; }).join(', ') + '.' + (teams.length >= 4 ? ' That many usually means the server was slow — worth asking Claude to check.' : ''));
+  }
+  var warm = (r.timings || []).filter(function(t) { return t.name === 'getState (cache warm)'; })[0];
+  if (warm && warm.ok) lines.push('Speed check: the app loaded in ' + (warm.ms < 1000 ? 'under a second' : (warm.ms / 1000).toFixed(1) + ' seconds') + (warm.ms > 8000 ? ' — slower than it should be.' : ' — normal.'));
+  body += lines.map(function(l) { return '<p style="margin:0 0 6px;">' + l + '</p>'; }).join('');
+
+  // 3. This week
+  if (ws.week) {
+    body += section('Week ' + ws.week);
+    var wl = [];
+    if (!ws.boardGames) wl.push('The board hasn\'t been submitted yet.');
+    else if (!ws.posted) wl.push('The board (' + ws.boardGames + ' games) is submitted but not posted yet.');
+    else wl.push('Board posted (' + ws.boardGames + ' games), ' + ws.frozenLines + ' opening lines frozen for Upset Special picks.');
+    if (ws.posted) wl.push(ws.picksIn + ' of ' + ws.activePlayers + ' players have submitted picks.');
+    if (ws.started) wl.push(ws.final + ' of ' + ws.boardGames + ' games final' + (ws.started > ws.final ? ', ' + (ws.started - ws.final) + ' in progress or awaiting a score' : '') + '.');
+    body += wl.map(function(l) { return '<p style="margin:0 0 6px;">' + l + '</p>'; }).join('');
+  }
+
+  // 4. Technical notes (count only)
+  body += '<p style="margin:22px 0 0;font-size:12px;color:#8c97ac;">' +
+    (technical.length ? technical.length + ' technical note' + (technical.length === 1 ? '' : 's') + ' (speed and request stats) ' : 'Technical details ') +
+    'are in the DiagnosticsReport tab of the league spreadsheet; the Tuesday improvement review reads them, so you don\'t need to.</p>';
+
+  var subject = 'Upset Special: ' + verdict + (fresh.length && still.length ? ' (' + fresh.length + ' new)' : '');
+  return { subject: subject, html: buildEmailHtml(verdict, 'Daily check, ' + Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/New_York', 'EEE MMM d'), body), freshCount: fresh.length };
+}
+
 function emailDiagnostics_(r) {
   try {
-    var to = PropertiesService.getScriptProperties().getProperty('DIAG_EMAIL') || Session.getEffectiveUser().getEmail();
+    var props = PropertiesService.getScriptProperties();
+    var to = props.getProperty('DIAG_EMAIL') || Session.getEffectiveUser().getEmail();
     if (!to) return;
-    MailApp.sendEmail({
-      to: to,
-      subject: 'Upset Special diagnostics: ' + r.warnings.length + ' warning' + (r.warnings.length === 1 ? '' : 's'),
-      body: renderDiagnosticsText_(r) + '\n\nFull report: the DiagnosticsReport tab in the league spreadsheet.'
-    });
+    var c = classifyDiagnostics_(r);
+    var previous = {};
+    try { previous = JSON.parse(props.getProperty('diagLastAttention') || '{}'); } catch (e) {}
+    var digest = buildOwnerDigest_(r, c.attention, c.technical, previous);
+    var isMonday = Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'America/New_York', 'u') === '1';
+    // remember what was reported, so unchanged items don't trigger tomorrow's email
+    var now = {};
+    c.attention.forEach(function(a) { now[a.key] = a.title + '|' + a.detail; });
+    props.setProperty('diagLastAttention', JSON.stringify(now));
+    if (digest.freshCount === 0 && !isMonday) { Logger.log('Owner digest: nothing new -- not emailed.'); return; }
+    MailApp.sendEmail({ to: to, subject: digest.subject, htmlBody: digest.html, name: 'Upset Special League' });
   } catch (e) { Logger.log('Diagnostics email failed: ' + e.message); }
 }

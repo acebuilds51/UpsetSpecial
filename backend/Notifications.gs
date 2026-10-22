@@ -1,4 +1,4 @@
-// v26-own-staleness-oct12  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
+// v28-force-pin-oct22  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
 // ============================================================
 //  UPSET SPECIAL — Notifications & week/season finalization (v2, Sep 2026)
 //

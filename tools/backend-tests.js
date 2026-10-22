@@ -673,7 +673,7 @@ test('PIN email goes only to active players still on 1234 with an email, once pe
   eq(r.sent, 2);
   eq(sentMails.map(m => m.to).sort(), ['pat@example.com', 'sam@example.com']);
   ok(/TEAM2/.test(sentMails.find(m => m.to === 'pat@example.com').htmlBody), 'personalized with their team name');
-  ok(/Profile/.test(sentMails[0].htmlBody) && /Update PIN/.test(sentMails[0].htmlBody), 'has the how-to steps');
+  ok(/choose your own PIN/i.test(sentMails[0].htmlBody) && /Save my PIN/.test(sentMails[0].htmlBody), 'has the how-to steps');
   eq(env.ctx.sendDefaultPinEmails().sent, 0, 'not re-sent within 6 days');
   mockWeekday = null;
 });
@@ -996,6 +996,80 @@ test('GET requests are recorded (action + parameter names only) in the diagnosti
   eq(r.getRequests.length, 2);
   eq(r.getRequests[1].action, 'getState'); eq(r.getRequests[1].params, 'playerId');
   ok(!JSON.stringify(r.getRequests).includes('p_secret123'), 'parameter values never recorded');
+});
+
+// ---------------------------------------------------------------- owner's digest email
+function digestFixture() {
+  return {
+    generatedAt: '2026-10-22T08:50:32Z', codeVersion: 'vX',
+    warnings: [
+      '20 active player(s) still use the default PIN 1234 (anyone can log in as them): ALPHA, BRAVO',
+      '3 failure(s) reported from players\' phones in the last 24h: ALPHA client:getState "timed out after 25s"',
+      'adminGenerateResultsEmail: at least one request took 35s in the last 7 days (the app gives up at 25s).'
+    ],
+    timings: [{ name: 'getState (cache warm)', ms: 158, ok: true }],
+    frontDoor: { reads: 205, writes: 10, failed: 0, writesFailed: 0, stale: 0 },
+    phoneTrouble: { failures: 3, byTeam: { ALPHA: 3 } },
+    weekStatus: { week: 8, boardGames: 10, posted: true, frozenLines: 56, picksIn: 41, activePlayers: 56, final: 0, started: 0 }
+  };
+}
+
+test('owner digest: plain-language verdict, action items with a to-do, technical notes only counted', () => {
+  const env = loadBackend();
+  const r = digestFixture();
+  const c = env.ctx.classifyDiagnostics_(r);
+  eq(c.attention.map(a => a.key), ['pin']);
+  eq(c.technical.length, 1, 'the 35s admin request is a technical note, not an owner action');
+  const d = env.ctx.buildOwnerDigest_(r, c.attention, c.technical, {});
+  eq(d.subject, 'Upset Special: 1 thing needs you');
+  ok(/Nudge them/.test(d.html), 'tells the owner what to do');
+  ok(/Only ALPHA&#39;s phone had trouble|Only ALPHA's phone had trouble/.test(d.html) && /their connection/.test(d.html), 'one player\'s timeouts explained');
+  ok(/41 of 56 players have submitted picks/.test(d.html) && /56 opening lines frozen/.test(d.html), 'week status in plain words');
+  ok(!/p95|keepWarm|front door/i.test(d.html.replace(/front-door/g, '')), 'no raw technical tables');
+});
+
+test('owner digest: an unchanged item is not re-emailed the next day (except Mondays)', () => {
+  const env = loadBackend(); seedLeague(env);
+  sentMails.length = 0; mockWeekday = 3; // Wednesday
+  env.ctx.emailDiagnostics_(digestFixture());
+  eq(sentMails.length, 1, 'first time: emailed');
+  env.ctx.emailDiagnostics_(digestFixture());
+  eq(sentMails.length, 1, 'same items next day: not emailed');
+  const changed = digestFixture(); changed.warnings[0] = changed.warnings[0].replace('20 active', '19 active').replace(', BRAVO', '');
+  env.ctx.emailDiagnostics_(changed);
+  eq(sentMails.length, 2, 'the list changed: emailed again');
+  mockWeekday = 1; // Monday
+  env.ctx.emailDiagnostics_(changed);
+  eq(sentMails.length, 3, 'Monday: weekly summary even with nothing new');
+  ok(/still|no change/i.test(sentMails[2].htmlBody), 'unchanged items marked as no change');
+  mockWeekday = null;
+});
+
+test('forced PIN change: login and pinStatus tell the app a player is still on 1234', () => {
+  const env = loadBackend(); seedLeague(env); setupPins(env);
+  const r = env.call('login', { name: 'TEAM2', pin: '1234' });
+  ok(r.ok); eq(r.mustChangePin, true);
+  eq(env.call('login', { name: 'VOLZ', pin: '9876' }).mustChangePin, false);
+  eq(env.call('pinStatus', { playerId: 'p2' }).mustChangePin, true);
+  eq(env.call('pinStatus', { playerId: 'p1' }).mustChangePin, false);
+  ok(env.call('changePin', { playerId: 'p2', currentPin: '1234', newPin: '7531' }).ok);
+  eq(env.call('pinStatus', { playerId: 'p2' }).mustChangePin, false, 'cleared once changed');
+});
+
+test('PIN follow-ups: every other day (Tue/Thu), and the trigger removes itself when nobody is left', () => {
+  const env = loadBackend(); seedLeague(env); setupPins(env);
+  sentMails.length = 0; mailQuota = 100;
+  env.ctx.installPinReminderTrigger();
+  eq(env.triggers.filter(t => t.getHandlerFunction() === 'sendDefaultPinEmails').length, 1);
+  mockWeekday = 4; eq(env.ctx.sendDefaultPinEmails().sent, 2, 'Thursday: sent');
+  mockWeekday = 2; eq(env.ctx.sendDefaultPinEmails().sent, 0, 'within 40 hours: skipped');
+  ok(/choose your own PIN/i.test(sentMails[0].htmlBody), 'email says the app will ask for a new PIN');
+  env.call('changePin', { playerId: 'p2', currentPin: '1234', newPin: '7531' });
+  env.call('changePin', { playerId: 'p3', currentPin: '1234', newPin: '8642' });
+  env.ctx._sheetDataCache = {};
+  eq(env.ctx.sendDefaultPinEmails().done, true);
+  eq(env.triggers.filter(t => t.getHandlerFunction() === 'sendDefaultPinEmails').length, 0, 'trigger removed');
+  mockWeekday = null;
 });
 
 test('requests no longer write a DebugLog row each', () => {

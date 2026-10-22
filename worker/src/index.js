@@ -28,7 +28,7 @@
 // Room copies; a chat post bumps only 'cgen', so it no longer drops everyone's getState copy.
 // Apps Script v26+ says which parts changed (`parts`); an older signal drops all but history.
 
-export const VERSION = 'us6';
+export const VERSION = 'us7';
 
 // Actions whose answer never changes anything, so sending one twice is harmless. This is
 // NOT Code.gs's READ_ONLY_ACTIONS (that list means "doesn't bust the state cache" and
@@ -38,7 +38,7 @@ export const PURE_READS = new Set([
   'getState', 'getStandings', 'getBowlStandings', 'getAllTimeLeaderboard', 'getCareerHistory',
   'getMessages', 'getTrophyRoom', 'getAvatars', 'getAllEspnScores', 'getGameSummary',
   'getPickerSlateFromSnapshot', 'getWeeklyEspnSlate', 'searchSnapshotGames', 'searchEspnGames',
-  'getMyNameClaims', 'getClaimableNames', 'getDiagnosticsSummary',
+  'getMyNameClaims', 'getClaimableNames', 'getDiagnosticsSummary', 'pinStatus',
   'adminGetPending', 'adminGetNameClaims', 'adminListEmailTemplates', 'adminGetEmailTemplate',
   'adminGetResultsDraft', 'adminPreviewCustomEmail', 'adminAuditCareerHistory', 'fetchEspnGamesByDateRange'
 ]);
