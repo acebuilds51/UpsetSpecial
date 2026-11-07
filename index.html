@@ -193,6 +193,12 @@ body:has(#submit-picks-btn.sticky-save) #global-help-btn{ display:none !importan
 .picks-due.critical .pd-go{ color:#FF4D5E; background:#fff; }
 @keyframes pdPulse{ 0%,100%{ box-shadow:0 6px 18px rgba(255,77,94,0.35); } 50%{ box-shadow:0 6px 30px rgba(255,77,94,0.95); filter:brightness(1.08); } }
 @media (prefers-reduced-motion: reduce){ .picks-due.urgent, .picks-due.critical{ animation:none; } }
+/* An Upset Special pick leading in the 4th quarter / OT (upsetGlowKeys_) */
+.upset-glow{ color:#FFD45C !important; font-weight:700; border-radius:6px; animation: upsetGlow 1.6s ease-in-out infinite; }
+@keyframes upsetGlow{ 0%,100%{ text-shadow:0 0 4px rgba(255,212,92,0.55); box-shadow:0 0 0 rgba(255,184,0,0); } 50%{ text-shadow:0 0 12px rgba(255,212,92,1), 0 0 22px rgba(255,140,0,0.75); box-shadow:0 0 14px rgba(255,184,0,0.45); } }
+@media (prefers-reduced-motion: reduce){ .upset-glow{ animation:none; text-shadow:0 0 10px rgba(255,212,92,0.9); } }
+a.cbs-link{ color:inherit; text-decoration:none; }
+.cbs-tag{ font-size:10px; font-weight:700; color:var(--text-faint); letter-spacing:0.04em; }
 
 /* ---------- Cards ---------- */
 .card{
@@ -488,7 +494,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 // owner can see at a glance whether a phone is running the latest version.
 // v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
 // selections, update banner on resume, This Week fits on phones.
-const VERSION = 'v15.1';
+const VERSION = 'v15.2';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
@@ -1781,6 +1787,7 @@ function renderBottomNav() {
 
 async function renderContent(opts) {
   const content = document.getElementById('content');
+  startUpsetGlowWatch_();
   document.body.classList.toggle('view-chat', State.view === 'chat'); // lifts the ? button off the Send button
   if (typeof renderPicksDueBanner === 'function') renderPicksDueBanner();
   // render instantly from cached state -- no spinner, no waiting on every tab switch
@@ -2297,12 +2304,95 @@ function renderMyPickLine(g) {
   const colors = { covering: 'var(--win)', winning: 'var(--win)', not: 'var(--loss)', losing: 'var(--loss)', tied: 'var(--text-soft)' };
   const part = (p, isUp) => {
     const st = pickStandingNow(g, p.pickedTeam, isUp);
-    return `${isUp ? '⭐ Upset' : 'Your pick'}: <strong>${escapeHtml(p.pickedTeam)}</strong>${st ? ` <span style="color:${colors[st]}; font-weight:700;">${words[st]}</span>` : ''}`;
+    return `${isUp ? '⭐ Upset' : 'Your pick'}: <strong${isUp ? upsetKeyAttr_(g, p.pickedTeam) : ''}>${escapeHtml(p.pickedTeam)}</strong>${st ? ` <span style="color:${colors[st]}; font-weight:700;">${words[st]}</span>` : ''}`;
   };
   const parts = [];
   if (straight && !(upset && upset.pickedTeam === straight.pickedTeam)) parts.push(part(straight, false));
   if (upset) parts.push(part(upset, true) + (straight && upset.pickedTeam === straight.pickedTeam ? (() => { const st = pickStandingNow(g, straight.pickedTeam, false); return st ? ` · spread <span style="color:${colors[st]}; font-weight:700;">${words[st]}</span>` : ''; })() : ''));
   return `<div style="font-size:11px; color:var(--text-soft); margin-top:6px;">${parts.join(' · ')}</div>`;
+}
+
+/* ---- Upset Special glow (leading in the 4th quarter / OT) + CBS Sports game links ---- */
+// CBS Sports team codes (FBS) by ESPN display name, from cbssports.com/college-football/teams (Nov 2026).
+const CBS_TEAM_CODES = {'Air Force Falcons':'AF','Akron Zips':'AKRON','Alabama Crimson Tide':'BAMA','App State Mountaineers':'APLST','Arizona State Sun Devils':'ARIZST','Arizona Wildcats':'ARIZ','Arkansas Razorbacks':'ARK','Arkansas State Red Wolves':'ARKST','Army Black Knights':'ARMY','Auburn Tigers':'AUBURN','Ball State Cardinals':'BALLST','Baylor Bears':'BAYLOR','Boise State Broncos':'BOISE','Boston College Eagles':'BC','Bowling Green Falcons':'BGREEN','Buffalo Bulls':'BUFF','BYU Cougars':'BYU','California Golden Bears':'CAL','Central Michigan Chippewas':'CMICH','Charlotte 49ers':'CHARLO','Cincinnati Bearcats':'CINCY','Clemson Tigers':'CLEM','Coastal Carolina Chanticleers':'CSTCAR','Colorado Buffaloes':'COLO','Colorado State Rams':'COLOST','Delaware Blue Hens':'DE','Duke Blue Devils':'DUKE','East Carolina Pirates':'ECU','Eastern Michigan Eagles':'EMICH','Florida Atlantic Owls':'FAU','Florida Gators':'FLA','Florida International Panthers':'FIU','Florida State Seminoles':'FSU','Fresno State Bulldogs':'FRESNO','Georgia Bulldogs':'UGA','Georgia Southern Eagles':'GAS','Georgia State Panthers':'GAST','Georgia Tech Yellow Jackets':'GATECH','Hawai\'i Rainbow Warriors':'HAWAII','Houston Cougars':'HOU','Illinois Fighting Illini':'ILL','Indiana Hoosiers':'IND','Iowa Hawkeyes':'IOWA','Iowa State Cyclones':'IOWAST','Jacksonville State Gamecocks':'JAXST','James Madison Dukes':'JMAD','Kansas Jayhawks':'KANSAS','Kansas State Wildcats':'KSTATE','Kennesaw State Owls':'KENSAW','Kent State Golden Flashes':'KENTST','Kentucky Wildcats':'UK','Liberty Flames':'LIB','Louisiana Ragin\' Cajuns':'UL','Louisiana Tech Bulldogs':'LATECH','Louisville Cardinals':'LVILLE','LSU Tigers':'LSU','Marshall Thundering Herd':'MRSHL','Maryland Terrapins':'MD','Massachusetts Minutemen':'UMASS','UMass Minutemen':'UMASS','Memphis Tigers':'MEMP','Miami (OH) RedHawks':'MIAOH','Miami Hurricanes':'MIAMI','Michigan State Spartans':'MICHST','Michigan Wolverines':'MICH','Middle Tennessee Blue Raiders':'MTSU','Minnesota Golden Gophers':'MINN','Mississippi State Bulldogs':'MISSST','Missouri State Bears':'MOST','Missouri Tigers':'MIZZOU','Navy Midshipmen':'NAVY','NC State Wolfpack':'NCST','Nebraska Cornhuskers':'NEB','Nevada Wolf Pack':'NEVADA','New Mexico Lobos':'NMEX','New Mexico State Aggies':'NMEXST','North Carolina Tar Heels':'UNC','North Dakota State Bison':'NDST','North Texas Mean Green':'NTEXAS','Northern Illinois Huskies':'NILL','Northwestern Wildcats':'NWEST','Notre Dame Fighting Irish':'ND','Ohio Bobcats':'OHIO','Ohio State Buckeyes':'OHIOST','Oklahoma Sooners':'OKLA','Oklahoma State Cowboys':'OKLAST','Old Dominion Monarchs':'ODU','Ole Miss Rebels':'MISS','Oregon Ducks':'OREG','Oregon State Beavers':'OREGST','Penn State Nittany Lions':'PSU','Pittsburgh Panthers':'PITT','Purdue Boilermakers':'PURDUE','Rice Owls':'RICE','Rutgers Scarlet Knights':'RUT','Sacramento State Hornets':'SACST','Sam Houston Bearkats':'SAMST','San Diego State Aztecs':'SDGST','San José State Spartans':'SJST','SMU Mustangs':'SMU','South Alabama Jaguars':'SALA','South Carolina Gamecocks':'SC','South Florida Bulls':'SFLA','Southern Miss Golden Eagles':'USM','Stanford Cardinal':'STNFRD','Syracuse Orange':'CUSE','TCU Horned Frogs':'TCU','Temple Owls':'TEMPLE','Tennessee Volunteers':'TENN','Texas A&M Aggies':'TXAM','Texas Longhorns':'TEXAS','Texas State Bobcats':'TXSTSM','Texas Tech Red Raiders':'TXTECH','Toledo Rockets':'TOLEDO','Troy Trojans':'TROY','Tulane Green Wave':'TULANE','Tulsa Golden Hurricane':'TULSA','UAB Blazers':'UAB','UCF Knights':'UCF','UCLA Bruins':'UCLA','UConn Huskies':'UCONN','UL Monroe Warhawks':'LAMON','UNLV Rebels':'UNLV','USC Trojans':'USC','Utah State Aggies':'UTAHST','Utah Utes':'UTAH','UTEP Miners':'UTEP','UTSA Roadrunners':'TXSA','Vanderbilt Commodores':'VANDY','Virginia Cavaliers':'UVA','Virginia Tech Hokies':'VATECH','Wake Forest Demon Deacons':'WAKE','Washington Huskies':'WASH','Washington State Cougars':'WASHST','West Virginia Mountaineers':'WVU','Western Kentucky Hilltoppers':'WKY','Western Michigan Broncos':'WMICH','Wisconsin Badgers':'WISC','Wyoming Cowboys':'WYO'};
+
+// The game's CBS Sports page: .../gametracker/live/NCAAF_<Eastern date>_<AWAY>@<HOME>/ (CBS files a
+// 10:30 PM ET Friday game under Friday). A team CBS has no code for (FCS) → the CBS scoreboard.
+function cbsGameUrl_(g) {
+  const board = 'https://www.cbssports.com/college-football/scoreboard/';
+  const a = g && CBS_TEAM_CODES[g.awayTeam], h = g && CBS_TEAM_CODES[g.homeTeam];
+  const d = g && g.kickoff ? new Date(g.kickoff) : null;
+  if (!a || !h || !d || isNaN(d)) return board;
+  const ymd = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d).replace(/-/g, '');
+  return `https://www.cbssports.com/college-football/gametracker/live/NCAAF_${ymd}_${a}@${h}/`;
+}
+function cbsLinkAttrs_(g, cls) { return `href="${escapeHtml(cbsGameUrl_(g))}" target="_blank" rel="noopener" class="cbs-link${cls ? ' ' + cls : ''}"`; }
+
+// The ESPN feed entry for a game (clock, period, newest score), or the entry itself.
+function espnLiveEntry_(g) {
+  if (!g) return null;
+  if (g.period !== undefined && g.status) return g;
+  if (!_liveScoresCache || !g.espnEventId) return null;
+  return (_liveScoresCache.games || []).find(e => String(e.espnEventId) === String(g.espnEventId)) || null;
+}
+// Marks an element as showing this upset team; applyUpsetGlow_ lights it up while it leads late.
+function upsetKey_(g, team) { return String(g.espnEventId || g.gameId) + '|' + team; }
+function upsetKeyAttr_(g, team) { return ` data-upset-key="${escapeHtml(upsetKey_(g, team))}"`; }
+
+// This week's upset picks (anyone's) whose team leads in the 4th quarter or OT right now.
+function currentUpsetGames_() {
+  const week = currentWeek();
+  const out = [];
+  (State.picks || []).forEach(p => {
+    if (!(p.isUpset === true || p.isUpset === 'TRUE') || Number(p.week) !== Number(week)) return;
+    const g = (State.games || []).find(x => x.gameId === p.gameId);
+    if (g) out.push({ g, team: p.pickedTeam });
+  });
+  return out;
+}
+function upsetGlowKeys_() {
+  const keys = new Set();
+  currentUpsetGames_().forEach(({ g, team }) => {
+    const e = espnLiveEntry_(g);
+    if (!e || e.status !== 'live' || Number(e.period) < 4 || isGameFinal(g)) return;
+    const a = Number(e.awayScore), h = Number(e.homeScore);
+    if (team === g.homeTeam ? h > a : team === g.awayTeam ? a > h : false) keys.add(upsetKey_(g, team));
+  });
+  return keys;
+}
+function applyUpsetGlow_() {
+  const els = document.querySelectorAll('[data-upset-key]');
+  if (!els.length) return;
+  const keys = upsetGlowKeys_();
+  els.forEach(el => el.classList.toggle('upset-glow', keys.has(el.dataset.upsetKey)));
+}
+
+// Re-applies the glow after any redraw, and while an upset game is in progress refreshes the
+// ESPN feed once a minute (the front door serves it from a 45s shared copy).
+let _upsetGlowWatching = false;
+function startUpsetGlowWatch_() {
+  if (_upsetGlowWatching) return;
+  const content = document.getElementById('content');
+  if (!content || typeof MutationObserver === 'undefined') return;
+  _upsetGlowWatching = true;
+  // (observer callbacks already arrive batched after each redraw; class changes aren't childList
+  // mutations, so this doesn't re-trigger itself)
+  new MutationObserver(() => applyUpsetGlow_()).observe(content, { childList: true, subtree: true });
+  setInterval(async () => {
+    if (document.hidden || !State.player) return;
+    const live = currentUpsetGames_().some(({ g }) => isGameStarted(g) && !isGameFinal(g));
+    if (!live) return;
+    if (_liveScoresCache && Date.now() - _liveScoresCache.ts < 50000) { applyUpsetGlow_(); return; }
+    try {
+      const week = currentWeek();
+      const data = await api('getAllEspnScores', { week }, true);
+      if (!data || !data.games || !data.games.length) return;
+      _liveScoresCache = { week: week, ts: data._asOf ? Number(data._asOf) : Date.now(), games: data.games };
+      if (State.view === 'scores') refreshBoardLiveScores_(week);
+      else if (State.view === 'home') { const c = document.getElementById('my-live-week-card'); const fresh = c && renderMyLiveWeekCard(week); if (fresh) c.outerHTML = fresh; }
+      applyUpsetGlow_();
+    } catch (e) {}
+  }, 60000);
 }
 
 // "If it ended now" for the week: everyone's points from games that have started, using
@@ -2345,7 +2435,7 @@ function renderMyLiveWeekCard(week, opts) {
     const s = liveScoreFor(me.upset.game);
     const done = isGameFinal(me.upset.game);
     const word = (done ? { winning: 'hit ✓', losing: 'missed', tied: 'tied' } : { winning: 'winning', losing: 'losing', tied: 'tied' })[me.upset.standing];
-    upsetLine = `⭐ Upset: <strong>${escapeHtml(me.upset.team)}</strong> ${word} ${s.away}–${s.home}${me.upset.standing === 'winning' ? ` <span style="color:var(--gold);">(+${fmtSpread(me.upset.game.spread)})</span>` : ''}`;
+    upsetLine = `⭐ Upset: <strong${upsetKeyAttr_(me.upset.game, me.upset.team)}>${escapeHtml(me.upset.team)}</strong> ${word} ${s.away}–${s.home}${me.upset.standing === 'winning' ? ` <span style="color:var(--gold);">(+${fmtSpread(me.upset.game.spread)})</span>` : ''}`;
   } else if (!me.upset) {
     upsetLine = '<span class="helptext">⭐ No Upset Special this week</span>';
   }
@@ -2761,17 +2851,18 @@ function renderPicksBoard(content, week, games, earlyWarning) {
         <p class="helptext" style="line-height:1.6;">The Upset Special locks 5 minutes before the first game of the week. ${hasUpset ? `Your pick: <strong style="color:var(--gold);">${Object.keys(_draftPicks).find(gid => _draftPicks[gid].isUpset) ? _draftPicks[Object.keys(_draftPicks).find(gid => _draftPicks[gid].isUpset)].pickedTeam : (_upsetSelection ? _upsetSelection.pickedTeam : '—')}</strong>` : '<span style="color:var(--loss);">No Upset Special submitted — you will receive 0 upset points this week.</span>'}</p>
         ${isUpsetPicksRevealed(games) ? `
           <div style="margin-top:10px; padding-top:10px; border-top:1px solid var(--hairline);">
-            <div class="helptext" style="font-weight:700; margin-bottom:6px;">All Upset Picks Revealed:</div>
+            <div class="helptext" style="font-weight:700; margin-bottom:6px;">All Upset Picks Revealed: <span class="cbs-tag">tap one to watch on CBS</span></div>
             ${(State.picks || []).filter(p => (p.isUpset === true || p.isUpset === 'TRUE') && Number(p.week) === Number(week)).map(p => {
               const pl = getPlayerById(p.playerId);
               const isDefault = p.isAutoDefault === true || p.isAutoDefault === 'TRUE';
               // Upset hit (underdog won outright, game final): the player's name goes green
               const ug = (State.games || []).find(g => g.gameId === p.gameId);
               const hit = ug && isGameFinal(ug) && pickStandingNow(ug, p.pickedTeam, true) === 'winning';
-              return `<div style="display:flex; justify-content:space-between; font-size:12px; padding:3px 0;">
+              // tap a row → that game on CBS Sports
+              return `<a ${ug ? cbsLinkAttrs_(ug) : 'class="cbs-link"'} style="display:flex; justify-content:space-between; gap:8px; font-size:12px; padding:3px 0;">
                 <span${hit ? ' style="color:var(--win); font-weight:700;"' : ''}>${escapeHtml(pl ? (pl.teamName || pl.name) : '—')}${hit ? ' ✓' : ''}</span>
-                <span class="mono" style="color:var(--gold);">${escapeHtml(p.pickedTeam)} ⭐${isDefault ? ' *' : ''}</span>
-              </div>`;
+                <span class="mono" style="color:var(--gold); text-align:right;"${ug ? upsetKeyAttr_(ug, p.pickedTeam) : ''}>${escapeHtml(p.pickedTeam)} ⭐${isDefault ? ' *' : ''}</span>
+              </a>`;
             }).join('')}
           </div>
         ` : '<p class="helptext" style="margin-top:8px; font-style:italic;">All upset picks will be revealed once the first game kicks off.</p>'}
@@ -2853,7 +2944,7 @@ function renderGamesBoard(games, week) {
     if (result.isFinal) {
       resultStrip = `
         <div class="result-strip">
-          <span class="mono" style="color:var(--text-soft);">${escapeHtml(g.awayTeam)} ${result.awayScore} – ${result.homeScore} ${escapeHtml(g.homeTeam)}</span>
+          <a ${cbsLinkAttrs_(g, 'mono')} style="color:var(--text-soft);">${escapeHtml(g.awayTeam)} ${result.awayScore} – ${result.homeScore} ${escapeHtml(g.homeTeam)} <span class="cbs-tag">CBS ›</span></a>
           ${draft.pickedTeam ? `<span class="result-pill ${draft.isUpset ? (result.winner === draft.pickedTeam ? 'upset-win' : 'loss') : (result.coveringTeam === draft.pickedTeam ? 'win' : 'loss')}">
             ${draft.isUpset ? (result.winner === draft.pickedTeam ? 'Upset hit +' + fmtSpread(g.spread) : 'Upset miss') : (result.coveringTeam === draft.pickedTeam ? 'Correct +1' : 'Incorrect')}
           </span>` : ''}
@@ -2866,7 +2957,7 @@ function renderGamesBoard(games, week) {
       resultStrip = `
         <div class="result-strip" style="flex-direction:column; align-items:stretch;">
           <div class="flex-between">
-            <span class="mono" style="color:var(--text-soft);">${s.hasScore ? `${escapeHtml(g.awayTeam)} ${s.away} – ${s.home} ${escapeHtml(g.homeTeam)}` : 'Waiting for the first score…'}</span>
+            <a ${cbsLinkAttrs_(g, 'mono')} style="color:var(--text-soft);">${s.hasScore ? `${escapeHtml(g.awayTeam)} ${s.away} – ${s.home} ${escapeHtml(g.homeTeam)}` : 'Waiting for the first score…'} <span class="cbs-tag">CBS ›</span></a>
             ${s.clock ? `<span style="font-size:10px; font-weight:700; color:var(--win);">${escapeHtml(s.clock)}</span>` : ''}
           </div>
           ${renderMyPickLine(g)}
@@ -2887,7 +2978,7 @@ function renderGamesBoard(games, week) {
                style="${(locked || awayIsUpsetPick) ? 'cursor:default;' : ''}${locked ? ' opacity:0.55;' : ''}">
             <div class="team-logo-row">
               ${renderTeamLogo(g.awayLogo, g.awayTeam)}
-              <div><div class="tname">${escapeHtml(g.awayTeam)}</div>${favTeam === g.awayTeam ? '<div class="fav-badge">Favorite</div>' : ''}</div>
+              <div><div class="tname"${awayIsUpsetPick ? upsetKeyAttr_(g, g.awayTeam) : ''}>${escapeHtml(g.awayTeam)}</div>${favTeam === g.awayTeam ? '<div class="fav-badge">Favorite</div>' : ''}</div>
             </div>
             <div class="tline">${favTeam === g.awayTeam ? '-' + fmtSpread(g.spread) : (favTeam ? '+' + fmtSpread(g.spread) : '—')}</div>
           </div>
@@ -2897,7 +2988,7 @@ function renderGamesBoard(games, week) {
                style="${(locked || homeIsUpsetPick) ? 'cursor:default;' : ''}${locked ? ' opacity:0.55;' : ''}">
             <div class="team-logo-row">
               ${renderTeamLogo(g.homeLogo, g.homeTeam)}
-              <div><div class="tname">${escapeHtml(g.homeTeam)}</div>${favTeam === g.homeTeam ? '<div class="fav-badge">Favorite</div>' : ''}</div>
+              <div><div class="tname"${homeIsUpsetPick ? upsetKeyAttr_(g, g.homeTeam) : ''}>${escapeHtml(g.homeTeam)}</div>${favTeam === g.homeTeam ? '<div class="fav-badge">Favorite</div>' : ''}</div>
             </div>
             <div class="tline">${favTeam === g.homeTeam ? '-' + fmtSpread(g.spread) : (favTeam ? '+' + fmtSpread(g.spread) : '—')}</div>
           </div>
@@ -4719,14 +4810,16 @@ function reExpandGameDetails() {
 
 function renderPickBreakdown(g) {
   const picksForGame = State.picks.filter(p => p.gameId === g.gameId && !(p.isUpset === true || p.isUpset === 'TRUE'));
-  const upsetPlayerIds = new Set(State.picks.filter(p => p.gameId === g.gameId && (p.isUpset === true || p.isUpset === 'TRUE')).map(p => p.playerId));
+  const upsetTeamBy = {};
+  State.picks.filter(p => p.gameId === g.gameId && (p.isUpset === true || p.isUpset === 'TRUE')).forEach(p => { upsetTeamBy[p.playerId] = p.pickedTeam; });
+  const upsetPlayerIds = new Set(Object.keys(upsetTeamBy));
   const nameFor = p => { const pl = getPlayerById(p.playerId); return pl ? (pl.teamName || pl.name) : '—'; };
   const awayPicks = picksForGame.filter(p => p.pickedTeam === g.awayTeam);
   const homePicks = picksForGame.filter(p => p.pickedTeam === g.homeTeam);
   const col = (picks, label) => `
     <div style="flex:1; background:var(--surface-2); border-radius:8px; padding:8px;">
       <div class="helptext" style="font-size:10px; text-transform:uppercase; font-weight:700; margin-bottom:6px;">${escapeHtml(label)} (${picks.length})</div>
-      <div style="font-size:11px; line-height:1.8;">${picks.length ? picks.map(p => `${escapeHtml(nameFor(p))}${upsetPlayerIds.has(p.playerId) ? ' ⭐' : ''}`).join('<br>') : '<span class="helptext">None</span>'}</div>
+      <div style="font-size:11px; line-height:1.8;">${picks.length ? picks.map(p => upsetPlayerIds.has(p.playerId) ? `<span${upsetKeyAttr_(g, upsetTeamBy[p.playerId])}>${escapeHtml(nameFor(p))} ⭐</span>` : escapeHtml(nameFor(p))).join('<br>') : '<span class="helptext">None</span>'}</div>
     </div>`;
   if (picksForGame.length === 0) return '<div class="helptext" style="padding:8px 0; font-size:11px;">No picks yet.</div>';
   return `<div style="display:flex; gap:8px; margin-top:8px;">${col(awayPicks, g.awayTeam)}${col(homePicks, g.homeTeam)}</div>`;
@@ -4886,22 +4979,23 @@ function renderScoreRow(g, isBoard) {
 
   return `
     <div style="padding:10px 14px; border-bottom:1px solid var(--hairline); ${isBoard ? 'background:rgba(255,184,0,0.03);' : ''}">
-      <div style="display:flex; align-items:center; gap:8px;">
+      <a ${cbsLinkAttrs_(g)} style="display:flex; align-items:center; gap:8px;" title="Open on CBS Sports">
         ${isBoard ? '<div style="width:8px; height:8px; border-radius:50%; background:var(--gold); flex-shrink:0;"></div>' : '<div style="width:8px;"></div>'}
         <div style="flex:1; min-width:0;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:3px;">
-            <span style="font-size:13px; font-weight:${awayWon ? '700' : '400'}; color:${awayIsUpset ? 'var(--gold)' : awayWon ? 'var(--text)' : 'var(--text-soft)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:55%;">${escapeHtml(g.awayTeam)}${awayIsUpset ? ' 🚨' : ''} <span style="font-size:11px; color:var(--text-faint);">${spread}</span></span>
+            <span${upsetKeyAttr_(g, g.awayTeam)} style="font-size:13px; font-weight:${awayWon ? '700' : '400'}; color:${awayIsUpset ? 'var(--gold)' : awayWon ? 'var(--text)' : 'var(--text-soft)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:55%;">${escapeHtml(g.awayTeam)}${awayIsUpset ? ' 🚨' : ''} <span style="font-size:11px; color:var(--text-faint);">${spread}</span></span>
             <span class="mono" style="font-size:15px; font-weight:700; color:${awayWon ? 'var(--text)' : 'var(--text-faint)'};">${awayScore}</span>
           </div>
           <div style="display:flex; justify-content:space-between; align-items:center;">
-            <span style="font-size:13px; font-weight:${homeWon ? '700' : '400'}; color:${homeIsUpset ? 'var(--gold)' : homeWon ? 'var(--text)' : 'var(--text-soft)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:55%;">${escapeHtml(g.homeTeam)}${homeIsUpset ? ' 🚨' : ''} <span style="font-size:11px; color:var(--text-faint);">${homeSpread}</span></span>
+            <span${upsetKeyAttr_(g, g.homeTeam)} style="font-size:13px; font-weight:${homeWon ? '700' : '400'}; color:${homeIsUpset ? 'var(--gold)' : homeWon ? 'var(--text)' : 'var(--text-soft)'}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:55%;">${escapeHtml(g.homeTeam)}${homeIsUpset ? ' 🚨' : ''} <span style="font-size:11px; color:var(--text-faint);">${homeSpread}</span></span>
             <span class="mono" style="font-size:15px; font-weight:700; color:${homeWon ? 'var(--text)' : 'var(--text-faint)'};">${homeScore}</span>
           </div>
         </div>
         <div style="text-align:right; flex-shrink:0; min-width:40px;">
           <div style="font-size:10px; font-weight:700; color:${statusColor}; text-transform:uppercase; white-space:nowrap;">${escapeHtml(status)}</div>
+          <div class="cbs-tag" style="margin-top:3px;">CBS ›</div>
         </div>
-      </div>
+      </a>
       ${isBoard ? `<div style="padding-left:16px;">${renderMyPickLine(g)}</div>` : ''}
       ${isBoard && started ? (
         final
