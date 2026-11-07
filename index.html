@@ -488,7 +488,7 @@ table.simple td{ padding:10px 6px; border-bottom:1px solid var(--hairline-soft);
 // owner can see at a glance whether a phone is running the latest version.
 // v14.0 (2026-09-29): Cloudflare front door, safe pick-save retries, picker screen keeps
 // selections, update banner on resume, This Week fits on phones.
-const VERSION = 'v15.0';
+const VERSION = 'v15.1';
 
 const CONFIG = {
   // Cloudflare front door (worker/, docs/cloudflare-front-door-plan.md): passes every request to
@@ -2765,8 +2765,11 @@ function renderPicksBoard(content, week, games, earlyWarning) {
             ${(State.picks || []).filter(p => (p.isUpset === true || p.isUpset === 'TRUE') && Number(p.week) === Number(week)).map(p => {
               const pl = getPlayerById(p.playerId);
               const isDefault = p.isAutoDefault === true || p.isAutoDefault === 'TRUE';
+              // Upset hit (underdog won outright, game final): the player's name goes green
+              const ug = (State.games || []).find(g => g.gameId === p.gameId);
+              const hit = ug && isGameFinal(ug) && pickStandingNow(ug, p.pickedTeam, true) === 'winning';
               return `<div style="display:flex; justify-content:space-between; font-size:12px; padding:3px 0;">
-                <span>${escapeHtml(pl ? (pl.teamName || pl.name) : '—')}</span>
+                <span${hit ? ' style="color:var(--win); font-weight:700;"' : ''}>${escapeHtml(pl ? (pl.teamName || pl.name) : '—')}${hit ? ' ✓' : ''}</span>
                 <span class="mono" style="color:var(--gold);">${escapeHtml(p.pickedTeam)} ⭐${isDefault ? ' *' : ''}</span>
               </div>`;
             }).join('')}
