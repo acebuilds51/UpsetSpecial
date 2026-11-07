@@ -1,4 +1,4 @@
-// v28-force-pin-oct22  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
+// v29-upset-alerts-nov07  (Notifications.gs -- the backend version this copy belongs to; must equal CODE_VERSION in Code.gs)
 // ============================================================
 //  UPSET SPECIAL — Notifications & week/season finalization (v2, Sep 2026)
 //
@@ -74,7 +74,75 @@ function underdogOf_(g) { return g.favorite === g.homeTeam ? g.awayTeam : g.home
 function isTrue_(v) { return v === true || v === 'TRUE'; }
 
 // ---- Final-score pushes + week wrap-up (trigger: every 5 minutes) ----
-function checkGameFinalNotifications() { runWithOneStaleSignal_(checkGameFinalNotifications_); }
+function checkGameFinalNotifications() {
+  runWithOneStaleSignal_(function() {
+    try { checkUpsetAlerts_(); } catch (e) { Logger.log('Upset alert error: ' + e.message); }
+    checkGameFinalNotifications_();
+  });
+}
+
+// ---- Upset Alert: an Upset Special team leading in the 4th quarter / OT ----
+// Pushes ONLY the players who picked that team as their Upset Special, once per game and team
+// (Script Property upset_alert_<year>_w<week>); players with score pushes 'off' are skipped.
+// Cheap when nothing is live: answered from the cached state, ESPN only while a game this week
+// is in progress (the shared 45s Scores copy), and the Picks tab only for a new 4th-quarter lead.
+function checkUpsetAlerts_() {
+  var shared = cachedSharedStateOrNull_();
+  if (!shared) return;
+  var week = currentWeekOf_(shared);
+  var now = Date.now();
+  var live = (shared.games || []).filter(function(g) {
+    return Number(g.week) === week && g.espnEventId && !isTrue_(g.isFinal) && g.kickoff && new Date(g.kickoff).getTime() <= now;
+  });
+  if (!live.length) return;
+  var espn = apiGetAllEspnScores({});
+  if (!espn || !espn.games || !espn.games.length) return;
+  var year = '';
+  (shared.season || []).forEach(function(r) { if (r.key === 'year') year = r.value; });
+  var props = PropertiesService.getScriptProperties();
+  var key = 'upset_alert_' + (year || new Date().getFullYear()) + '_w' + week;
+  var alerted = JSON.parse(props.getProperty(key) || '{}');
+  var leads = upsetAlertLeads_(live, espn.games, alerted);
+  if (!leads.length) return;
+
+  var picks = sheetToObjects(SHEET_NAMES.PICKS).filter(function(p) { return Number(p.week) === week && isTrue_(p.isUpset); });
+  var targets = getNotifyTargets_();
+  var messages = [];
+  leads.forEach(function(l) {
+    alerted[l.game.gameId + '|' + l.team] = true; // checked: never again for this game + team
+    var riders = {};
+    picks.forEach(function(p) { if (p.gameId === l.game.gameId && String(p.pickedTeam) === l.team) riders[p.playerId] = true; });
+    var when = Number(l.period) > 4 ? 'in overtime' : 'in the 4th' + (l.clock ? ' (' + l.clock + ')' : '');
+    var title = '🚨 Upset Alert: ' + l.team + ' leads!';
+    var body = l.game.awayTeam + ' ' + l.awayScore + ', ' + l.game.homeTeam + ' ' + l.homeScore + ' ' + when +
+      '. Your Upset Special pays +' + fmtPts_(Number(l.game.spread) || 0) + ' if it holds.';
+    targets.forEach(function(t) {
+      if (riders[t.playerId] && t.scorePref !== 'off') messages.push({ token: t.token, title: title, body: body, data: pushData_('upset_alert', 'upset-' + l.game.gameId, 'home') });
+    });
+  });
+  props.setProperty(key, JSON.stringify(alerted));
+  if (messages.length) sendFcmBatch_(messages);
+}
+
+// Underdogs leading a live game in the 4th quarter or OT that haven't been checked yet.
+// games = this week's started, unfinished Games rows; espnGames = apiGetAllEspnScores().games.
+// -> [{ game, team, awayScore, homeScore, period, clock }]
+function upsetAlertLeads_(games, espnGames, alerted) {
+  var byId = {};
+  (espnGames || []).forEach(function(e) { byId[String(e.espnEventId)] = e; });
+  var out = [];
+  games.forEach(function(g) {
+    var e = byId[String(g.espnEventId)];
+    if (!e || e.status !== 'live' || Number(e.period) < 4) return;
+    var a = Number(e.awayScore) || 0, h = Number(e.homeScore) || 0;
+    if (a === h) return;
+    var leader = a > h ? g.awayTeam : g.homeTeam;
+    if (!g.favorite || leader === g.favorite) return; // only an underdog in front is an upset
+    if (alerted[g.gameId + '|' + leader]) return;
+    out.push({ game: g, team: leader, awayScore: a, homeScore: h, period: e.period, clock: e.clock || '' });
+  });
+  return out;
+}
 
 function checkGameFinalNotifications_() {
   // The common case (nothing new) is answered from the cached state -- no sheet reads and

@@ -1,4 +1,4 @@
-// v28-force-pin-oct22  (Code.gs -- must equal CODE_VERSION below; a test checks it)
+// v29-upset-alerts-nov07  (Code.gs -- must equal CODE_VERSION below; a test checks it)
 /**
  * UPSET SPECIAL LEAGUE — Backend v2 (Google Apps Script)
  * --------------------------------------------------------
@@ -90,7 +90,7 @@ const POINT_VALUES = { round1: 1, quarter: 3, semi: 4, champion: 5 };
 // verify from a live response (added tonight to debug a deployment propagation
 // issue). Every API response includes this as `_version` -- if it's ever
 // missing or stale on a live response, the deployment isn't running current code.
-var CODE_VERSION = 'v28-force-pin-oct22';
+var CODE_VERSION = 'v29-upset-alerts-nov07';
 
 // Actions that never change anything in the cached state (players, season, rotation,
 // games, bowl games/champion/ledger). Every OTHER action busts the state cache on
@@ -7822,7 +7822,7 @@ function apiAdminGenerateResultsEmail(payload) {
   // reference appended below the narrative, since the AI's prose is never the
   // source of truth for a real-money league, however well the automated check
   // above performs.
-  var boxScoreHtml = buildOfficialBoxScoreHtml_(recap);
+  var boxScoreHtml = buildShoutoutsHtml_(week) + buildOfficialBoxScoreHtml_(recap);
 
   var draft = {
     ok: true,
@@ -8205,6 +8205,59 @@ function buildOfficialBoxScoreHtml_(recap) {
     winnerRow +
     '<div style="margin-bottom:16px;">' + gamesRows + '</div>' +
     '<div>' + playerRows + '</div>';
+}
+
+// Upset of the Week (the biggest-spread Upset Special that hit; everyone who rode it shares it)
+// and Faded the crowd (a straight pick that covered while 80%+ of the league went the other
+// way, board games with 5+ picks) -- the same rules as the app's Standings -> Upsets tab.
+// -> { upsetOfWeek: { spread, teams:[], players:[] } | null, faded: [{ team, pct, players:[] }] }
+var FADE_SHARE_GAS = 0.8, FADE_MIN_PICKS_GAS = 5;
+function weekShoutouts_(week) {
+  week = Number(week);
+  var games = sheetToObjects(SHEET_NAMES.GAMES).filter(function(g) { return Number(g.week) === week && isTrue_(g.isFinal); });
+  var picks = sheetToObjects(SHEET_NAMES.PICKS).filter(function(p) { return Number(p.week) === week; });
+  var nameById = {};
+  playersLite_().forEach(function(p) { nameById[p.id] = p.teamName || p.name; });
+  var nm = function(id) { return nameById[id] || '?'; };
+  var byId = {};
+  games.forEach(function(g) { byId[g.gameId] = g; });
+  var best = null;
+  picks.forEach(function(p) {
+    var g = byId[p.gameId];
+    if (!g || !isTrue_(p.isUpset)) return;
+    var w = outrightWinner_(g);
+    if (w === 'TIE' || w !== underdogOf_(g) || String(p.pickedTeam) !== w) return;
+    var spread = Number(g.spread) || 0;
+    if (!best || spread > best.spread) best = { spread: spread, teams: [w], players: [nm(p.playerId)] };
+    else if (spread === best.spread) { best.players.push(nm(p.playerId)); if (best.teams.indexOf(w) < 0) best.teams.push(w); }
+  });
+  var faded = [];
+  games.forEach(function(g) {
+    if (g.source === 'external') return;
+    var gp = picks.filter(function(p) { return p.gameId === g.gameId && !isTrue_(p.isUpset); });
+    if (gp.length < FADE_MIN_PICKS_GAS) return;
+    var cover = computeCoveringTeam_(g);
+    var on = gp.filter(function(p) { return String(p.pickedTeam) === cover; });
+    if (!on.length || 1 - on.length / gp.length < FADE_SHARE_GAS) return;
+    faded.push({ team: cover, pct: Math.round((1 - on.length / gp.length) * 100), players: on.map(function(p) { return nm(p.playerId); }) });
+  });
+  return { upsetOfWeek: best, faded: faded };
+}
+
+function buildShoutoutsHtml_(week) {
+  var s;
+  try { s = weekShoutouts_(week); } catch (e) { Logger.log('shoutouts: ' + e.message); return ''; }
+  if (!s.upsetOfWeek && !s.faded.length) return '';
+  var row = function(html) { return '<div style="padding:6px 0;border-bottom:1px solid #ebe5d8;font-size:13px;color:#3a2a00;">' + html + '</div>'; };
+  var out = '<hr style="border:none;border-top:1px solid #ebe5d8;margin:22px 0;">' +
+    '<div style="font-size:11px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:#8c6a2a;margin:22px 0 10px;">Shout-outs</div>';
+  if (s.upsetOfWeek) out += row('🚨 <strong>Upset of the Week:</strong> ' + escapeHtmlGas_(s.upsetOfWeek.teams.join(' / ')) + ' +' + s.upsetOfWeek.spread +
+    ' &mdash; ' + s.upsetOfWeek.players.map(function(n) { return '<strong>' + escapeHtmlGas_(n) + '</strong>'; }).join(', '));
+  s.faded.forEach(function(f) {
+    out += row('🧠 <strong>Faded the crowd:</strong> ' + f.players.map(function(n) { return '<strong>' + escapeHtmlGas_(n) + '</strong>'; }).join(', ') +
+      ' took ' + escapeHtmlGas_(f.team) + ' while ' + f.pct + '% of the league went the other way &mdash; and covered.');
+  });
+  return out;
 }
 
 function escapeHtmlGas_(s) {

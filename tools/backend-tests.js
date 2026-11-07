@@ -85,7 +85,7 @@ function mkEvent(id, away, home, opts = {}) {
     id: String(id), date: opts.date,
     competitions: [{
       date: opts.date, startDate: opts.date,
-      status: { type: { completed: !!opts.final, name: opts.final ? 'STATUS_FINAL' : 'STATUS_SCHEDULED' } },
+      status: { type: { completed: !!opts.final, name: opts.final ? 'STATUS_FINAL' : opts.period ? 'STATUS_IN_PROGRESS' : 'STATUS_SCHEDULED' }, period: opts.period || 0, displayClock: opts.clock || '' },
       odds: opts.odds ? [{ details: opts.odds }] : [],
       competitors: [
         { homeAway: 'home', score: opts.homeScore != null ? String(opts.homeScore) : '', team: { displayName: home, abbreviation: home.slice(0, 3).toUpperCase(), logo: 'http://x/' + home + '.png' } },
@@ -535,6 +535,68 @@ test('week-final job scores straight picks AGAINST THE SPREAD and counts externa
   const finals = pushes().filter(m => /Final/.test(m.notification.title));
   eq(finals.length, 10 * 3 * 2, '10 games x 3 players x 2 devices, each token separately');
   ok(/Away1 covered — 0\/1 players correct/.test(finals[0].notification.body), finals[0].notification.body);
+});
+
+test('Upset Alert: an Upset Special underdog leading in the 4th pushes ONLY the players who picked it, once', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env); enablePush(env);
+  env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U' }));
+  env.call('submitPicks', picksPayload('p3', { gameId: 'g1', pickedTeam: 'Away1' }));
+  // every game kicked off an hour ago
+  const games = env.ss.getSheetByName('Games'), gh = games._data[0];
+  const past = new Date(Date.now() - 3600000).toISOString();
+  games._data.slice(1).forEach(r => { r[gh.indexOf('kickoff')] = past; });
+  env.ctx.invalidateStateCache(); env.ctx._sheetDataCache = {};
+  env.call('getState'); // the alert check reads the cached state
+  espnEvents = [];
+  for (let i = 1; i <= 10; i++) espnEvents.push(mkEvent('E' + i, 'Away' + i, 'Home' + i, { date: past, period: 3, awayScore: 14, homeScore: 7 }));
+  espnEvents.push(mkEvent('E100', 'Dog U', 'Fav U', { date: past, period: 4, clock: '6:12', awayScore: 24, homeScore: 10 }));
+  [...env.cache._m.keys()].filter(k => k.indexOf('allEspnScores') === 0).forEach(k => env.cache.remove(k)); // the shared 45s ESPN copy
+  env.ctx.checkGameFinalNotifications();
+  let alerts = pushes().filter(m => /Upset Alert/.test(m.notification.title));
+  eq(alerts.length, 2, 'p2 only (2 devices) -- Away1 leads but only in the 3rd');
+  ok(alerts.every(m => /tok1/.test(m.token)), 'p2 is the 2nd player row');
+  ok(/Dog U 24, Fav U 10 in the 4th \(6:12\)\. Your Upset Special pays \+14/.test(alerts[0].notification.body), alerts[0].notification.body);
+  eq(alerts[0].data.tag, 'upset-' + rowsOf(env, 'Games').find(g => g.espnEventId === 'E100').gameId);
+
+  env.ctx.checkGameFinalNotifications();
+  eq(pushes().filter(m => /Upset Alert/.test(m.notification.title)).length, 2, 'same lead is never re-sent');
+
+  // Away1 (p3's upset) now leads in the 4th; Home2 (a favorite) leading never alerts
+  espnEvents[0] = mkEvent('E1', 'Away1', 'Home1', { date: past, period: 4, awayScore: 21, homeScore: 17 });
+  espnEvents[1] = mkEvent('E2', 'Away2', 'Home2', { date: past, period: 4, awayScore: 3, homeScore: 30 });
+  [...env.cache._m.keys()].filter(k => k.indexOf('allEspnScores') === 0).forEach(k => env.cache.remove(k)); // the shared 45s ESPN copy
+  env.ctx.checkGameFinalNotifications();
+  alerts = pushes().filter(m => /Upset Alert/.test(m.notification.title));
+  eq(alerts.length, 4, 'p3 now, on both devices');
+  ok(alerts.slice(2).every(m => /tok2/.test(m.token) && /Away1 leads/.test(m.notification.title)));
+
+  // score pushes off -> no alert
+  const ups = env.ctx.upsetAlertLeads_([{ gameId: 'x', espnEventId: 'X', awayTeam: 'A', homeTeam: 'B', favorite: 'B' }],
+    [{ espnEventId: 'X', status: 'live', period: 5, awayScore: '31', homeScore: '28' }], {});
+  eq(ups.length, 1, 'overtime counts'); eq(ups[0].team, 'A');
+  eq(env.ctx.upsetAlertLeads_([{ gameId: 'x', espnEventId: 'X', awayTeam: 'A', homeTeam: 'B', favorite: 'B' }],
+    [{ espnEventId: 'X', status: 'live', period: 4, awayScore: '28', homeScore: '28' }], {}).length, 0, 'a tie is not a lead');
+});
+
+test('results email shout-outs: Upset of the Week (biggest hit) and Faded the crowd (covered against 80%+)', () => {
+  const env = loadBackend(); const { kickoff } = seedLeague(env);
+  const pl = env.ss.getSheetByName('Players'), hdr = pl._data[0];
+  ['p4', 'p5', 'p6'].forEach(id => pl.appendRow(hdr.map(h => ({ id, name: id, teamName: 'TEAM' + id.slice(1), pin: '2222', active: true, joinedSeason: 2026 })[h] ?? '')));
+  env.ctx.invalidateStateCache(); env.ctx._sheetDataCache = {};
+  env.call('submitPicks', picksPayload('p1', { gameId: 'g2', pickedTeam: 'Away2' }));
+  env.call('submitPicks', picksPayload('p2', { espnEventId: 'E100', awayTeam: 'Dog U', homeTeam: 'Fav U', pickedTeam: 'Dog U' }));
+  ['p3', 'p4', 'p5'].forEach(id => env.call('submitPicks', picksPayload(id, { gameId: 'g3', pickedTeam: 'Away3' })));
+  const p6 = picksPayload('p6', { gameId: 'g3', pickedTeam: 'Away3' });
+  p6.picks[0].pickedTeam = 'Away1'; // the lone Away1 pick
+  env.call('submitPicks', p6);
+  finishWeek(env, kickoff, 2); // favorites win by 2 of a 3-point spread: every underdog covers
+  env.ctx._sheetDataCache = {};
+  const s = env.ctx.weekShoutouts_(1);
+  eq(s.upsetOfWeek.spread, 14); eq(s.upsetOfWeek.teams, ['Dog U']); eq(s.upsetOfWeek.players, ['TEAM2']);
+  const g1 = s.faded.find(f => f.team === 'Away1');
+  ok(g1, 'g1: 5 of 6 took Home1, TEAM6 took Away1 and covered'); eq(g1.players, ['TEAM6']); eq(g1.pct, 83);
+  eq(s.faded.length, 1, 'g2/g3 are upset games for some players (5 straight picks, all on Home) -> nobody covered with them');
+  ok(/Upset of the Week:<\/strong> Dog U \+14/.test(env.ctx.buildShoutoutsHtml_(1)));
 });
 
 test('week-final job notifies each game once and does nothing when nothing is new', () => {
